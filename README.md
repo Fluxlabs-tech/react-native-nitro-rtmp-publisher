@@ -1,5 +1,9 @@
 # react-native-nitro-rtmp-publisher
 
+[![npm](https://img.shields.io/npm/v/react-native-nitro-rtmp-publisher.svg)](https://www.npmjs.com/package/react-native-nitro-rtmp-publisher)
+[![license](https://img.shields.io/npm/l/react-native-nitro-rtmp-publisher.svg)](./LICENSE)
+[![platform](https://img.shields.io/badge/platform-android-3DDC84.svg?logo=android)](#)
+
 High-performance **RTMP camera publisher** for React Native, built on
 [Nitro Modules](https://nitro.margelo.com) and
 [RootEncoder](https://github.com/pedroSG94/RootEncoder).
