@@ -6,6 +6,7 @@ import android.content.Intent
 import android.media.MediaRecorder
 import android.os.Build
 import android.os.PowerManager
+import android.os.SystemClock
 import android.util.Log
 import android.view.OrientationEventListener
 import android.view.SurfaceHolder
@@ -26,6 +27,11 @@ import com.pedro.library.view.OpenGlView
 
 private const val TAG = "RtmpPublisherView"
 private const val WAKE_LOCK_TAG = "RtmpPublisher::WakeLock"
+
+// Camera2 only allows one open camera per process. Track the active publisher
+// instance so a second mount can fail loudly instead of silently breaking the
+// first one's preview.
+@Volatile private var activePublisherCount = 0
 
 /**
  * Nitro HybridView that wraps RootEncoder's [RtmpCamera2] + [OpenGlView] and
@@ -68,6 +74,11 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
   // stopStream / drop without yanking some other component's notification).
   private var fgServiceStartedByUs = false
 
+  // True iff this instance currently holds the single active-publisher slot.
+  // Set in startPreviewInternal, cleared in onDropView. Used so multiple
+  // mounted views fail loudly instead of silently fighting for the camera.
+  private var holdsActiveSlot = false
+
   // Thermal monitoring. The OS listener is only registered after JS subscribes
   // via `setOnThermalWarning` — if you never subscribe, the library never
   // touches PowerManager.
@@ -107,6 +118,13 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
     }
 
   private var wakeLock: PowerManager.WakeLock? = null
+
+  // Cached system service lookup. Cheap individually but called from hot-ish
+  // paths (acquireWakeLock, thermal register/getter); the cache avoids
+  // repeated ContextImpl HashMap lookups.
+  private val powerManager: PowerManager? by lazy {
+    context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+  }
 
   private val recordListener = RecordController.Listener { status ->
     onRecordStatusChange?.invoke(status.toNitro())
@@ -285,8 +303,12 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
   override var streamMode: StreamMode = StreamMode.BALANCED
     set(value) {
       if (field == value) return
+      if (camera.isStreaming) {
+        Log.w(TAG, "streamMode change ignored mid-stream (would glitch the RTMP cache)")
+        return
+      }
       field = value
-      applyStreamMode()
+      // No-op here — applied at the next `startStream`.
     }
 
   override var foregroundServiceTitle: String = ""
@@ -348,7 +370,8 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
       Log.w(TAG, "prepareAudio invalid args (bitrate=$b sampleRate=$s)")
       return false
     }
-    applyCodecType()
+    // applyCodecType() — already done in `prepareVideo` (called first). Calling
+    // again is a no-op duplicate.
     val source = audioSource.toMediaRecorderSource()
     // For non-mic sources, disabling AGC/AEC/NS preserves quality (camcorder
     // applies its own gentler tuning anyway; voice_recognition is raw).
@@ -368,6 +391,21 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
   }
 
   private fun startPreviewInternal(facing: CameraFacing, width: Int, height: Int) {
+    // Refuse if another publisher instance already holds the camera —
+    // Camera2 doesn't allow concurrent opens from the same process and the
+    // failure mode otherwise is silent (a black preview + cryptic logcat).
+    if (!holdsActiveSlot) {
+      if (activePublisherCount > 0) {
+        Log.w(TAG, "Refusing to start preview — another <RtmpPublisherView> is active")
+        onConnectionEvent?.invoke(
+          RtmpConnectionEvent.CONNECTIONFAILED,
+          "another <RtmpPublisherView> already holds the camera"
+        )
+        return
+      }
+      activePublisherCount += 1
+      holdsActiveSlot = true
+    }
     val helperFacing = when (facing) {
       CameraFacing.FRONT -> CameraHelper.Facing.FRONT
       CameraFacing.BACK -> CameraHelper.Facing.BACK
@@ -477,7 +515,9 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
     }
     val dec = decreaseRangePercent.toFloat().coerceIn(0f, 100f)
     val inc = increaseRangePercent.toFloat().coerceIn(0f, 100f)
-    val adapter = BitrateAdapter { adapted ->
+    // Mutate the existing adapter in place — preserves its adaptation history
+    // (current bitrate, congestion memory) across re-tuning calls.
+    val adapter = bitrateAdapter ?: BitrateAdapter { adapted ->
       safe("adaptiveBitrate/apply") {
         if (camera.isStreaming) camera.setVideoBitrateOnFly(adapted)
       }
@@ -488,8 +528,15 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
     bitrateAdapter = adapter
   }
 
+  // Debounce: at most one keyframe request per second. Multiple IDRs in
+  // quick succession waste bandwidth without giving the viewer anything new.
+  @Volatile private var lastKeyFrameRequestMs = 0L
+
   override fun requestKeyFrame() {
     if (!camera.isStreaming) return
+    val now = SystemClock.uptimeMillis()
+    if (now - lastKeyFrameRequestMs < 1000L) return
+    lastKeyFrameRequestMs = now
     safe("requestKeyFrame") { camera.requestKeyFrame() }
   }
 
@@ -736,9 +783,11 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
 
   override fun getThermalStatus(): ThermalStatus {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return ThermalStatus.NONE
+    // If the listener is registered, the cached value is fresh (updated on
+    // every OS state change) — return it instead of doing a binder call.
+    if (thermalListenerRegistered) return lastThermalStatusInt.fromPowerManagerStatus()
     return safe("getThermalStatus", default = ThermalStatus.NONE) {
-      val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
-        ?: return@safe ThermalStatus.NONE
+      val pm = powerManager ?: return@safe ThermalStatus.NONE
       pm.currentThermalStatus.fromPowerManagerStatus()
     }
   }
@@ -768,6 +817,10 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
     unregisterThermalListener()
     disableOrientationListener()
     maybeStopForegroundService()
+    if (holdsActiveSlot) {
+      holdsActiveSlot = false
+      activePublisherCount = (activePublisherCount - 1).coerceAtLeast(0)
+    }
     onConnectionEvent = null
     onBitrateChange = null
     onRecordStatusChange = null
@@ -779,7 +832,7 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
   private fun acquireWakeLock() {
     if (wakeLock?.isHeld == true) return
     try {
-      val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return
+      val pm = powerManager ?: return
       val lock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG).apply {
         setReferenceCounted(false)
       }
@@ -880,7 +933,7 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
     if (thermalListenerRegistered) return
     val listener = thermalListener ?: return
-    val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return
+    val pm = powerManager ?: return
     safe("registerThermalListener") {
       pm.addThermalStatusListener(ContextCompat.getMainExecutor(context), listener)
       lastThermalStatusInt = pm.currentThermalStatus
@@ -892,7 +945,7 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
     if (!thermalListenerRegistered) return
     val listener = thermalListener ?: return
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
-    val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return
+    val pm = powerManager ?: return
     safe("unregisterThermalListener") {
       pm.removeThermalStatusListener(listener)
     }
