@@ -1,0 +1,69 @@
+{
+  "name": "react-native-nitro-rtmp-publisher",
+  "version": "0.1.0",
+  "description": "High-performance RTMP camera publisher for React Native, built on Nitro Modules and RootEncoder.",
+  "main": "lib/index",
+  "module": "lib/index",
+  "types": "lib/index.d.ts",
+  "react-native": "src/index",
+  "source": "src/index",
+  "files": [
+    "src",
+    "react-native.config.js",
+    "lib",
+    "nitrogen",
+    "android/build.gradle",
+    "android/gradle.properties",
+    "android/fix-prefab.gradle",
+    "android/CMakeLists.txt",
+    "android/src",
+    "nitro.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "typescript": "tsc",
+    "specs": "tsc --noEmit false && nitrogen --logLevel=\"debug\"",
+    "prepublishOnly": "rm -rf lib && tsc && nitrogen"
+  },
+  "keywords": [
+    "react-native",
+    "react-native-nitro-modules",
+    "nitro-module",
+    "rtmp",
+    "rtmp-publisher",
+    "rootencoder",
+    "live-streaming",
+    "camera",
+    "broadcasting",
+    "video",
+    "android"
+  ],
+  "license": "MIT",
+  "author": "fluxlabs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Fluxlabs-tech/react-native-nitro-rtmp-publisher.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Fluxlabs-tech/react-native-nitro-rtmp-publisher/issues"
+  },
+  "homepage": "https://github.com/Fluxlabs-tech/react-native-nitro-rtmp-publisher#readme",
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.0",
+    "nitrogen": "*",
+    "react": "19.2.0",
+    "react-native": "0.83.0",
+    "react-native-nitro-modules": "*",
+    "typescript": "^5.8.3"
+  },
+  "peerDependencies": {
+    "react": "*",
+    "react-native": "*",
+    "react-native-nitro-modules": "*"
+  }
+}

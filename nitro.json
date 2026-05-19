@@ -1,0 +1,20 @@
+{
+  "$schema": "https://nitro.margelo.com/nitro.schema.json",
+  "cxxNamespace": ["rtmppublisher"],
+  "ios": {
+    "iosModuleName": "NitroRtmpPublisher"
+  },
+  "android": {
+    "androidNamespace": ["rtmppublisher"],
+    "androidCxxLibName": "NitroRtmpPublisher"
+  },
+  "autolinking": {
+    "RtmpPublisherView": {
+      "android": {
+        "language": "kotlin",
+        "implementationClassName": "HybridRtmpPublisherView"
+      }
+    }
+  },
+  "ignorePaths": ["**/node_modules"]
+}

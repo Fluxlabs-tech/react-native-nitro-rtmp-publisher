@@ -1,0 +1,21 @@
+{
+  "uiViewClassName": "RtmpPublisherView",
+  "supportsRawText": false,
+  "bubblingEventTypes": {},
+  "directEventTypes": {},
+  "validAttributes": {
+    "forceHardwareCodec": true,
+    "videoCodec": true,
+    "audioCodec": true,
+    "aspectRatioMode": true,
+    "mirrorPreview": true,
+    "mirrorStream": true,
+    "thermalWarningThreshold": true,
+    "audioSource": true,
+    "autoRotateStream": true,
+    "streamMode": true,
+    "foregroundServiceTitle": true,
+    "foregroundServiceText": true,
+    "hybridRef": true
+  }
+}
