@@ -60,6 +60,16 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
   private var pendingStream: String? = null
   private var surfaceReady = false
 
+  // Encoder prepare-state caches. RootEncoder's BaseEncoder.stop() releases the
+  // MediaCodec and flips `prepared` to false, so the next startStream would
+  // throw IllegalStateException("not prepared yet"). We cache the last-known
+  // prepareVideo / prepareAudio args and silently re-prepare in startStream so
+  // JS can stop+start repeatedly without having to call prepare* again.
+  private var lastVideoCfg: VideoCfg? = null
+  private var lastAudioCfg: AudioCfg? = null
+  @Volatile private var videoPrepared = false
+  @Volatile private var audioPrepared = false
+
   // Auto-reconnect config + state.
   private var autoReconnectMaxAttempts = 0
   private var autoReconnectBackoffMs = 0L
@@ -199,7 +209,12 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
         // would otherwise try to retry against a dead surface.
         shouldBeStreaming = false
         try {
-          if (camera.isStreaming) camera.stopStream()
+          if (camera.isStreaming) {
+            camera.stopStream()
+            // Codecs released — re-prepare on next start.
+            videoPrepared = false
+            audioPrepared = false
+          }
           if (camera.isOnPreview) camera.stopPreview()
         } catch (e: Exception) {
           Log.w(TAG, "Error during surfaceDestroyed cleanup", e)
@@ -318,9 +333,15 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
   override var foregroundServiceText: String = ""
 
   private fun applyCodecType() {
-    val type = if (forceHardwareCodec) CodecUtil.CodecType.HARDWARE
-               else CodecUtil.CodecType.FIRST_COMPATIBLE_FOUND
-    camera.forceCodecType(type, type)
+    val videoType = if (forceHardwareCodec) CodecUtil.CodecType.HARDWARE
+                    else CodecUtil.CodecType.FIRST_COMPATIBLE_FOUND
+    // AAC encoder is software on most Android devices (`c2.android.aac.encoder`
+    // / `OMX.google.aac.encoder`). Forcing HARDWARE there makes Pedro's
+    // chooseEncoder return null, prepareAudioEncoder returns false, and the
+    // entire audio track is silently dropped from the RTMP stream. Always let
+    // it pick whichever AAC encoder the device actually ships.
+    val audioType = CodecUtil.CodecType.FIRST_COMPATIBLE_FOUND
+    camera.forceCodecType(videoType, audioType)
   }
 
   private fun applyMirrorFlags() {
@@ -357,9 +378,19 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
       return false
     }
     applyCodecType()
-    return safe("prepareVideo", default = false) {
+    // Lock in the timestamp mode before the encoder is configured. The prop
+    // setter no-ops when streamMode == default (Kotlin initializes the backing
+    // field without calling the setter), so we cannot rely on it having run.
+    // Without this, CLOCK-mode servers reject the first chunk → broken pipe.
+    applyStreamMode()
+    val ok = safe("prepareVideo", default = false) {
       camera.prepareVideo(w, h, f, b, i, r)
     }
+    if (ok) {
+      lastVideoCfg = VideoCfg(w, h, f, b, i, r)
+      videoPrepared = true
+    }
+    return ok
   }
 
   override fun prepareAudio(bitrate: Double, sampleRate: Double, isStereo: Boolean): Boolean {
@@ -379,8 +410,50 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
     // For non-mic sources, disabling AGC/AEC/NS preserves quality (camcorder
     // applies its own gentler tuning anyway; voice_recognition is raw).
     val keepDsp = audioSource == AudioSource.MIC || audioSource == AudioSource.VOICECOMMUNICATION
-    return safe("prepareAudio", default = false) {
+    val ok = safe("prepareAudio", default = false) {
       camera.prepareAudio(source, b, s, isStereo, keepDsp, keepDsp)
+    }
+    if (ok) {
+      lastAudioCfg = AudioCfg(b, s, isStereo)
+      audioPrepared = true
+    } else {
+      // Pedro returns false for two reasons: AudioRecord couldn't open the
+      // source (almost always RECORD_AUDIO not granted yet, or the source isn't
+      // supported on this device), or the AAC encoder couldn't be selected.
+      // Either way the audio track is silently absent from the stream — log
+      // loudly so callers can see why and fix the cause.
+      Log.w(TAG, "prepareAudio FAILED — audio will be missing from the stream. " +
+        "Check RECORD_AUDIO permission, audioSource='$audioSource', " +
+        "sampleRate=$s, isStereo=$isStereo, and 'MicrophoneManager: create microphone error' / " +
+        "'AudioEncoder: Valid encoder not found' in logcat.")
+    }
+    return ok
+  }
+
+  // Re-prepare the encoders that Pedro released in stopStream. Skips work if
+  // they're already prepared (first ever start, or JS explicitly re-prepared).
+  private fun rePrepareEncodersIfNeeded() {
+    if (!videoPrepared) {
+      val v = lastVideoCfg
+      if (v != null) {
+        applyCodecType()
+        applyStreamMode()
+        val ok = safe("rePrepareVideo", default = false) {
+          camera.prepareVideo(v.w, v.h, v.fps, v.bitrate, v.iFrame, v.rotation)
+        }
+        if (ok) videoPrepared = true
+      }
+    }
+    if (!audioPrepared) {
+      val a = lastAudioCfg
+      if (a != null) {
+        val source = audioSource.toMediaRecorderSource()
+        val keepDsp = audioSource == AudioSource.MIC || audioSource == AudioSource.VOICECOMMUNICATION
+        val ok = safe("rePrepareAudio", default = false) {
+          camera.prepareAudio(source, a.bitrate, a.sampleRate, a.isStereo, keepDsp, keepDsp)
+        }
+        if (ok) audioPrepared = true
+      }
     }
   }
 
@@ -450,6 +523,10 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
       acquireWakeLock()
       setKeepScreenOn(true)
       shouldBeStreaming = true
+      // Pedro's BaseEncoder.stop() releases the MediaCodec and sets prepared=false,
+      // so the next BaseEncoder.start() throws "not prepared yet". Re-prepare from
+      // cached config before letting Pedro start the encoders.
+      rePrepareEncodersIfNeeded()
       // Refresh retry budget for this session — `setReTries` is a counter that
       // ticks down, so we re-set it on every fresh `startStream`.
       if (autoReconnectMaxAttempts > 0) {
@@ -469,7 +546,13 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
     pendingStream = null
     shouldBeStreaming = false
     safe("stopStream") {
-      if (camera.isStreaming) camera.stopStream()
+      if (camera.isStreaming) {
+        camera.stopStream()
+        // Pedro just released the codecs (codec.release() + prepared=false).
+        // Mark them so the next startStream re-prepares from the cached config.
+        videoPrepared = false
+        audioPrepared = false
+      }
     }
     releaseWakeLock()
     setKeepScreenOn(false)
@@ -865,11 +948,18 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
   private fun applyStreamMode() {
     val client = safe("applyStreamMode/client", default = null) { camera.streamClient }
       ?: return
+    // Note on send delay: Pedro's `forceIncrementalTs(true)` is literally just
+    // `setDelay(300L)` (and `forceIncrementalTs(false)` is a no-op). We use
+    // `setDelay(...)` directly so it's obvious what's actually happening. The
+    // delay buffers the first ~Nms of frames before sending, which lets the
+    // sender interleave the video config (SPS/PPS), the first IDR keyframe,
+    // and audio config in the right order — fragile ingests (YouTube, some
+    // Nginx-RTMP setups) reject the publish if audio arrives before SPS/IDR.
     when (streamMode) {
       StreamMode.LOWLATENCY -> safe("streamMode/lowLatency") {
         client.resizeCache(60)               // ~1s at 30fps video frames
         client.setWriteChunkSize(4096)       // small chunks
-        client.forceIncrementalTs(false)     // use source timestamps for tightest sync
+        client.setDelay(0L)                  // no buffering — accepts the fragile-ingest risk
         client.setBitrateExponentialFactor(2f)
         // Use BUFFER timestamps (encoder pts) — lowest added latency.
         safe("setTimestampMode/lowLatency") {
@@ -879,7 +969,7 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
       StreamMode.BALANCED -> safe("streamMode/balanced") {
         client.resizeCache(120)
         client.setWriteChunkSize(4096)
-        client.forceIncrementalTs(false)
+        client.setDelay(150L)                // small buffer for interleave; trades 150ms latency for ingest compat
         client.setBitrateExponentialFactor(1f)
         safe("setTimestampMode/balanced") {
           camera.setTimestampMode(TimestampMode.CLOCK, TimestampMode.CLOCK)
@@ -888,8 +978,7 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
       StreamMode.QUALITY -> safe("streamMode/quality") {
         client.resizeCache(240)              // ~4s of frames buffered
         client.setWriteChunkSize(8192)
-        // Monotonic timestamps survive >30min streams without A/V drift.
-        client.forceIncrementalTs(true)
+        client.setDelay(300L)                // large buffer — safe even on slow/fragile ingests
         client.setBitrateExponentialFactor(0.5f)
         // CLOCK timestamps are derived from monotonic system clock — best
         // for long sessions where MediaCodec PTS may drift.
@@ -989,6 +1078,21 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
   }
 
   private data class PreviewConfig(val facing: CameraFacing, val width: Int, val height: Int)
+
+  private data class VideoCfg(
+    val w: Int,
+    val h: Int,
+    val fps: Int,
+    val bitrate: Int,
+    val iFrame: Int,
+    val rotation: Int,
+  )
+
+  private data class AudioCfg(
+    val bitrate: Int,
+    val sampleRate: Int,
+    val isStereo: Boolean,
+  )
 }
 
 // ────────────────────────────────────────────────────────────────────────────

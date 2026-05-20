@@ -2,6 +2,7 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
+  Modal,
   PermissionsAndroid,
   Platform,
   Pressable,
@@ -46,6 +47,8 @@ export default function App() {
   const [previewing, setPreviewing] = useState(false);
   const [thermal, setThermal] = useState<ThermalStatus>('none');
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [logsOpen, setLogsOpen] = useState(false);
+  const [permissionsReady, setPermissionsReady] = useState(Platform.OS !== 'android');
   const logIdRef = useRef(0);
   const publisherRef = useRef<RtmpPublisherViewMethods | null>(null);
   const initOnceRef = useRef(false);
@@ -72,9 +75,14 @@ export default function App() {
           PermissionsAndroid.RESULTS.GRANTED;
       if (!ok) {
         Alert.alert('Permissions denied', 'CAMERA and RECORD_AUDIO are required');
-      } else {
-        appendLog('permissions granted');
+        return;
       }
+      appendLog('permissions granted');
+      // Only mount the publisher after RECORD_AUDIO is granted. Otherwise
+      // hybridRef → prepareAudio runs without the permission, AudioRecord
+      // init fails, and Pedro's audioInitialized stays false → audio is
+      // silently dropped from the whole session.
+      setPermissionsReady(true);
     })();
   }, []);
 
@@ -179,22 +187,26 @@ export default function App() {
     <View style={styles.container}>
       <StatusBar style="light" />
       <View style={styles.previewBox}>
-        <RtmpPublisherView
-          style={styles.preview}
-          forceHardwareCodec={true}
-          videoCodec="h264"
-          audioCodec="aac"
-          aspectRatioMode="adjust"
-          mirrorPreview={false}
-          mirrorStream={false}
-          thermalWarningThreshold="light"
-          audioSource="camcorder"
-          autoRotateStream={true}
-          streamMode="balanced"
-          foregroundServiceTitle="Live stream"
-          foregroundServiceText="Broadcasting"
-          hybridRef={hybridRef}
-        />
+        {permissionsReady ? (
+          <RtmpPublisherView
+            style={styles.preview}
+            forceHardwareCodec={true}
+            videoCodec="h264"
+            audioCodec="aac"
+            aspectRatioMode="adjust"
+            mirrorPreview={false}
+            mirrorStream={false}
+            thermalWarningThreshold="light"
+            audioSource="mic"
+            autoRotateStream={true}
+            streamMode="quality"
+            foregroundServiceTitle="Live stream"
+            foregroundServiceText="Broadcasting"
+            hybridRef={hybridRef}
+          />
+        ) : (
+          <View style={styles.preview} />
+        )}
         <View style={styles.previewOverlay}>
           <Text style={[styles.badge, streaming && styles.badgeOn]}>
             {streaming ? 'LIVE' : previewing ? 'PREVIEW' : 'IDLE'}
@@ -241,24 +253,65 @@ export default function App() {
           <Pressable onPress={onSwitch} style={[styles.btn, styles.btnAlt]}>
             <Text style={styles.btnText}>Flip</Text>
           </Pressable>
+          <Pressable
+            onPress={() => setLogsOpen(true)}
+            style={[styles.btn, styles.btnAlt]}
+          >
+            <Text style={styles.btnText}>Events ({logs.length})</Text>
+          </Pressable>
         </View>
-
-        <Text style={styles.label}>Events</Text>
-        <ScrollView style={styles.logs}>
-          {logs.map((l) => (
-            <Text key={l.id} style={styles.logLine}>
-              [{l.ts}] {l.line}
-            </Text>
-          ))}
-        </ScrollView>
       </View>
+
+      <Modal
+        visible={logsOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setLogsOpen(false)}
+      >
+        <Pressable
+          style={styles.modalBackdrop}
+          onPress={() => setLogsOpen(false)}
+        >
+          <View
+            style={styles.modalSheet}
+            onStartShouldSetResponder={() => true}
+          >
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Events</Text>
+              <Pressable
+                onPress={() => setLogs([])}
+                style={styles.modalHeaderBtn}
+              >
+                <Text style={styles.modalHeaderBtnText}>Clear</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => setLogsOpen(false)}
+                style={styles.modalHeaderBtn}
+              >
+                <Text style={styles.modalHeaderBtnText}>Close</Text>
+              </Pressable>
+            </View>
+            <ScrollView style={styles.modalLogs}>
+              {logs.length === 0 ? (
+                <Text style={styles.logLineMuted}>(no events yet)</Text>
+              ) : (
+                logs.map((l) => (
+                  <Text key={l.id} style={styles.logLine}>
+                    [{l.ts}] {l.line}
+                  </Text>
+                ))
+              )}
+            </ScrollView>
+          </View>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000' },
-  previewBox: { width: '100%', aspectRatio: 9 / 16, backgroundColor: '#111' },
+  previewBox: { width: '100%', flex: 1, backgroundColor: '#111' },
   preview: { ...StyleSheet.absoluteFillObject },
   previewOverlay: {
     position: 'absolute',
@@ -297,7 +350,7 @@ const styles = StyleSheet.create({
     fontSize: 11,
     letterSpacing: 0.5,
   },
-  controls: { flex: 1, padding: 16 },
+  controls: { padding: 16 },
   label: { color: '#aaa', marginTop: 8, marginBottom: 4 },
   input: {
     backgroundColor: '#222',
@@ -326,4 +379,53 @@ const styles = StyleSheet.create({
     padding: 8,
   },
   logLine: { color: '#9ca3af', fontFamily: 'monospace', fontSize: 11 },
+  logLineMuted: {
+    color: '#6b7280',
+    fontFamily: 'monospace',
+    fontSize: 11,
+    fontStyle: 'italic',
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    justifyContent: 'flex-end',
+  },
+  modalSheet: {
+    height: '70%',
+    backgroundColor: 'rgba(20,20,20,0.96)',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 24,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  modalTitle: {
+    flex: 1,
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  modalHeaderBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    marginLeft: 8,
+    borderRadius: 6,
+    backgroundColor: '#374151',
+  },
+  modalHeaderBtnText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  modalLogs: {
+    flex: 1,
+    backgroundColor: '#0f0f0f',
+    borderRadius: 8,
+    padding: 8,
+  },
 });
