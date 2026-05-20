@@ -1,6 +1,6 @@
 {
   "name": "react-native-nitro-rtmp-publisher",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "High-performance RTMP camera publisher for React Native, built on Nitro Modules and RootEncoder.",
   "main": "lib/index",
   "module": "lib/index",
@@ -25,7 +25,7 @@
     "typecheck": "tsc --noEmit",
     "typescript": "tsc",
     "specs": "tsc --noEmit false && nitrogen --logLevel=\"debug\"",
-    "prepublishOnly": "rm -rf lib && tsc && nitrogen"
+    "prepublishOnly": "rm -rf lib tsconfig.tsbuildinfo && tsc && nitrogen"
   },
   "keywords": [
     "react-native",
