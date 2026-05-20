@@ -308,7 +308,10 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
         return
       }
       field = value
-      // No-op here — applied at the next `startStream`.
+      // Apply NOW (before prepareVideo runs) so the timestamp mode is bound
+      // into the encoder config rather than racing it. Re-applied at
+      // startStream too for safety.
+      applyStreamMode()
     }
 
   override var foregroundServiceTitle: String = ""

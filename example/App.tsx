@@ -190,7 +190,7 @@ export default function App() {
           thermalWarningThreshold="light"
           audioSource="camcorder"
           autoRotateStream={true}
-          streamMode="quality"
+          streamMode="balanced"
           foregroundServiceTitle="Live stream"
           foregroundServiceText="Broadcasting"
           hybridRef={hybridRef}
