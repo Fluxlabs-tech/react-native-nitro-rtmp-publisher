@@ -1196,26 +1196,45 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
       //                                              for offline mixing)
       //   - unprocessed         ⟷ .measurement     (same — iOS has no separate
       //                                              "unprocessed" mode)
-      // `noiseSuppression=true` overrides the audioSource mapping and forces
-      // `.voiceChat`, which is the only iOS mode that engages Apple's built-in
-      // Voice Processing IO unit (NS + AEC + AGC). The user explicitly opts
-      // in to compressed but cleaner audio.
+      // `noiseSuppression` is the ONLY knob that engages `.voiceChat` (Apple's
+      // Voice Processing IO unit: aggressive NS + AEC + AGC + VAD). The
+      // `audioSource` mapping intentionally does NOT push into `.voiceChat`
+      // for `"mic"` — Apple's voice processing is far more aggressive than
+      // Android's MIC-source DSP, and clamping a streamer's own voice down
+      // when they didn't ask for it is a surprise. Users who actually want
+      // that compressed phone-call sound set `noiseSuppression={true}` or
+      // pick `audioSource="voiceCommunication"` (which is intrinsically VoIP).
       let mode: AVAudioSession.Mode
       if noiseSuppression {
         mode = .voiceChat
       } else {
         switch audioSource {
-        case .mic, .voicecommunication: mode = .voiceChat
-        case .camcorder:                mode = .videoRecording
+        case .mic:
+          // Natural mic input, no voice processing. Closest to "raw mic" on
+          // iOS without going all the way to .measurement (which kills the
+          // gentle background DSP that makes voice intelligible).
+          mode = .default
+        case .voicecommunication:
+          // User explicitly asked for VoIP — voiceChat is correct.
+          mode = .voiceChat
+        case .camcorder:
+          mode = .videoRecording
         case .voicerecognition,
-             .unprocessed:              mode = .measurement
+             .unprocessed:
+          mode = .measurement
         }
       }
 
       // `.mixWithOthers` was forcing iOS to duck/level our input so other apps
       // could share the audio session — that boosted background noise relative
-      // to voice. Drop it for cleaner capture. Re-add only if you need to mix.
-      var options: AVAudioSession.CategoryOptions = [.defaultToSpeaker]
+      // to voice. Drop it for cleaner capture.
+      //
+      // `.defaultToSpeaker` (output through the loudspeaker) is intentionally
+      // omitted: on `.playAndRecord` it influences automatic mic selection on
+      // iPhone 8/X-era hardware, biasing toward the top mic which is noisier.
+      // The publisher app doesn't play audio anyway, so leaving the default
+      // route alone produces a cleaner input chain.
+      var options: AVAudioSession.CategoryOptions = []
       if #available(iOS 8.0, *) {
         // `.allowBluetooth` was renamed to `.allowBluetoothHFP` in iOS 18 SDK
         // (Xcode 16+) and the old name is deprecated. Use whichever exists.
@@ -1227,16 +1246,24 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
       }
       try session.setCategory(.playAndRecord, mode: mode, options: options)
 
-      // Prefer the front-facing mic when in `camcorder` mode so the lens and
-      // mic point in the same direction (matches what a viewer expects).
-      if audioSource == .camcorder,
-         let inputs = session.availableInputs,
+      // Let iOS pick the default data source + polar pattern for the chosen
+      // mode. The system's defaults are tuned per-mode (e.g. `.videoRecording`
+      // picks the bottom mic with a cardioid pattern when the device supports
+      // it). Overriding to `front` orientation here biased capture toward the
+      // top mic which sits near the speaker grille and picks up more ambient
+      // hiss on iPhone 8/X-era hardware.
+
+      // Prefer a cardioid polar pattern on the active data source if the
+      // hardware supports it — cardioid rejects sound from behind the mic,
+      // which is exactly the noise direction when filming yourself in front
+      // of the device. Falls back silently when unavailable.
+      if let inputs = session.availableInputs,
          let mic = inputs.first(where: { $0.portType == .builtInMic }),
-         let sources = mic.dataSources {
-        let preferred = sources.first { $0.orientation == .front } ?? sources.first
-        if let preferred {
-          try? mic.setPreferredDataSource(preferred)
-        }
+         let source = mic.preferredDataSource ?? mic.dataSources?.first,
+         let patterns = source.supportedPolarPatterns,
+         patterns.contains(.cardioid) {
+        try? source.setPreferredPolarPattern(.cardioid)
+        try? mic.setPreferredDataSource(source)
       }
 
       try session.setActive(true)

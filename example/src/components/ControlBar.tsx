@@ -6,10 +6,12 @@ type Props = {
   onUrlChange: (next: string) => void;
   streaming: boolean;
   logCount: number;
+  noiseSuppression: boolean;
   onStart: () => void;
   onStop: () => void;
   onSwitch: () => void;
   onOpenLogs: () => void;
+  onToggleNoiseSuppression: () => void;
 };
 
 /**
@@ -21,10 +23,12 @@ export function ControlBar({
   onUrlChange,
   streaming,
   logCount,
+  noiseSuppression,
   onStart,
   onStop,
   onSwitch,
   onOpenLogs,
+  onToggleNoiseSuppression,
 }: Props) {
   return (
     <View style={styles.controls}>
@@ -59,6 +63,20 @@ export function ControlBar({
         </Pressable>
         <Pressable onPress={onOpenLogs} style={[styles.btn, styles.btnAlt]}>
           <Text style={styles.btnText}>Events ({logCount})</Text>
+        </Pressable>
+      </View>
+
+      {/* Secondary controls row — audio toggles. Stays visually distinct from
+          the primary Start/Stop row so the user can tell at a glance which
+          actions affect the stream vs. session config. */}
+      <View style={styles.row}>
+        <Pressable
+          onPress={onToggleNoiseSuppression}
+          style={[styles.btn, noiseSuppression ? styles.btn : styles.btnAlt]}
+        >
+          <Text style={styles.btnText}>
+            NS: {noiseSuppression ? 'ON' : 'OFF'}
+          </Text>
         </Pressable>
       </View>
     </View>

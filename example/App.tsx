@@ -24,6 +24,15 @@ export default function App() {
   // leave the back camera un-mirrored.
   const [facing, setFacing] = useState<CameraFacing>('back');
   const isFront = facing === 'front';
+  // Toggle for the noiseSuppression prop. iOS applies it live by re-running
+  // AVAudioSession.setCategory in the prop setter. Android requires
+  // resetAudioEncoder() to rebuild the AudioRecord pipeline with the new
+  // NoiseSuppressor / AcousticEchoCanceler flags — we trigger that below.
+  // Default OFF — `audioSource="camcorder"` already engages iOS's light
+  // built-in NR via `.videoRecording` mode. Only flip this on (button below)
+  // when you're streaming from a genuinely noisy environment and accept the
+  // tradeoff: AGC will compress your voice in exchange for killing background.
+  const [noiseSuppression, setNoiseSuppression] = useState(false);
 
   const { logs, append, clear } = useEventLog();
   const permissionsReady = usePermissions(append);
@@ -56,6 +65,24 @@ export default function App() {
       append(`stop err: ${errMsg(e)}`);
     }
   }, [append, publisherRef, setStreaming]);
+
+  const onToggleNoiseSuppression = useCallback(() => {
+    setNoiseSuppression((prev) => {
+      const next = !prev;
+      append(`noiseSuppression=${next}`);
+      // On Android the new NS flag only takes effect on a fresh prepareAudio,
+      // so rebuild the audio encoder once the prop has propagated. iOS already
+      // applies live in the prop's didSet, so this is harmless there.
+      setTimeout(() => {
+        try {
+          publisherRef.current?.resetAudioEncoder();
+        } catch (e: unknown) {
+          append(`resetAudioEncoder err: ${errMsg(e)}`);
+        }
+      }, 0);
+      return next;
+    });
+  }, [append, publisherRef]);
 
   const onSwitch = useCallback(() => {
     const ref = publisherRef.current;
@@ -105,14 +132,16 @@ export default function App() {
             // start dropping frames. (`'light'` would also trigger on minor
             // warm-ups, which is too noisy for production UIs.)
             thermalWarningThreshold="severe"
-            // Camcorder mic source: gentle AGC, broadband pickup — the
-            // recommended default for live video streaming on both platforms.
+            // Camcorder mic source: gentle AGC, broadband pickup, light
+            // noise reduction built into iOS's `.videoRecording` mode. The
+            // right default for live streaming — natural voice with some
+            // ambient cleanup, no AGC crushing.
             audioSource="camcorder"
             // Engage built-in noise suppression + echo cancellation + AGC.
             // Overlays on top of the camcorder source on Android, and on iOS
             // forces `AVAudioSession.Mode.voiceChat` (Apple's Voice Processing
-            // IO unit). Set to `false` if you want raw broadband audio.
-            noiseSuppression={true}
+            // IO unit). Toggled live from the "NS" button in the controls.
+            noiseSuppression={noiseSuppression}
             // Lock orientation to portrait. Flip to `true` if you want the
             // stream to auto-rotate with the device.
             autoRotateStream={false}
@@ -146,10 +175,12 @@ export default function App() {
         onUrlChange={setUrl}
         streaming={streaming}
         logCount={logs.length}
+        noiseSuppression={noiseSuppression}
         onStart={onStart}
         onStop={onStop}
         onSwitch={onSwitch}
         onOpenLogs={() => setLogsOpen(true)}
+        onToggleNoiseSuppression={onToggleNoiseSuppression}
       />
 
       <EventsModal

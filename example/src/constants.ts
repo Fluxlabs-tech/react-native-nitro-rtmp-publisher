@@ -1,3 +1,4 @@
+import { Platform } from 'react-native';
 import type { ThermalStatus } from 'react-native-nitro-rtmp-publisher';
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -13,7 +14,11 @@ export const VIDEO_BITRATE = 2_500_000;
 export const VIDEO_IFRAME_INTERVAL = 2;
 
 export const AUDIO_BITRATE = 128_000;
-export const AUDIO_SAMPLE_RATE = 44_100;
+// Platform-specific sample rate. iPhone mic hardware captures natively at
+// 48 kHz — forcing the audio chain to that rate avoids 48→44.1 resampling
+// artifacts that show up as hiss in the final stream. Android hardware
+// handles 44.1 cleanly so we keep the lower rate there.
+export const AUDIO_SAMPLE_RATE = Platform.OS === 'ios' ? 48_000 : 44_100;
 export const AUDIO_STEREO = true;
 
 // ────────────────────────────────────────────────────────────────────────────
