@@ -30,6 +30,8 @@ namespace margelo::nitro::rtmppublisher {
       prototype.registerHybridSetter("thermalWarningThreshold", &HybridRtmpPublisherViewSpec::setThermalWarningThreshold);
       prototype.registerHybridGetter("audioSource", &HybridRtmpPublisherViewSpec::getAudioSource);
       prototype.registerHybridSetter("audioSource", &HybridRtmpPublisherViewSpec::setAudioSource);
+      prototype.registerHybridGetter("noiseSuppression", &HybridRtmpPublisherViewSpec::getNoiseSuppression);
+      prototype.registerHybridSetter("noiseSuppression", &HybridRtmpPublisherViewSpec::setNoiseSuppression);
       prototype.registerHybridGetter("autoRotateStream", &HybridRtmpPublisherViewSpec::getAutoRotateStream);
       prototype.registerHybridSetter("autoRotateStream", &HybridRtmpPublisherViewSpec::setAutoRotateStream);
       prototype.registerHybridGetter("streamMode", &HybridRtmpPublisherViewSpec::getStreamMode);

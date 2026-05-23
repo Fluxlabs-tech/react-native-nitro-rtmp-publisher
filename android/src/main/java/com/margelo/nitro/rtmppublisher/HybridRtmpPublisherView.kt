@@ -308,6 +308,19 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
       // the user should resetAudioEncoder() to pick this up.
     }
 
+  override var noiseSuppression: Boolean = false
+    set(value) {
+      if (field == value) return
+      if (camera.isStreaming) {
+        Log.w(TAG, "noiseSuppression change ignored while streaming")
+        return
+      }
+      field = value
+      // Applied on the next prepareAudio call. Existing AudioRecord session
+      // won't have the new DSP state until the encoder is re-prepared, so
+      // recommend the caller invoke resetAudioEncoder() afterwards.
+    }
+
   override var autoRotateStream: Boolean = true
     set(value) {
       if (field == value) return
@@ -407,9 +420,16 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
     // applyCodecType() — already done in `prepareVideo` (called first). Calling
     // again is a no-op duplicate.
     val source = audioSource.toMediaRecorderSource()
-    // For non-mic sources, disabling AGC/AEC/NS preserves quality (camcorder
-    // applies its own gentler tuning anyway; voice_recognition is raw).
-    val keepDsp = audioSource == AudioSource.MIC || audioSource == AudioSource.VOICECOMMUNICATION
+    // DSP precedence:
+    //  1. Explicit `noiseSuppression={true}` — always on (echoCanceler +
+    //     noiseSuppressor + AGC via Android's AudioEffect APIs).
+    //  2. Otherwise, MIC / VOICE_COMMUNICATION sources implicitly engage DSP
+    //     because those sources are tuned for phone-call-style processing.
+    //  3. CAMCORDER / VOICE_RECOGNITION / UNPROCESSED keep DSP off so the
+    //     broadband signal survives.
+    val keepDsp = noiseSuppression ||
+      audioSource == AudioSource.MIC ||
+      audioSource == AudioSource.VOICECOMMUNICATION
     val ok = safe("prepareAudio", default = false) {
       camera.prepareAudio(source, b, s, isStereo, keepDsp, keepDsp)
     }
@@ -448,7 +468,9 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
       val a = lastAudioCfg
       if (a != null) {
         val source = audioSource.toMediaRecorderSource()
-        val keepDsp = audioSource == AudioSource.MIC || audioSource == AudioSource.VOICECOMMUNICATION
+        val keepDsp = noiseSuppression ||
+          audioSource == AudioSource.MIC ||
+          audioSource == AudioSource.VOICECOMMUNICATION
         val ok = safe("rePrepareAudio", default = false) {
           camera.prepareAudio(source, a.bitrate, a.sampleRate, a.isStereo, keepDsp, keepDsp)
         }
@@ -695,6 +717,10 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
     safe("switchCamera") {
       camera.switchCamera()
       refreshCachedFacing()
+      // RootEncoder's OpenGlView resets its preview/stream flip flags when the
+      // camera is swapped — re-apply ours so a `<View mirrorPreview mirrorStream/>`
+      // setup keeps working after tapping Flip.
+      applyMirrorFlags()
     }
   }
 
@@ -711,6 +737,7 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
     safe("switchCameraById") {
       camera.switchCamera(id)
       refreshCachedFacing()
+      applyMirrorFlags()
     }
   }
 

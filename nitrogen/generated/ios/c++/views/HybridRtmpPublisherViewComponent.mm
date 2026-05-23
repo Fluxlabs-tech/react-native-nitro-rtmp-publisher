@@ -119,6 +119,11 @@ using namespace margelo::nitro::rtmppublisher::views;
     swiftPart.setAudioSource(static_cast<int>(newViewProps.audioSource.value));
     newViewProps.audioSource.isDirty = false;
   }
+  // noiseSuppression: boolean
+  if (newViewProps.noiseSuppression.isDirty) {
+    swiftPart.setNoiseSuppression(newViewProps.noiseSuppression.value);
+    newViewProps.noiseSuppression.isDirty = false;
+  }
   // autoRotateStream: boolean
   if (newViewProps.autoRotateStream.isDirty) {
     swiftPart.setAutoRotateStream(newViewProps.autoRotateStream.value);

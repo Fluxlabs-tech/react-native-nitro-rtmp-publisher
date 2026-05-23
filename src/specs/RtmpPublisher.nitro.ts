@@ -155,6 +155,26 @@ export interface RtmpPublisherViewProps extends HybridViewProps {
   audioSource: AudioSource
 
   /**
+   * Enable on-device noise suppression + echo cancellation + AGC for the
+   * audio input. Useful for talk streams in noisy environments (cafes, busy
+   * streets, public transit) — at the cost of broadband fidelity (music,
+   * applause, ambient sound will be squashed).
+   *
+   * - **Android**: applies `NoiseSuppressor` + `AcousticEchoCanceler` to the
+   *   AudioRecord session via RootEncoder's `prepareAudio(..., echoCanceler,
+   *   noiseSuppressor)` flags. Overlays on top of whatever `audioSource`
+   *   you've picked.
+   * - **iOS**: forces `AVAudioSession.Mode.voiceChat`, which enables Apple's
+   *   built-in Voice Processing IO unit (NS + AEC + AGC). Takes precedence
+   *   over the `audioSource` mode mapping when `true`.
+   *
+   * Leave `false` for vlogs / music / wide-mic streams where you want raw
+   * ambience.
+   * @default false
+   */
+  noiseSuppression: boolean
+
+  /**
    * Automatically call `setStreamRotation()` on device-orientation changes
    * via `OrientationEventListener`. Prevents streams going landscape after
    * the user rotates. Disable if you want manual control.

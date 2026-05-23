@@ -69,6 +69,10 @@ void JHybridRtmpPublisherViewStateUpdater::updateViewProps(jni::alias_ref<jni::J
     hybridView->setAudioSource(props->audioSource.value);
     props->audioSource.isDirty = false;
   }
+  if (props->noiseSuppression.isDirty) {
+    hybridView->setNoiseSuppression(props->noiseSuppression.value);
+    props->noiseSuppression.isDirty = false;
+  }
   if (props->autoRotateStream.isDirty) {
     hybridView->setAutoRotateStream(props->autoRotateStream.value);
     props->autoRotateStream.isDirty = false;

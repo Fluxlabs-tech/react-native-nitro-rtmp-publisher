@@ -88,6 +88,8 @@ namespace margelo::nitro::rtmppublisher {
       virtual void setThermalWarningThreshold(ThermalStatus thermalWarningThreshold) = 0;
       virtual AudioSource getAudioSource() = 0;
       virtual void setAudioSource(AudioSource audioSource) = 0;
+      virtual bool getNoiseSuppression() = 0;
+      virtual void setNoiseSuppression(bool noiseSuppression) = 0;
       virtual bool getAutoRotateStream() = 0;
       virtual void setAutoRotateStream(bool autoRotateStream) = 0;
       virtual StreamMode getStreamMode() = 0;

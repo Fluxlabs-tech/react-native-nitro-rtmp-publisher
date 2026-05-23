@@ -183,6 +183,16 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   // into a category/mode pair when (re)preparing audio.
   var audioSource: AudioSource = .camcorder
 
+  /// When true, forces `AVAudioSession.Mode.voiceChat` (built-in NS + AEC + AGC),
+  /// overriding the `audioSource` mapping. Applied on the next `prepareAudio`
+  /// call or when the prop changes mid-session.
+  var noiseSuppression: Bool = false {
+    didSet {
+      guard noiseSuppression != oldValue else { return }
+      configureAudioSession()
+    }
+  }
+
   var autoRotateStream: Bool = true {
     didSet {
       guard autoRotateStream != oldValue else { return }
@@ -1186,12 +1196,20 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
       //                                              for offline mixing)
       //   - unprocessed         ⟷ .measurement     (same — iOS has no separate
       //                                              "unprocessed" mode)
+      // `noiseSuppression=true` overrides the audioSource mapping and forces
+      // `.voiceChat`, which is the only iOS mode that engages Apple's built-in
+      // Voice Processing IO unit (NS + AEC + AGC). The user explicitly opts
+      // in to compressed but cleaner audio.
       let mode: AVAudioSession.Mode
-      switch audioSource {
-      case .mic, .voicecommunication: mode = .voiceChat
-      case .camcorder:                mode = .videoRecording
-      case .voicerecognition,
-           .unprocessed:              mode = .measurement
+      if noiseSuppression {
+        mode = .voiceChat
+      } else {
+        switch audioSource {
+        case .mic, .voicecommunication: mode = .voiceChat
+        case .camcorder:                mode = .videoRecording
+        case .voicerecognition,
+             .unprocessed:              mode = .measurement
+        }
       }
 
       // `.mixWithOthers` was forcing iOS to duck/level our input so other apps

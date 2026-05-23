@@ -66,6 +66,8 @@ namespace margelo::nitro::rtmppublisher {
     void setThermalWarningThreshold(ThermalStatus thermalWarningThreshold) override;
     AudioSource getAudioSource() override;
     void setAudioSource(AudioSource audioSource) override;
+    bool getNoiseSuppression() override;
+    void setNoiseSuppression(bool noiseSuppression) override;
     bool getAutoRotateStream() override;
     void setAutoRotateStream(bool autoRotateStream) override;
     StreamMode getStreamMode() override;

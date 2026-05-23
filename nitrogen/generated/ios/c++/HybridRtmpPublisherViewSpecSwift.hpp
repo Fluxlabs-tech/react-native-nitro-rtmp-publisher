@@ -143,6 +143,12 @@ namespace margelo::nitro::rtmppublisher {
     inline void setAudioSource(AudioSource audioSource) noexcept override {
       _swiftPart.setAudioSource(static_cast<int>(audioSource));
     }
+    inline bool getNoiseSuppression() noexcept override {
+      return _swiftPart.getNoiseSuppression();
+    }
+    inline void setNoiseSuppression(bool noiseSuppression) noexcept override {
+      _swiftPart.setNoiseSuppression(std::forward<decltype(noiseSuppression)>(noiseSuppression));
+    }
     inline bool getAutoRotateStream() noexcept override {
       return _swiftPart.getAutoRotateStream();
     }

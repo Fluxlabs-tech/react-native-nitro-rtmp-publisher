@@ -56,6 +56,7 @@ namespace margelo::nitro::rtmppublisher::views {
     CachedProp<bool> mirrorStream;
     CachedProp<ThermalStatus> thermalWarningThreshold;
     CachedProp<AudioSource> audioSource;
+    CachedProp<bool> noiseSuppression;
     CachedProp<bool> autoRotateStream;
     CachedProp<StreamMode> streamMode;
     CachedProp<std::string> foregroundServiceTitle;

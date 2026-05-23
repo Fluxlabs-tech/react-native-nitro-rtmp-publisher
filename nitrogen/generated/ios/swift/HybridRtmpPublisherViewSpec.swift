@@ -18,6 +18,7 @@ public protocol HybridRtmpPublisherViewSpec_protocol: HybridObject, HybridView {
   var mirrorStream: Bool { get set }
   var thermalWarningThreshold: ThermalStatus { get set }
   var audioSource: AudioSource { get set }
+  var noiseSuppression: Bool { get set }
   var autoRotateStream: Bool { get set }
   var streamMode: StreamMode { get set }
   var foregroundServiceTitle: String { get set }

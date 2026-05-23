@@ -209,6 +209,17 @@ open class HybridRtmpPublisherViewSpec_cxx {
     }
   }
   
+  public final var noiseSuppression: Bool {
+    @inline(__always)
+    get {
+      return self.__implementation.noiseSuppression
+    }
+    @inline(__always)
+    set {
+      self.__implementation.noiseSuppression = newValue
+    }
+  }
+  
   public final var autoRotateStream: Bool {
     @inline(__always)
     get {

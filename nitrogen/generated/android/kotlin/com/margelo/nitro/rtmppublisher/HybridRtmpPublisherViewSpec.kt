@@ -78,6 +78,12 @@ abstract class HybridRtmpPublisherViewSpec: HybridView() {
   @get:Keep
   @set:DoNotStrip
   @set:Keep
+  abstract var noiseSuppression: Boolean
+  
+  @get:DoNotStrip
+  @get:Keep
+  @set:DoNotStrip
+  @set:Keep
   abstract var autoRotateStream: Boolean
   
   @get:DoNotStrip

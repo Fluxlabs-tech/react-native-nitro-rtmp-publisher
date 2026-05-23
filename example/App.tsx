@@ -108,6 +108,11 @@ export default function App() {
             // Camcorder mic source: gentle AGC, broadband pickup — the
             // recommended default for live video streaming on both platforms.
             audioSource="camcorder"
+            // Engage built-in noise suppression + echo cancellation + AGC.
+            // Overlays on top of the camcorder source on Android, and on iOS
+            // forces `AVAudioSession.Mode.voiceChat` (Apple's Voice Processing
+            // IO unit). Set to `false` if you want raw broadband audio.
+            noiseSuppression={true}
             // Lock orientation to portrait. Flip to `true` if you want the
             // stream to auto-rotate with the device.
             autoRotateStream={false}

@@ -155,6 +155,15 @@ namespace margelo::nitro::rtmppublisher {
     static const auto method = _javaPart->javaClassStatic()->getMethod<void(jni::alias_ref<JAudioSource> /* audioSource */)>("setAudioSource");
     method(_javaPart, JAudioSource::fromCpp(audioSource));
   }
+  bool JHybridRtmpPublisherViewSpec::getNoiseSuppression() {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<jboolean()>("getNoiseSuppression");
+    auto __result = method(_javaPart);
+    return static_cast<bool>(__result);
+  }
+  void JHybridRtmpPublisherViewSpec::setNoiseSuppression(bool noiseSuppression) {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<void(jboolean /* noiseSuppression */)>("setNoiseSuppression");
+    method(_javaPart, noiseSuppression);
+  }
   bool JHybridRtmpPublisherViewSpec::getAutoRotateStream() {
     static const auto method = _javaPart->javaClassStatic()->getMethod<jboolean()>("getAutoRotateStream");
     auto __result = method(_javaPart);

@@ -106,6 +106,16 @@ namespace margelo::nitro::rtmppublisher::views {
         throw std::runtime_error(std::string("RtmpPublisherView.audioSource: ") + exc.what());
       }
     }()),
+    noiseSuppression([&]() -> CachedProp<bool> {
+      try {
+        const react::RawValue* rawValue = rawProps.at("noiseSuppression", nullptr, nullptr);
+        if (rawValue == nullptr) return sourceProps.noiseSuppression;
+        const auto& [runtime, value] = (std::pair<jsi::Runtime*, jsi::Value>)*rawValue;
+        return CachedProp<bool>::fromRawValue(*runtime, value, sourceProps.noiseSuppression);
+      } catch (const std::exception& exc) {
+        throw std::runtime_error(std::string("RtmpPublisherView.noiseSuppression: ") + exc.what());
+      }
+    }()),
     autoRotateStream([&]() -> CachedProp<bool> {
       try {
         const react::RawValue* rawValue = rawProps.at("autoRotateStream", nullptr, nullptr);
@@ -167,6 +177,7 @@ namespace margelo::nitro::rtmppublisher::views {
       case hashString("mirrorStream"): return true;
       case hashString("thermalWarningThreshold"): return true;
       case hashString("audioSource"): return true;
+      case hashString("noiseSuppression"): return true;
       case hashString("autoRotateStream"): return true;
       case hashString("streamMode"): return true;
       case hashString("foregroundServiceTitle"): return true;

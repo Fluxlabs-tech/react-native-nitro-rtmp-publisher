@@ -12,6 +12,7 @@
     "mirrorStream": true,
     "thermalWarningThreshold": true,
     "audioSource": true,
+    "noiseSuppression": true,
     "autoRotateStream": true,
     "streamMode": true,
     "foregroundServiceTitle": true,
