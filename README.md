@@ -60,6 +60,7 @@ Live streaming from a phone is two hard problems entangled — owning the camera
   - [Long-form streams](#long-form-streams)
   - [FPS lock in low light](#fps-lock-in-low-light)
   - [Audio source](#audio-source)
+  - [Noise suppression](#noise-suppression)
   - [Thermals](#thermals)
   - [Events](#events)
 - [Platform parity](#platform-parity)
@@ -222,6 +223,7 @@ All props are required (set them once in JSX; runtime mutations are honored wher
 | `mirrorStream`        | `boolean`                             | `false`     | Flip encoded stream horizontally. |
 | `thermalWarningThreshold` | `ThermalStatus`                   | `'severe'`  | Minimum OS thermal level that fires `setOnThermalWarning`. `'none'` disables monitoring entirely. |
 | `audioSource`         | `'mic' \| 'camcorder' \| 'voiceRecognition' \| 'voiceCommunication' \| 'unprocessed'` | `'camcorder'` | Capture mode. `'camcorder'` is the right default for live streaming on both platforms. |
+| `noiseSuppression`    | `boolean`                             | `false`     | Engage on-device noise suppression + echo cancellation + AGC. See [Noise suppression](#noise-suppression). Best used for talk streams in noisy environments; leave off for vlogs/music. |
 | `autoRotateStream`    | `boolean`                             | `true`      | Internal orientation observer auto-updates `setStreamRotation` as the device rotates. Disable for manual control. |
 | `streamMode`          | `'lowLatency' \| 'balanced' \| 'quality'` | `'balanced'` | Pipeline preset. See [Long-form streams](#long-form-streams). |
 | `foregroundServiceTitle` | `string`                           | `''`        | **Android-only.** If non-empty, a foreground service auto-starts on `startStream` and auto-stops on `stopStream`. Silently ignored on iOS (uses `UIBackgroundModes` from `Info.plist` instead). |
@@ -406,15 +408,39 @@ Trade-off: darker night frames, but smooth motion. Recommended on for any sports
 
 The default Android `MIC` source is tuned for phone calls — AGC crushes dynamic range and the noise gate kills ambient sound. Pick a better source via the `audioSource` prop:
 
-| Source | iOS mapping | Android mapping | Use for |
+| Source | iOS mapping¹ | Android mapping | Use for |
 |---|---|---|---|
-| `'camcorder'` | `.videoRecording` | `CAMCORDER` | **Default.** Streaming, vlogs, anywhere voice + room mix |
-| `'mic'` | `.voiceChat` (AGC + AEC + NS) | `MIC` (AGC + NS) | Quiet rooms, talking heads, phone-call tuning |
+| `'camcorder'` | `.videoRecording` (light NR built in) | `CAMCORDER` | **Default.** Streaming, vlogs, anywhere voice + room mix |
+| `'mic'` | `.default` (natural, no DSP) | `MIC` (AGC + NS) | Talking heads — Android applies phone-call tuning, iOS gives natural mic input |
 | `'voiceRecognition'` | `.measurement` (raw) | `VOICE_RECOGNITION` (raw) | Clean signal, you handle mixing |
 | `'voiceCommunication'` | `.voiceChat` | `VOICE_COMMUNICATION` | Two-way streams with echo cancellation |
 | `'unprocessed'` | `.measurement` | `UNPROCESSED` (API 24+) | Music capture, pro-audio scenarios |
 
+¹ iOS mappings shown here assume `noiseSuppression={false}`. Setting it `true` forces `.voiceChat` regardless of source — see [Noise suppression](#noise-suppression).
+
 Single biggest perceived audio-quality win available. Test with `'camcorder'` first.
+
+### Noise suppression
+
+The `noiseSuppression` prop is the on/off switch for aggressive voice processing — Apple's Voice Processing IO unit on iOS, Android's `NoiseSuppressor` + `AcousticEchoCanceler` + AGC on Android. Decoupled from `audioSource` so you can mix and match.
+
+```tsx
+<RtmpPublisherView noiseSuppression={true}  ... />
+```
+
+- **iOS**: forces `AVAudioSession.Mode.voiceChat` regardless of `audioSource`. This is the only iOS mode that enables NS — Apple bundles NS + AEC + AGC into a single audio unit, so you can't independently get NS without AGC. AGC will compress your voice in exchange.
+- **Android**: passes `echoCanceler` + `noiseSuppressor` flags to RootEncoder's `prepareAudio`, layered on top of your `audioSource`. The DSP is finer-grained — voice stays more natural than on iOS.
+
+**Tradeoff:** noise suppression kills background, but AGC also damps your own voice when speaking softly or near silence — the classic "phone-call" sound. For most talk streams indoors, leaving it `false` and using `audioSource="camcorder"` gives a cleaner result (the `.videoRecording` mode has light noise reduction built in without the AGC clamp). Flip it on only when you're streaming from cafés, streets, or events where ambient is overwhelming.
+
+| | `noiseSuppression={false}` | `noiseSuppression={true}` |
+|---|---|---|
+| Voice | Natural, full dynamic range | Compressed, leveled |
+| Background | Light NR via `.videoRecording` on iOS (camcorder source) | Aggressively gated |
+| Music in background | Preserved | Squashed |
+| Phone-call feel | No | Yes |
+
+Toggleable live mid-session via the prop. On iOS the change applies immediately; on Android call `ref.resetAudioEncoder()` after to rebuild the `AudioRecord` pipeline with the new DSP state.
 
 ### Thermals
 
@@ -490,7 +516,8 @@ Same JS API, same behavior — but worth knowing exactly where the platforms dif
 | `setStreamDelay` | No-op | Active knob |
 | Background streaming | `UIBackgroundModes: ['audio']` | Foreground service via `foregroundServiceTitle` |
 | Wake lock | `UIApplication.isIdleTimerDisabled` | `PARTIAL_WAKE_LOCK` |
-| Mirror | Single `AVCaptureConnection` buffer; UIView transform for asymmetric cases | Separate preview / stream flip flags |
+| Mirror | Single `AVCaptureConnection` buffer; UIView transform for asymmetric cases | Separate preview / stream flip flags, re-applied on `switchCamera()` |
+| `noiseSuppression` | Forces `AVAudioSession.Mode.voiceChat` (NS+AEC+AGC bundled, can't separate) | Independent `NoiseSuppressor` + `AcousticEchoCanceler` AudioEffects |
 
 When in doubt, **the JS API is the contract**. Where a knob doesn't map to one platform, we either translate (audioSource modes) or silently no-op (forceHardwareCodec on iOS).
 
