@@ -379,7 +379,7 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
 
     // Keep the screen on for the duration of the stream — iOS equivalent of
     // Android's PARTIAL_WAKE_LOCK. Released in `stopStream` / `onDropView`.
-    UIApplication.shared.isIdleTimerDisabled = true
+    onMain { UIApplication.shared.isIdleTimerDisabled = true }
 
     // Connect first. `publish` is fired from rtmpStatusEvent on connectSuccess.
     rtmpConnection.connect(connectUrl)
@@ -399,7 +399,7 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
       rtmpConnection.close()
     }
     stopBitrateTimer()
-    UIApplication.shared.isIdleTimerDisabled = false
+    onMain { UIApplication.shared.isIdleTimerDisabled = false }
   }
 
   func setAuthorization(user: String, password: String) throws {
@@ -951,7 +951,7 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     unregisterThermalObserver()
     disableOrientationObserver()
     NotificationCenter.default.removeObserver(self)
-    UIApplication.shared.isIdleTimerDisabled = false
+    onMain { UIApplication.shared.isIdleTimerDisabled = false }
     if holdsActiveSlot {
       holdsActiveSlot = false
       ActivePublisherSlot.count = max(0, ActivePublisherSlot.count - 1)
@@ -1113,7 +1113,15 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   /// Snapshot the current physical device orientation, falling back to the
   /// interface orientation (which is what the user *sees*) when the device is
   /// face-up / face-down / unknown.
+  ///
+  /// **Must be called on the main thread** — `UIDevice.current.orientation`
+  /// and `UIApplication.shared.connectedScenes` are main-thread-only. The
+  /// helper hops to main synchronously when called from a worker thread (e.g.
+  /// the Nitro JSI thread) so callers don't have to think about it.
   private func currentVideoOrientation() -> AVCaptureVideoOrientation {
+    if !Thread.isMainThread {
+      return DispatchQueue.main.sync { self.currentVideoOrientation() }
+    }
     let device = UIDevice.current.orientation
     switch device {
     case .portrait:           return .portrait
@@ -1122,8 +1130,6 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     case .landscapeRight:     return .landscapeLeft
     default: break
     }
-    // Device gives `.unknown` until UIDevice notifications start, or `.faceUp`
-    // when flat. Use the window scene's interface orientation as a fallback.
     if #available(iOS 13.0, *),
        let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
       switch scene.interfaceOrientation {
@@ -1135,6 +1141,15 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
       }
     }
     return .portrait
+  }
+
+  /// Fire-and-forget hop to the main thread for UIKit-touching work that
+  /// doesn't need to return a value (idle timer, notification observers, etc).
+  /// If the caller is already on main, runs synchronously to avoid one extra
+  /// runloop turn.
+  private func onMain(_ block: @escaping () -> Void) {
+    if Thread.isMainThread { block() }
+    else { DispatchQueue.main.async(execute: block) }
   }
 
   private func applyCameraFpsLock() {
