@@ -10,6 +10,10 @@
   },
   "autolinking": {
     "RtmpPublisherView": {
+      "ios": {
+        "language": "swift",
+        "implementationClassName": "HybridRtmpPublisherView"
+      },
       "android": {
         "language": "kotlin",
         "implementationClassName": "HybridRtmpPublisherView"

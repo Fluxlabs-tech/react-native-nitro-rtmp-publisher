@@ -469,5 +469,5 @@ export interface RtmpPublisherViewMethods extends HybridViewMethods {
 export type RtmpPublisherView = HybridView<
   RtmpPublisherViewProps,
   RtmpPublisherViewMethods,
-  { android: 'kotlin' }
+  { ios: 'swift'; android: 'kotlin' }
 >

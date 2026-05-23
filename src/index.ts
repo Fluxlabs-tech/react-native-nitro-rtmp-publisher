@@ -10,6 +10,9 @@ export const RtmpPublisherView = getHostComponent<
   RtmpPublisherViewMethods
 >('RtmpPublisherView', () => RtmpPublisherViewConfig)
 
+export { requestRtmpPermissions } from './permissions'
+export type { RtmpPermissionResult } from './permissions'
+
 export type {
   RtmpPublisherView as RtmpPublisherViewSpec,
   RtmpPublisherViewProps,

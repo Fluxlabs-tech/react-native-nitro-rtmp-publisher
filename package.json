@@ -1,6 +1,6 @@
 {
   "name": "react-native-nitro-rtmp-publisher",
-  "version": "0.1.6",
+  "version": "0.2.0",
   "description": "High-performance RTMP camera publisher for React Native, built on Nitro Modules and RootEncoder.",
   "main": "lib/index",
   "module": "lib/index",
@@ -17,6 +17,8 @@
     "android/fix-prefab.gradle",
     "android/CMakeLists.txt",
     "android/src",
+    "ios",
+    "NitroRtmpPublisher.podspec",
     "nitro.json",
     "README.md",
     "LICENSE"
@@ -38,7 +40,9 @@
     "camera",
     "broadcasting",
     "video",
-    "android"
+    "android",
+    "ios",
+    "haishinkit"
   ],
   "license": "MIT",
   "author": "fluxlabs",

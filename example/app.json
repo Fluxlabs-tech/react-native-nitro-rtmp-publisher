@@ -13,7 +13,13 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.fluxlabs.rtmppublisherexample",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Allow $(PRODUCT_NAME) to use the camera for live streaming.",
+        "NSMicrophoneUsageDescription": "Allow $(PRODUCT_NAME) to use the microphone for live streaming.",
+        "UIBackgroundModes": ["audio"]
+      }
     },
     "android": {
       "package": "com.fluxlabs.rtmppublisherexample",

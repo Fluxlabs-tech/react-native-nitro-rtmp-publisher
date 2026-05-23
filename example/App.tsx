@@ -1,205 +1,123 @@
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useMemo, useRef, useState } from 'react';
-import {
-  Alert,
-  Modal,
-  PermissionsAndroid,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
-import { callback } from 'react-native-nitro-modules';
+import { useCallback, useState } from 'react';
+import { KeyboardAvoidingView, Platform, View } from 'react-native';
 import {
   RtmpPublisherView,
-  type RtmpConnectionEvent,
-  type RtmpPublisherViewMethods,
-  type ThermalStatus,
+  type CameraFacing,
 } from 'react-native-nitro-rtmp-publisher';
 
-type LogEntry = { id: number; ts: string; line: string };
-
-const errMsg = (e: unknown) =>
-  e instanceof Error ? e.message : String(e);
-
-const THERMAL_COLOR: Record<ThermalStatus, string> = {
-  none: '#22c55e',      // green
-  light: '#84cc16',     // lime
-  moderate: '#eab308',  // yellow
-  severe: '#f97316',    // orange
-  critical: '#ef4444',  // red
-  emergency: '#dc2626', // deep red
-  shutdown: '#7f1d1d',  // crimson
-};
-
-const VIDEO_WIDTH = 1280;
-const VIDEO_HEIGHT = 720;
-const VIDEO_FPS = 30;
-const VIDEO_BITRATE = 2_500_000;
-const VIDEO_IFRAME_INTERVAL = 2;
+import { ControlBar } from './src/components/ControlBar';
+import { EventsModal } from './src/components/EventsModal';
+import { PreviewOverlay } from './src/components/PreviewOverlay';
+import { DEFAULT_RTMP_URL, errMsg } from './src/constants';
+import { useEventLog } from './src/hooks/useEventLog';
+import { usePermissions } from './src/hooks/usePermissions';
+import { usePinchZoom } from './src/hooks/usePinchZoom';
+import { usePublisher } from './src/hooks/usePublisher';
+import { styles } from './src/styles';
 
 export default function App() {
-  const [url, setUrl] = useState('rtmp://10.0.2.2:1935/live/test');
-  const [streaming, setStreaming] = useState(false);
-  const [previewing, setPreviewing] = useState(false);
-  const [thermal, setThermal] = useState<ThermalStatus>('none');
-  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [url, setUrl] = useState(DEFAULT_RTMP_URL);
   const [logsOpen, setLogsOpen] = useState(false);
-  const [permissionsReady, setPermissionsReady] = useState(Platform.OS !== 'android');
-  const logIdRef = useRef(0);
-  const publisherRef = useRef<RtmpPublisherViewMethods | null>(null);
-  const initOnceRef = useRef(false);
+  // Tracks the camera the user is currently shooting with. Used to mirror
+  // both preview AND stream on the front camera (selfie convention) and
+  // leave the back camera un-mirrored.
+  const [facing, setFacing] = useState<CameraFacing>('back');
+  const isFront = facing === 'front';
 
-  const appendLog = (line: string) => {
-    const ts = new Date().toLocaleTimeString();
-    setLogs((prev) => {
-      logIdRef.current += 1;
-      return [{ id: logIdRef.current, ts, line }, ...prev].slice(0, 100);
-    });
-  };
+  const { logs, append, clear } = useEventLog();
+  const permissionsReady = usePermissions(append);
+  const { hybridRef, publisherRef, streaming, previewing, thermal, setStreaming } =
+    usePublisher(append);
 
-  useEffect(() => {
-    (async () => {
-      if (Platform.OS !== 'android') return;
-      const res = await PermissionsAndroid.requestMultiple([
-        PermissionsAndroid.PERMISSIONS.CAMERA,
-        PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
-      ]);
-      const ok =
-        res[PermissionsAndroid.PERMISSIONS.CAMERA] ===
-          PermissionsAndroid.RESULTS.GRANTED &&
-        res[PermissionsAndroid.PERMISSIONS.RECORD_AUDIO] ===
-          PermissionsAndroid.RESULTS.GRANTED;
-      if (!ok) {
-        Alert.alert('Permissions denied', 'CAMERA and RECORD_AUDIO are required');
-        return;
-      }
-      appendLog('permissions granted');
-      // Only mount the publisher after RECORD_AUDIO is granted. Otherwise
-      // hybridRef → prepareAudio runs without the permission, AudioRecord
-      // init fails, and Pedro's audioInitialized stays false → audio is
-      // silently dropped from the whole session.
-      setPermissionsReady(true);
-    })();
-  }, []);
+  const pinchHandlers = usePinchZoom(publisherRef, ({ zoom, min, max }) => {
+    append(`zoom=${zoom.toFixed(2)} (${min.toFixed(2)}..${max.toFixed(2)})`);
+  });
 
-  const hybridRef = useMemo(
-    () =>
-      callback((ref: RtmpPublisherViewMethods) => {
-        publisherRef.current = ref;
-        if (initOnceRef.current) return;
-        initOnceRef.current = true;
-        appendLog('view ready, attaching listener');
-        ref.setOnConnectionEvent(
-          (event: RtmpConnectionEvent, message: string) => {
-            appendLog(`event=${event}${message ? ` msg=${message}` : ''}`);
-            if (event === 'connectionSuccess') setStreaming(true);
-            if (
-              event === 'disconnect' ||
-              event === 'connectionFailed' ||
-              event === 'authError'
-            ) {
-              setStreaming(false);
-            }
-            // 'reconnecting' keeps `streaming` as-is — UI can show a spinner.
-          }
-        );
-        // 5 retries, 3-second backoff. Budget is re-seeded on every startStream.
-        ref.setAutoReconnect(5, 3000);
-        try {
-          // Configure encoder BEFORE startPreview so the GL pipeline picks up
-          // the correct stream rotation up-front (avoids preview/stream race).
-          const rotation = ref.getCameraOrientation();
-          const v = ref.prepareVideo(
-            VIDEO_WIDTH,
-            VIDEO_HEIGHT,
-            VIDEO_FPS,
-            VIDEO_BITRATE,
-            VIDEO_IFRAME_INTERVAL,
-            rotation
-          );
-          const a = ref.prepareAudio(128_000, 44_100, true);
-          appendLog(
-            `prepareVideo=${v} prepareAudio=${a} rotation=${rotation}`
-          );
-          ref.startPreview('back', VIDEO_WIDTH, VIDEO_HEIGHT);
-          setPreviewing(true);
-          appendLog('startPreview(back)');
-          // Adaptive bitrate: cap at `VIDEO_BITRATE`, drop 20% on congestion,
-          // recover 5% per tick. Subscribe to bitrate updates so we can log.
-          ref.setAdaptiveBitrate(VIDEO_BITRATE, 20, 5);
-          ref.setOnBitrateChange((bps: number) => {
-            appendLog(`tx=${Math.round(bps / 1000)} kbps`);
-          });
-          // Thermal monitoring. Threshold = 'light' so every transition fires
-          // and the chip stays accurate (not just on severe+ events).
-          // Seed initial value since the listener only fires on changes.
-          setThermal(ref.getThermalStatus());
-          ref.setOnThermalWarning((status: ThermalStatus) => {
-            appendLog(`thermal=${status}`);
-            setThermal(status);
-          });
-        } catch (e: unknown) {
-          appendLog(`init err: ${errMsg(e)}`);
-        }
-      }),
-    []
-  );
-
-  const onStart = () => {
+  const onStart = useCallback(() => {
     const ref = publisherRef.current;
     if (!ref) return;
     try {
       ref.startStream(url);
-      appendLog(`startStream(${url})`);
+      append(`startStream(${url})`);
     } catch (e: unknown) {
-      appendLog(`start err: ${errMsg(e)}`);
+      append(`start err: ${errMsg(e)}`);
     }
-  };
+  }, [url, append, publisherRef]);
 
-  const onStop = () => {
+  const onStop = useCallback(() => {
     const ref = publisherRef.current;
     if (!ref) return;
     try {
       ref.stopStream();
-      appendLog('stopStream()');
+      append('stopStream()');
       setStreaming(false);
     } catch (e: unknown) {
-      appendLog(`stop err: ${errMsg(e)}`);
+      append(`stop err: ${errMsg(e)}`);
     }
-  };
+  }, [append, publisherRef, setStreaming]);
 
-  const onSwitch = () => {
+  const onSwitch = useCallback(() => {
     const ref = publisherRef.current;
     if (!ref) return;
     try {
       ref.switchCamera();
-      appendLog('switchCamera()');
+      // Update derived state so the mirror props flip to match the new camera.
+      // We toggle locally rather than calling `ref.isFrontCamera()` because
+      // switchCamera is best-effort and may race with the prop setter.
+      setFacing((prev) => (prev === 'back' ? 'front' : 'back'));
+      append('switchCamera()');
     } catch (e: unknown) {
-      appendLog(`switch err: ${errMsg(e)}`);
+      append(`switch err: ${errMsg(e)}`);
     }
-  };
+  }, [append, publisherRef]);
 
   return (
-    <View style={styles.container}>
+    <KeyboardAvoidingView
+      style={styles.container}
+      // iOS: `padding` adds bottom padding equal to the keyboard height, which
+      // shrinks the preview area and slides the controls (including the URL
+      // input) above the keyboard.
+      // Android: `height` resizes the root view as the keyboard opens. The
+      // platform's own `windowSoftInputMode=adjustResize` (set by Expo by
+      // default) gives the same effect, so `undefined` is fine — using
+      // `'height'` here is a safety net.
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+    >
       <StatusBar style="light" />
+
       <View style={styles.previewBox}>
         {permissionsReady ? (
           <RtmpPublisherView
             style={styles.preview}
+            // Pin both encoders to hardware (Android-critical; iOS no-op).
             forceHardwareCodec={true}
+            // RTMP servers require H.264 video + AAC audio in 99% of cases.
             videoCodec="h264"
             audioCodec="aac"
+            // Letterbox to fit when preview aspect ≠ stream aspect.
             aspectRatioMode="adjust"
-            mirrorPreview={false}
-            mirrorStream={false}
-            thermalWarningThreshold="light"
-            audioSource="mic"
-            autoRotateStream={true}
+            // Selfie convention: front camera mirrored for both preview AND
+            // stream so the streamer and viewer see the same orientation.
+            mirrorPreview={isFront}
+            mirrorStream={isFront}
+            // Only warn when the device is hot enough that the encoder might
+            // start dropping frames. (`'light'` would also trigger on minor
+            // warm-ups, which is too noisy for production UIs.)
+            thermalWarningThreshold="severe"
+            // Camcorder mic source: gentle AGC, broadband pickup — the
+            // recommended default for live video streaming on both platforms.
+            audioSource="camcorder"
+            // Lock orientation to portrait. Flip to `true` if you want the
+            // stream to auto-rotate with the device.
+            autoRotateStream={false}
+            // ~3s glass-to-glass latency — good general-purpose default.
+            // Switch to `'quality'` for >1hr broadcasts, `'lowLatency'` for
+            // interactive/video-call-style streams.
             streamMode="quality"
+            // Android-only: keeps the process alive during backgrounding
+            // (notification shows these strings). Silently ignored on iOS,
+            // where the `audio` UIBackgroundMode in app.json does the same job.
             foregroundServiceTitle="Live stream"
             foregroundServiceText="Broadcasting"
             hybridRef={hybridRef}
@@ -207,225 +125,34 @@ export default function App() {
         ) : (
           <View style={styles.preview} />
         )}
-        <View style={styles.previewOverlay}>
-          <Text style={[styles.badge, streaming && styles.badgeOn]}>
-            {streaming ? 'LIVE' : previewing ? 'PREVIEW' : 'IDLE'}
-          </Text>
-          <View style={styles.chip}>
-            <View
-              style={[
-                styles.chipDot,
-                { backgroundColor: THERMAL_COLOR[thermal] },
-              ]}
-            />
-            <Text style={styles.chipText}>{thermal.toUpperCase()}</Text>
-          </View>
-        </View>
-      </View>
 
-      <View style={styles.controls}>
-        <Text style={styles.label}>RTMP URL</Text>
-        <TextInput
-          value={url}
-          onChangeText={setUrl}
-          autoCapitalize="none"
-          autoCorrect={false}
-          style={styles.input}
-          placeholder="rtmp://host:1935/app/stream"
-          placeholderTextColor="#666"
+        {/* Transparent overlay that captures two-finger pinch → setZoom. */}
+        <View style={styles.pinchLayer} {...pinchHandlers} pointerEvents="box-only" />
+
+        <PreviewOverlay
+          streaming={streaming}
+          previewing={previewing}
+          thermal={thermal}
         />
-
-        <View style={styles.row}>
-          <Pressable
-            onPress={onStart}
-            disabled={streaming}
-            style={[styles.btn, streaming && styles.btnDisabled]}
-          >
-            <Text style={styles.btnText}>Start</Text>
-          </Pressable>
-          <Pressable
-            onPress={onStop}
-            disabled={!streaming}
-            style={[styles.btn, styles.btnStop, !streaming && styles.btnDisabled]}
-          >
-            <Text style={styles.btnText}>Stop</Text>
-          </Pressable>
-          <Pressable onPress={onSwitch} style={[styles.btn, styles.btnAlt]}>
-            <Text style={styles.btnText}>Flip</Text>
-          </Pressable>
-          <Pressable
-            onPress={() => setLogsOpen(true)}
-            style={[styles.btn, styles.btnAlt]}
-          >
-            <Text style={styles.btnText}>Events ({logs.length})</Text>
-          </Pressable>
-        </View>
       </View>
 
-      <Modal
+      <ControlBar
+        url={url}
+        onUrlChange={setUrl}
+        streaming={streaming}
+        logCount={logs.length}
+        onStart={onStart}
+        onStop={onStop}
+        onSwitch={onSwitch}
+        onOpenLogs={() => setLogsOpen(true)}
+      />
+
+      <EventsModal
         visible={logsOpen}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setLogsOpen(false)}
-      >
-        <Pressable
-          style={styles.modalBackdrop}
-          onPress={() => setLogsOpen(false)}
-        >
-          <View
-            style={styles.modalSheet}
-            onStartShouldSetResponder={() => true}
-          >
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Events</Text>
-              <Pressable
-                onPress={() => setLogs([])}
-                style={styles.modalHeaderBtn}
-              >
-                <Text style={styles.modalHeaderBtnText}>Clear</Text>
-              </Pressable>
-              <Pressable
-                onPress={() => setLogsOpen(false)}
-                style={styles.modalHeaderBtn}
-              >
-                <Text style={styles.modalHeaderBtnText}>Close</Text>
-              </Pressable>
-            </View>
-            <ScrollView style={styles.modalLogs}>
-              {logs.length === 0 ? (
-                <Text style={styles.logLineMuted}>(no events yet)</Text>
-              ) : (
-                logs.map((l) => (
-                  <Text key={l.id} style={styles.logLine}>
-                    [{l.ts}] {l.line}
-                  </Text>
-                ))
-              )}
-            </ScrollView>
-          </View>
-        </Pressable>
-      </Modal>
-    </View>
+        logs={logs}
+        onClose={() => setLogsOpen(false)}
+        onClear={clear}
+      />
+    </KeyboardAvoidingView>
   );
 }
-
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#000' },
-  previewBox: { width: '100%', flex: 1, backgroundColor: '#111' },
-  preview: { ...StyleSheet.absoluteFillObject },
-  previewOverlay: {
-    position: 'absolute',
-    top: 48,
-    left: 16,
-    flexDirection: 'row',
-  },
-  badge: {
-    color: '#fff',
-    backgroundColor: '#444',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 6,
-    fontWeight: '700',
-    fontSize: 12,
-  },
-  badgeOn: { backgroundColor: '#dc2626' },
-  chip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(0,0,0,0.55)',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 999,
-    marginLeft: 8,
-  },
-  chipDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    marginRight: 6,
-  },
-  chipText: {
-    color: '#fff',
-    fontWeight: '600',
-    fontSize: 11,
-    letterSpacing: 0.5,
-  },
-  controls: { padding: 16 },
-  label: { color: '#aaa', marginTop: 8, marginBottom: 4 },
-  input: {
-    backgroundColor: '#222',
-    color: '#fff',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-  },
-  row: { flexDirection: 'row', gap: 8, marginTop: 12 },
-  btn: {
-    flex: 1,
-    backgroundColor: '#2563eb',
-    borderRadius: 8,
-    paddingVertical: 12,
-    alignItems: 'center',
-  },
-  btnStop: { backgroundColor: '#dc2626' },
-  btnAlt: { backgroundColor: '#4b5563' },
-  btnDisabled: { opacity: 0.4 },
-  btnText: { color: '#fff', fontWeight: '600' },
-  logs: {
-    flex: 1,
-    marginTop: 8,
-    backgroundColor: '#1a1a1a',
-    borderRadius: 8,
-    padding: 8,
-  },
-  logLine: { color: '#9ca3af', fontFamily: 'monospace', fontSize: 11 },
-  logLineMuted: {
-    color: '#6b7280',
-    fontFamily: 'monospace',
-    fontSize: 11,
-    fontStyle: 'italic',
-  },
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.55)',
-    justifyContent: 'flex-end',
-  },
-  modalSheet: {
-    height: '70%',
-    backgroundColor: 'rgba(20,20,20,0.96)',
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 24,
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  modalTitle: {
-    flex: 1,
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '700',
-  },
-  modalHeaderBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    marginLeft: 8,
-    borderRadius: 6,
-    backgroundColor: '#374151',
-  },
-  modalHeaderBtnText: {
-    color: '#fff',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  modalLogs: {
-    flex: 1,
-    backgroundColor: '#0f0f0f',
-    borderRadius: 8,
-    padding: 8,
-  },
-});
