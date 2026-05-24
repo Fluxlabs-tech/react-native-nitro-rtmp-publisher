@@ -26,7 +26,14 @@ import {
  * derived UI state (`streaming`, `previewing`, `thermal`).
  */
 export function usePublisher(append: (line: string) => void) {
+  // `streaming` is true only after a successful publish.
+  // `connecting` is true while there's an in-flight attempt — covers both
+  // the first connect after `startStream` and any native auto-reconnect
+  // (e.g. when coming back from background). The UI should disable Start
+  // on `streaming || connecting` so the user can't fire a second
+  // `startStream` while the native side is mid-reconnect.
   const [streaming, setStreaming] = useState(false);
+  const [connecting, setConnecting] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const [thermal, setThermal] = useState<ThermalStatus>('none');
   const publisherRef = useRef<RtmpPublisherViewMethods | null>(null);
@@ -43,15 +50,23 @@ export function usePublisher(append: (line: string) => void) {
         ref.setOnConnectionEvent(
           (event: RtmpConnectionEvent, message: string) => {
             append(`event=${event}${message ? ` msg=${message}` : ''}`);
-            if (event === 'connectionSuccess') setStreaming(true);
-            if (
-              event === 'disconnect' ||
-              event === 'connectionFailed' ||
-              event === 'authError'
-            ) {
-              setStreaming(false);
+            switch (event) {
+              case 'connectionStarted':
+              case 'reconnecting':
+                // Native is actively trying. Block the Start button.
+                setConnecting(true);
+                break;
+              case 'connectionSuccess':
+                setConnecting(false);
+                setStreaming(true);
+                break;
+              case 'disconnect':
+              case 'connectionFailed':
+              case 'authError':
+                setConnecting(false);
+                setStreaming(false);
+                break;
             }
-            // 'reconnecting' keeps `streaming` as-is — UI can show a spinner.
           }
         );
 
@@ -102,5 +117,14 @@ export function usePublisher(append: (line: string) => void) {
     [append]
   );
 
-  return { hybridRef, publisherRef, streaming, previewing, thermal, setStreaming };
+  return {
+    hybridRef,
+    publisherRef,
+    streaming,
+    connecting,
+    previewing,
+    thermal,
+    setStreaming,
+    setConnecting,
+  };
 }

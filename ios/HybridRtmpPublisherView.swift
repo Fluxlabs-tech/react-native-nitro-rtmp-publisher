@@ -54,19 +54,19 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
 
   private let mixer = MediaMixer()
 
-  // Per-publish RTMP timeout. HaishinKit's default is 3s which is too tight
-  // for some ingests (FB Live, YouTube Live with auth handshake on rtmps:443
-  // can take 5-8s before NetStream.Publish.Start arrives).
-  private let connection = RTMPConnection(requestTimeout: 15_000)
-
-  /// The active RTMPStream. We can't set `fcPublishName` after init, but FB /
-  /// YouTube / Wowza-style ingests require HaishinKit's FMLE handshake
-  /// (releaseStream + FCPublish before createStream + publish). HaishinKit
-  /// only emits those commands when the stream is built with a non-nil
-  /// `fcPublishName`. So we tear down + rebuild the stream inside
-  /// `startStream` with the current stream key — the init-time instance is
-  /// just a placeholder so settings setters and mixer wiring have something
-  /// to write to.
+  /// Connection and stream are *both* recreated on every publish cycle.
+  /// HaishinKit's `RTMPConnection` keeps every `RTMPStream` we register in
+  /// a private `streams` array and has no public `removeStream(_:)` — only
+  /// `deinit` clears it. After even one reconnect, calling `connection.connect()`
+  /// iterates *all* accumulated dead streams and fires `createStream` on each,
+  /// drowning the AMF channel so our real publish's `publishStart` reply
+  /// goes unmatched → 15s `requestTimedOut`. We dodge that by throwing both
+  /// actors away on every restart so ARC can reclaim them and the next
+  /// connection starts with a single-element `streams` array.
+  ///
+  /// The timeout (15s) is also bumped from HK's 3s default — FB Live /
+  /// YouTube Live on rtmps:443 routinely take 5-8s before publishStart.
+  private var connection = RTMPConnection(requestTimeout: 15_000)
   private var stream: RTMPStream
 
   /// Long-lived task that drains `connection.status` and forwards events to JS.
@@ -77,17 +77,48 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   /// stream swap so it always points at the active stream.
   private var streamStatusObserverTask: Task<Void, Never>?
 
+  /// Monotonically incremented on every `rebuildPipeline`. Each observer Task
+  /// captures the generation at subscription time and bails out if it ever
+  /// observes a mismatch — necessary because Swift Task cancellation is
+  /// cooperative: when we cancel a stale observer, a status value already
+  /// delivered to its iterator can still fire one more `handleRtmpStatus`
+  /// call. Without this guard, a stale `connectClosed` from the old
+  /// (torn-down) connection lands on `self` AFTER the new session has
+  /// successfully published — clobbering `cachedIsStreaming`, stopping the
+  /// bitrate timer, and emitting a spurious `.disconnect`.
+  private var pipelineGeneration: UInt64 = 0
+
   /// Last throughput sample reported by `PublisherBitrateStrategy`, in bps.
   /// Updated from a Sendable closure (any actor) — read by the bitrate timer
   /// on the next tick. Race is benign: we never gate logic on this value.
   private var lastMeasuredBps: Double = 0
 
   // ─── Callbacks (set from JS) ───────────────────────────────────────────────
+  //
+  // Always invoke via the `emit*` helpers below — never call the closure
+  // directly. They hop to the main queue so JS sees events in a single,
+  // deterministic order regardless of which Task / actor was the source.
+  // Direct invocation from Task continuations resuming on the cooperative
+  // executor races with NotificationCenter callbacks dispatched to .main,
+  // which manifests as out-of-order delivery to JS state machines.
 
   private var onConnectionEvent: ((RtmpConnectionEvent, String) -> Void)?
   private var onBitrateChange: ((Double) -> Void)?
   private var onRecordStatusChange: ((RecordStatus) -> Void)?
   private var onThermalWarning: ((ThermalStatus) -> Void)?
+
+  private func emitConnectionEvent(_ event: RtmpConnectionEvent, _ message: String) {
+    onMain { [weak self] in self?.onConnectionEvent?(event, message) }
+  }
+  private func emitBitrateChange(_ bps: Double) {
+    onMain { [weak self] in self?.onBitrateChange?(bps) }
+  }
+  private func emitRecordStatusChange(_ status: RecordStatus) {
+    onMain { [weak self] in self?.onRecordStatusChange?(status) }
+  }
+  private func emitThermalWarning(_ status: ThermalStatus) {
+    onMain { [weak self] in self?.onThermalWarning?(status) }
+  }
 
   // ─── Cached state — Nitro JSI getters are synchronous, but HK 2.x is async,
   //     so we mirror the actor state into local properties. Writes go through
@@ -143,6 +174,14 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   // flight) from spawning overlapping stream-rebuild Tasks.
   private var publishInFlight = false
 
+  // True while the app is backgrounded / locked. Suppresses auto-reconnect:
+  // iOS kills the RTMP socket on background → `connectClosed` fires → our
+  // retry would try to open a new socket against a suspended networking
+  // stack → guaranteed `requestTimedOut`. Re-armed on foreground via
+  // `defrostCapture`, which also triggers a single fresh reconnect if we
+  // were streaming before the app went away.
+  private var isInBackground = false
+
   // RTMP URL is split into "rtmp://host/app" (connect) + "streamKey" (publish).
   private var currentRtmpConnectUrl: String?
 
@@ -150,7 +189,11 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   private var autoReconnectMaxAttempts = 0
   private var autoReconnectBackoffMs: Int64 = 0
   private var retriesRemaining = 0
-  private var reconnectWorkItem: DispatchWorkItem?
+  /// In-flight reconnect Task. Cancelling here interrupts both the delay
+  /// (`Task.sleep` throws on cancel) and any await-in-flight inside the
+  /// reconnect body — strictly better than `DispatchWorkItem.cancel`, which
+  /// is a no-op once the work has started executing.
+  private var reconnectTask: Task<Void, Never>?
 
   // Adaptive bitrate.
   private var adaptiveMaxBitrate = 0
@@ -158,7 +201,11 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   private var adaptiveIncreasePct: Double = 5
   private var adaptiveEnabled = false
   private var adaptiveCurrentBitrate = 0
-  private var bitrateTimer: Timer?
+  /// `DispatchSourceTimer` (not `Timer`) — the source doesn't require its
+  /// creation thread to own a runloop. `Timer.scheduledTimer` schedules on
+  /// the current thread's runloop, so a timer created inside a Task
+  /// continuation resuming on the cooperative executor silently never fires.
+  private var bitrateTimer: DispatchSourceTimer?
   private var lastKeyFrameRequestMs: Double = 0
 
   // Recording state.
@@ -181,6 +228,13 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   // When non-nil this takes priority over the auto-rotate observer in
   // `pinVideoOrientation`. Cleared by `stopPreview`.
   private var userRotationOverride: AVCaptureVideoOrientation?
+
+  // Snapshot of the latest device orientation, kept current by the orientation
+  // observer (and primed on first read from main). Read from any thread —
+  // a Bool/enum scalar so we accept the benign tear. Replaces an earlier
+  // implementation that hopped to main via `DispatchQueue.main.sync`, which
+  // would deadlock if any caller ever ran while main was blocked.
+  private var cachedDeviceOrientation: AVCaptureVideoOrientation = .portrait
 
   // Stabilization (cached for re-apply after attachCamera).
   private var videoStabilizationEnabled = false
@@ -279,23 +333,12 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     self.stream = RTMPStream(connection: connection)
     super.init()
 
-    // Wire MTHKView as a mixer output so it renders captured frames.
     Task { [stream] in
       await mixer.addOutput(previewView)
-      // Stream is also a mixer output — it receives the encoded frames and
-      // pushes them over RTMP. Adding it here ensures audio + video flow
-      // into the stream as soon as it starts publishing.
       await mixer.addOutput(stream)
     }
-
-    // Drain the RTMP connection's status AsyncStream into our JS-facing
-    // event callback. Lives for the view's lifetime.
-    statusObserverTask = Task { [weak self] in
-      guard let self else { return }
-      for await status in await self.connection.status {
-        self.handleRtmpStatus(status)
-      }
-    }
+    subscribeToConnectionStatus()
+    refreshOrientationCacheOnMain()
 
     // App + AVCaptureSession lifecycle observers.
     let nc = NotificationCenter.default
@@ -312,20 +355,55 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   deinit {
     statusObserverTask?.cancel()
     streamStatusObserverTask?.cancel()
+    reconnectTask?.cancel()
     NotificationCenter.default.removeObserver(self)
-    bitrateTimer?.invalidate()
+    bitrateTimer?.cancel()
   }
 
   // ─── App-lifecycle + AVCaptureSession interruption ─────────────────────────
 
   @objc private func appDidEnterBackground() {
-    onConnectionEvent?(.disconnect, "app entered background")
+    isInBackground = true
+    // Cancel any in-flight reconnect — iOS is about to suspend networking
+    // and the next retry would just hit `requestTimedOut`. We'll fire a
+    // fresh reconnect on foreground if the user still wants to stream.
+    reconnectTask?.cancel()
+    reconnectTask = nil
+    // The RTMP socket is dead the moment iOS suspends us — flip cached
+    // state to match. Two reasons we *must* set this here rather than
+    // waiting for the natural `connectClosed` event:
+    //  1. iOS doesn't notice the socket is dead until ~10-15s after
+    //     foreground (TCP keepalive), so `connectClosed` arrives much
+    //     too late to drive the JS UI.
+    //  2. `appWillEnterForeground` gates its immediate reconnect on
+    //     `!cachedIsStreaming`. Without this clear, the foreground
+    //     reconnect never fires and we end up waiting for the late
+    //     `connectClosed` → `tryAutoReconnect` path instead.
+    cachedIsStreaming = false
+    // Stop ticking — the timer is a `DispatchSourceTimer` on `.main`,
+    // which means main-queue pause-on-background, then a flurry of
+    // catch-up ticks on resume that report stale `lastMeasuredBps` from
+    // the dead session.
+    stopBitrateTimer()
+    emitConnectionEvent(.disconnect, "app entered background")
   }
 
   @objc private func appWillEnterForeground() {
-    pinVideoOrientation()
-    applyMirrorFlags()
-    applyVideoStabilizationToCaptureUnit()
+    isInBackground = false
+    defrostCapture()
+    // If the user was streaming when we backgrounded, the RTMP socket is
+    // dead by now. Kick off one reconnect attempt — `scheduleReconnect`
+    // handles the connection.close → reopen → publish dance.
+    //
+    // The 1500ms delay matters: iOS networking takes a beat to come back
+    // online, and server-side most live ingests (FB Live in particular)
+    // hold the previous session for a short window before accepting a
+    // fresh publish under the same stream key. Reconnecting too aggressively
+    // hits `NetStream.Publish.BadName` / `requestTimedOut`.
+    if shouldBeStreaming, !publishInFlight, currentRtmpConnectUrl != nil {
+      retriesRemaining = max(retriesRemaining, 1)
+      scheduleReconnect(delayMs: 1500, reason: "foreground")
+    }
   }
 
   @objc private func sessionWasInterrupted(_ notification: Notification) {
@@ -339,13 +417,57 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     case 5: reason = "video-device-not-available-due-to-system-pressure"
     default: reason = "unknown"
     }
-    onConnectionEvent?(.disconnect, "session interrupted: \(reason)")
+    emitConnectionEvent(.disconnect, "session interrupted: \(reason)")
   }
 
   @objc private func sessionInterruptionEnded(_ notification: Notification) {
-    pinVideoOrientation()
-    applyMirrorFlags()
-    applyVideoStabilizationToCaptureUnit()
+    defrostCapture()
+  }
+
+  /// Resurrect the capture pipeline after iOS suspended it (app backgrounded,
+  /// or another foreground app took the camera). HaishinKit listens for
+  /// `UIApplication.willEnterForegroundNotification` internally and calls
+  /// `videoIO.resume()` + `session.startRunningIfNeeded()`, but in practice
+  /// the resume path doesn't always fire when our view comes back —
+  /// especially on iOS 16 + camera-heavy apps. Re-attaching the same device
+  /// is HK's documented "hard reset" for capture: it re-creates the
+  /// AVCaptureInput, restarts the session, and replays orientation /
+  /// mirror / stabilization. Idempotent — calling it while the session
+  /// is already running causes a brief one-frame stutter, not a freeze.
+  private func defrostCapture() {
+    guard let camera = currentDevice else { return }
+    let mic = AVCaptureDevice.default(for: .audio)
+
+    // Apply the UIView side of the mirror flag IMMEDIATELY on main, so the
+    // preview's CGAffineTransform is right before the first new frame from
+    // the rebuilt capture session arrives. Waiting on `attachVideo` to
+    // resolve before touching the transform leaves a ~1-2s window where
+    // frames render with stale (or no) mirroring.
+    let extraFlipPreview = (mirrorPreview != mirrorStream)
+    let previewTransform: CGAffineTransform = extraFlipPreview
+      ? CGAffineTransform(scaleX: -1, y: 1)
+      : .identity
+    onMain { [weak self] in self?.previewView.transform = previewTransform }
+
+    let mirror = mirrorStream
+    let stabilization = currentStabilizationMode
+    Task { [weak self] in
+      guard let self else { return }
+      do {
+        // Apply mirror + stabilization atomically inside the attach so the
+        // very first frame from the new AVCaptureInput is already mirrored
+        // and stabilized — no transient un-mirrored frames during resume.
+        try await self.mixer.attachVideo(camera) { unit in
+          unit.isVideoMirrored = mirror
+          unit.preferredVideoStabilizationMode = stabilization
+        }
+        if let mic { try? await self.mixer.attachAudio(mic) }
+        await self.mixer.startRunning()
+        self.pinVideoOrientation()
+      } catch {
+        self.log("defrostCapture failed: \(error)")
+      }
+    }
   }
 
   // ─── Lifecycle: prepare ────────────────────────────────────────────────────
@@ -398,7 +520,7 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     if !holdsActiveSlot {
       if ActivePublisherSlot.count > 0 {
         log("Refusing to start preview — another <RtmpPublisherView> is active")
-        onConnectionEvent?(.connectionfailed, "another <RtmpPublisherView> already holds the camera")
+        emitConnectionEvent(.connectionfailed, "another <RtmpPublisherView> already holds the camera")
         return
       }
       ActivePublisherSlot.count += 1
@@ -406,8 +528,11 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     }
 
     currentFacing = facing
+    // attachCameraAndMic now applies mirror + stabilization atomically inside
+    // the attach configuration block AND syncs the preview transform up-front.
+    // Calling applyMirrorFlags() again here would race the second Task with
+    // the attach Task — manifests as a brief unmirror/stutter on first frame.
     attachCameraAndMic()
-    applyMirrorFlags()
     cachedIsOnPreview = true
     if autoRotateStream { enableOrientationObserver() }
   }
@@ -421,9 +546,15 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
       Task { try? await rec.stopRecording() }
       recorder = nil
     }
-    Task {
+    Task { [weak self] in
+      guard let self else { return }
       try? await self.mixer.attachVideo(nil)
       try? await self.mixer.attachAudio(nil)
+      // Free up the AVCaptureSession. Without this the session keeps the
+      // camera unit warm — burns ~2-5% CPU and prevents any other capture
+      // consumer (system Camera app, Vision Pro mirroring, etc.) from
+      // taking over while our preview is paused.
+      await self.mixer.stopRunning()
     }
     currentDevice = nil
     cachedIsOnPreview = false
@@ -457,26 +588,11 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
       guard let self else { return }
       defer { self.publishInFlight = false }
       do {
-        // Rebuild the stream with `fcPublishName: streamKey` so HaishinKit
-        // emits the FMLE handshake (releaseStream + FCPublish) before
-        // createStream + publish — required by FB Live, YouTube Live, Wowza.
-        // The init-time placeholder doesn't have a key, so swap it now.
-        let oldStream = self.stream
-        await self.mixer.removeOutput(oldStream)
-        _ = try? await oldStream.close()
-        let newStream = RTMPStream(connection: self.connection, fcPublishName: streamKey)
-        self.stream = newStream
-        await self.mixer.addOutput(newStream)
-        self.subscribeToStreamStatus(newStream)
-        await self.installBitrateStrategy(on: newStream)
-        // Apply encoder settings to the fresh stream before publish.
-        self.applyVideoSettings()
-        self.applyAudioSettings()
-
+        await self.rebuildPipeline(streamKey: streamKey)
         _ = try await self.connection.connect(connectUrl)
-        _ = try await newStream.publish(streamKey, type: .live)
+        _ = try await self.stream.publish(streamKey, type: .live)
         self.cachedIsStreaming = true
-        self.onConnectionEvent?(.connectionsuccess, "")
+        self.emitConnectionEvent(.connectionsuccess, "")
         self.startBitrateTimer()
       } catch {
         self.cachedIsStreaming = false
@@ -484,26 +600,28 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
         self.stopBitrateTimer()
         if !self.tryAutoReconnect(reason: "\(error)") {
           self.shouldBeStreaming = false
-          self.onConnectionEvent?(.connectionfailed, "\(error)")
+          self.emitConnectionEvent(.connectionfailed, "\(error)")
         }
       }
     }
 
-    onConnectionEvent?(.connectionstarted, connectUrl)
+    emitConnectionEvent(.connectionstarted, connectUrl)
   }
 
   func stopStream() throws {
     shouldBeStreaming = false
     pendingStreamKey = nil
     currentRtmpConnectUrl = nil
-    reconnectWorkItem?.cancel()
-    reconnectWorkItem = nil
+    reconnectTask?.cancel()
+    reconnectTask = nil
     cachedIsStreaming = false
-    Task { [weak self] in
-      guard let self else { return }
-      _ = try? await self.stream.close()
-      try? await self.connection.close()
-    }
+    // Fire-and-forget — both close() calls block awaiting AMF responses (up
+    // to 15s each on a dropped socket). The user wants stopStream to return
+    // immediately; we don't care about the polite RTMP goodbye.
+    let oldStream = self.stream
+    let oldConnection = self.connection
+    Task { _ = try? await oldStream.close() }
+    Task { try? await oldConnection.close() }
     stopBitrateTimer()
     onMain { UIApplication.shared.isIdleTimerDisabled = false }
   }
@@ -530,22 +648,24 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   }
 
   func requestKeyFrame() throws {
-    guard cachedIsStreaming, let cfg = lastVideoCfg else { return }
+    guard cachedIsStreaming, lastVideoCfg != nil else { return }
     let now = Date().timeIntervalSince1970 * 1000
     if now - lastKeyFrameRequestMs < 1000 { return }
     lastKeyFrameRequestMs = now
     // Nudge bitrate by 1 bps then restore — forces VideoToolbox to emit a
-    // fresh IDR. Same trick as the 1.x implementation.
+    // fresh IDR. VideoToolbox debounces bitrate changes that arrive within
+    // the same encode tick, so a back-to-back set→reset would no-op. The
+    // 100 ms gap is enough for the encoder to ack the first change before
+    // we revert.
     Task { [weak self] in
       guard let self else { return }
       var settings = await self.stream.videoSettings
       let original = settings.bitRate
       settings.bitRate = max(1, original + 1)
       try? await self.stream.setVideoSettings(settings)
-      // Restore on next runloop turn so adaptive-bitrate state stays consistent.
+      try? await Task.sleep(nanoseconds: 100_000_000)
       settings.bitRate = original
       try? await self.stream.setVideoSettings(settings)
-      _ = cfg
     }
   }
 
@@ -583,62 +703,59 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   private func tryAutoReconnect(reason: String) -> Bool {
     guard shouldBeStreaming, autoReconnectMaxAttempts > 0 else { return false }
     if retriesRemaining <= 0 { return false }
+    // Don't try to reconnect while the app is suspended — iOS won't let us
+    // open a new socket and we'd just waste a retry slot on a guaranteed
+    // timeout. `appWillEnterForeground` re-arms `retriesRemaining` and
+    // schedules a fresh reconnect when we come back.
+    if isInBackground {
+      log("auto-reconnect suppressed while backgrounded (reason: \(reason))")
+      return true
+    }
     retriesRemaining -= 1
     scheduleReconnect(delayMs: autoReconnectBackoffMs, reason: reason)
-    onConnectionEvent?(.reconnecting, reason)
+    emitConnectionEvent(.reconnecting, reason)
     return true
   }
 
   private func scheduleReconnect(delayMs: Int64, reason: String) {
-    reconnectWorkItem?.cancel()
-    let work = DispatchWorkItem { [weak self] in
+    reconnectTask?.cancel()
+    reconnectTask = Task { [weak self] in
+      // Honor cancellation during the backoff delay — `Task.sleep` throws
+      // `CancellationError` when cancelled, so we bail without firing the
+      // reconnect. DispatchWorkItem.cancel() can't do this once the work
+      // has begun executing.
+      if delayMs > 0 {
+        do { try await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000) }
+        catch { return }
+      }
+      if Task.isCancelled { return }
       guard let self = self, self.shouldBeStreaming else { return }
       guard !self.publishInFlight else {
         self.log("reconnect skipped — publish still in flight")
         return
       }
-      if let url = self.currentRtmpConnectUrl {
-        self.publishInFlight = true
-        self.onConnectionEvent?(.connectionstarted, url)
-        Task { [weak self] in
-          guard let self else { return }
-          defer { self.publishInFlight = false }
-          do {
-            // Reset connection before reconnecting — calling connect() on an
-            // already-connected RTMPConnection throws `invalidState`. After
-            // a drop the connection may still report connected briefly.
-            _ = try? await self.connection.close()
-            let oldStream = self.stream
-            await self.mixer.removeOutput(oldStream)
-            _ = try? await oldStream.close()
-            if let key = self.pendingStreamKey {
-              let newStream = RTMPStream(connection: self.connection, fcPublishName: key)
-              self.stream = newStream
-              await self.mixer.addOutput(newStream)
-              self.subscribeToStreamStatus(newStream)
-              await self.installBitrateStrategy(on: newStream)
-              self.applyVideoSettings()
-              self.applyAudioSettings()
-              _ = try await self.connection.connect(url)
-              _ = try await newStream.publish(key, type: .live)
-            }
-            self.cachedIsStreaming = true
-            self.onConnectionEvent?(.connectionsuccess, "")
-            self.startBitrateTimer()
-          } catch {
-            self.cachedIsStreaming = false
-            self.log("retry connect failed: \(error)")
-            self.stopBitrateTimer()
-            if !self.tryAutoReconnect(reason: "\(error)") {
-              self.shouldBeStreaming = false
-              self.onConnectionEvent?(.connectionfailed, "\(error)")
-            }
-          }
+      guard let url = self.currentRtmpConnectUrl, let key = self.pendingStreamKey else { return }
+
+      self.publishInFlight = true
+      self.emitConnectionEvent(.connectionstarted, url)
+      defer { self.publishInFlight = false }
+      do {
+        await self.rebuildPipeline(streamKey: key)
+        _ = try await self.connection.connect(url)
+        _ = try await self.stream.publish(key, type: .live)
+        self.cachedIsStreaming = true
+        self.emitConnectionEvent(.connectionsuccess, "")
+        self.startBitrateTimer()
+      } catch {
+        self.cachedIsStreaming = false
+        self.log("retry connect failed: \(error)")
+        self.stopBitrateTimer()
+        if !self.tryAutoReconnect(reason: "\(error)") {
+          self.shouldBeStreaming = false
+          self.emitConnectionEvent(.connectionfailed, "\(error)")
         }
       }
     }
-    reconnectWorkItem = work
-    DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(Int(delayMs)), execute: work)
   }
 
   // ─── Status / readouts ─────────────────────────────────────────────────────
@@ -732,8 +849,10 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     let next: CameraFacing = (currentFacing == .back) ? .front : .back
     currentFacing = next
     if let lp = lastPreview { lastPreview = PreviewConfig(facing: next, width: lp.width, height: lp.height) }
+    // attachCameraAndMic atomically applies mirror + stabilization. The
+    // redundant applyMirrorFlags() that used to live here raced its Task
+    // against attachVideo's Task — produced a brief un-mirror flash on flip.
     attachCameraAndMic()
-    applyMirrorFlags()
   }
 
   func getCamerasAvailable() throws -> [String] {
@@ -764,11 +883,34 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     currentDevice = device
     if device.position == .front { currentFacing = .front }
     else if device.position == .back { currentFacing = .back }
+    cachedZoom = Double(device.videoZoomFactor)
+    cachedZoomRange = (
+      Double(device.minAvailableVideoZoomFactor),
+      Double(device.maxAvailableVideoZoomFactor)
+    )
+    cachedExposureRange = (device.minExposureTargetBias, device.maxExposureTargetBias)
+
+    // Sync UIView transform up-front so the preview is right before the first
+    // frame from the new input arrives. Matches attachCameraAndMic semantics.
+    let extraFlipPreview = (mirrorPreview != mirrorStream)
+    let previewTransform: CGAffineTransform = extraFlipPreview
+      ? CGAffineTransform(scaleX: -1, y: 1)
+      : .identity
+    onMain { [weak self] in self?.previewView.transform = previewTransform }
+
+    let mirror = mirrorStream
+    let stabilization = currentStabilizationMode
     Task { [weak self] in
       guard let self else { return }
-      try? await self.mixer.attachVideo(device)
+      // Apply mirror + stabilization atomically inside the attach so the
+      // very first frame from the new AVCaptureInput is already mirrored
+      // and stabilized — no transient un-mirrored window.
+      try? await self.mixer.attachVideo(device) { unit in
+        unit.isVideoMirrored = mirror
+        unit.preferredVideoStabilizationMode = stabilization
+      }
     }
-    applyMirrorFlags()
+    applyCameraFpsLock()
   }
 
   func isFrontCamera() throws -> Bool { return currentFacing == .front }
@@ -870,6 +1012,12 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   // ─── Stabilization ─────────────────────────────────────────────────────────
 
   func setVideoStabilizationEnabled(enabled: Bool) throws -> Bool {
+    if enabled, let device = currentDevice,
+       !device.activeFormat.isVideoStabilizationModeSupported(.standard) {
+      log("setVideoStabilizationEnabled: .standard not supported by active format")
+      videoStabilizationEnabled = false
+      return false
+    }
     videoStabilizationEnabled = enabled
     applyVideoStabilizationToCaptureUnit()
     return true
@@ -878,6 +1026,12 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   func isVideoStabilizationEnabled() throws -> Bool { return videoStabilizationEnabled }
 
   func setOpticalVideoStabilizationEnabled(enabled: Bool) throws -> Bool {
+    if enabled, let device = currentDevice,
+       !device.activeFormat.isVideoStabilizationModeSupported(.cinematic) {
+      log("setOpticalVideoStabilizationEnabled: .cinematic not supported by active format")
+      opticalStabilizationEnabled = false
+      return false
+    }
     opticalStabilizationEnabled = enabled
     applyVideoStabilizationToCaptureUnit()
     return true
@@ -955,7 +1109,7 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
 
   private func transitionRecordStatus(_ next: RecordStatus) {
     recordStatus = next
-    onRecordStatusChange?(next)
+    emitRecordStatusChange(next)
   }
 
   // ─── Event callbacks ───────────────────────────────────────────────────────
@@ -1006,15 +1160,23 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     lastPreview = nil
     pendingStreamKey = nil
     userRotationOverride = nil
-    reconnectWorkItem?.cancel()
-    reconnectWorkItem = nil
+    reconnectTask?.cancel()
+    reconnectTask = nil
     stopBitrateTimer()
     statusObserverTask?.cancel()
     streamStatusObserverTask?.cancel()
+    // Same fire-and-forget pattern as rebuildPipeline — RTMPStream/Connection
+    // close() each await an AMF roundtrip with a 15s ceiling; on a dropped /
+    // backgrounded socket they always time out. Awaiting them serially during
+    // teardown can hang the Task for up to 30s, keeping `previewView` +
+    // `mixer` alive after the user navigated away. ARC + OS socket reaping
+    // handle cleanup either way; the server gets an RST.
+    let oldStream = self.stream
+    let oldConnection = self.connection
+    Task { _ = try? await oldStream.close() }
+    Task { try? await oldConnection.close() }
     Task { [weak self] in
       guard let self else { return }
-      _ = try? await self.stream.close()
-      try? await self.connection.close()
       try? await self.mixer.attachVideo(nil)
       try? await self.mixer.attachAudio(nil)
       // Release the AVCaptureSession so another publisher view (or any
@@ -1109,26 +1271,31 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
       }
     }
     let extraFlipPreview = (mirrorPreview != mirrorStream)
-    previewView.transform = extraFlipPreview
+    let transform: CGAffineTransform = extraFlipPreview
       ? CGAffineTransform(scaleX: -1, y: 1)
       : .identity
+    // UIView mutation must hop to main — applyMirrorFlags is often called
+    // from Task continuations resuming on a background executor (after
+    // awaiting MediaMixer). UIKit silently queues background writes to
+    // main with non-zero latency, which manifests as the preview lagging
+    // 1-2s behind the camera frames on resume.
+    onMain { [weak self] in self?.previewView.transform = transform }
   }
 
   private func applyVideoStabilizationToCaptureUnit() {
-    let mode: AVCaptureVideoStabilizationMode
-    if opticalStabilizationEnabled {
-      mode = .cinematic
-    } else if videoStabilizationEnabled {
-      mode = .standard
-    } else {
-      mode = .off
-    }
+    let mode = currentStabilizationMode
     Task { [weak self] in
       guard let self else { return }
       try? await self.mixer.configuration(video: 0) { unit in
         unit.preferredVideoStabilizationMode = mode
       }
     }
+  }
+
+  private var currentStabilizationMode: AVCaptureVideoStabilizationMode {
+    if opticalStabilizationEnabled { return .cinematic }
+    if videoStabilizationEnabled { return .standard }
+    return .off
   }
 
   private func attachCameraAndMic() {
@@ -1145,11 +1312,29 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     )
     cachedExposureRange = (camera.minExposureTargetBias, camera.maxExposureTargetBias)
 
+    // Sync UIView side of the mirror flag up-front so the preview transform
+    // is already correct when the first new frame arrives.
+    let extraFlipPreview = (mirrorPreview != mirrorStream)
+    let previewTransform: CGAffineTransform = extraFlipPreview
+      ? CGAffineTransform(scaleX: -1, y: 1)
+      : .identity
+    onMain { [weak self] in self?.previewView.transform = previewTransform }
+
+    let mirror = mirrorStream
+    let stabilization = currentStabilizationMode
     let mic = AVCaptureDevice.default(for: .audio)
     Task { [weak self] in
       guard let self else { return }
       do {
-        try await self.mixer.attachVideo(camera)
+        // Apply mirror + stabilization atomically inside the attach so the
+        // first frame from the new AVCaptureInput is already mirrored and
+        // stabilized. Without this the camera-control settings get applied
+        // after capture is wired and we get a ~1-2s window of unmirrored
+        // frames — especially noticeable on the front camera.
+        try await self.mixer.attachVideo(camera) { unit in
+          unit.isVideoMirrored = mirror
+          unit.preferredVideoStabilizationMode = stabilization
+        }
         if let mic {
           try? await self.mixer.attachAudio(mic)
         }
@@ -1158,10 +1343,7 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
         // though capture is "attached." Safe to call repeatedly (guarded
         // by `isRunning` internally).
         await self.mixer.startRunning()
-        // Reapply orientation/mirror/stabilization after capture is wired.
         self.pinVideoOrientation()
-        self.applyMirrorFlags()
-        self.applyVideoStabilizationToCaptureUnit()
       } catch {
         self.log("attachVideo failed: \(error)")
       }
@@ -1247,13 +1429,15 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     // Reset so stale samples from a previous publish don't bleed into the new
     // session before the first NetworkMonitor tick (~3s).
     lastMeasuredBps = 0
-    bitrateTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-      self?.onBitrateTick()
-    }
+    let t = DispatchSource.makeTimerSource(queue: .main)
+    t.schedule(deadline: .now() + 1.0, repeating: 1.0)
+    t.setEventHandler { [weak self] in self?.onBitrateTick() }
+    t.resume()
+    bitrateTimer = t
   }
 
   private func stopBitrateTimer() {
-    bitrateTimer?.invalidate()
+    bitrateTimer?.cancel()
     bitrateTimer = nil
   }
 
@@ -1263,7 +1447,7 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     // (the monitor ticks every ~3s), fall back to the encoder's configured
     // bitrate so the UI shows *something* instead of zero.
     if lastMeasuredBps > 0 {
-      onBitrateChange?(lastMeasuredBps)
+      emitBitrateChange(lastMeasuredBps)
       // Track the configured bitrate too so getCurrentBitrate stays useful.
       Task { [weak self] in
         guard let self else { return }
@@ -1275,7 +1459,7 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
         guard let self else { return }
         let vBps = await self.stream.videoSettings.bitRate
         let aBps = await self.stream.audioSettings.bitRate
-        self.onBitrateChange?(Double(vBps + aBps))
+        self.emitBitrateChange(Double(vBps + aBps))
       }
     }
   }
@@ -1299,6 +1483,8 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
         avo = .portrait
       @unknown default:           avo = .portrait
       }
+      // Keep the cache in step with what we push to the mixer.
+      self.cachedDeviceOrientation = avo
       Task { await self.mixer.setVideoOrientation(avo) }
     }
   }
@@ -1327,7 +1513,7 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
       let enteringOrInZone = new.severityRank >= threshold.severityRank
       let justCleared = previous.severityRank >= threshold.severityRank && new.severityRank < threshold.severityRank
       if enteringOrInZone || justCleared {
-        self.onThermalWarning?(new.toNitro())
+        self.emitThermalWarning(new.toNitro())
       }
     }
   }
@@ -1345,10 +1531,16 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     let code = status.code
     switch code {
     case RTMPConnection.Code.connectSuccess.rawValue:
-      onConnectionEvent?(.connectionsuccess, "")
+      // Internal state transition only — pin orientation now that we have a
+      // live connection, but DON'T emit `.connectionsuccess` to JS yet.
+      // `connectSuccess` is NetConnection.Connect.Success (AMF handshake
+      // done); the publish hasn't started yet. The post-publish path in
+      // `startStream` / `scheduleReconnect` emits `.connectionsuccess`
+      // once we actually have a publishing stream — that's the moment
+      // JS should treat us as "live". Without this elision, JS sees two
+      // `.connectionsuccess` events ~2s apart (handshake → publish).
       adaptiveCurrentBitrate = lastVideoCfg?.bitrate ?? adaptiveCurrentBitrate
       pinVideoOrientation()
-      startBitrateTimer()
     case RTMPConnection.Code.connectFailed.rawValue,
          RTMPConnection.Code.connectClosed.rawValue:
       let isFailed = (code == RTMPConnection.Code.connectFailed.rawValue)
@@ -1356,15 +1548,15 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
       cachedIsStreaming = false
       if tryAutoReconnect(reason: code) { return }
       shouldBeStreaming = false
-      onConnectionEvent?(isFailed ? .connectionfailed : .disconnect, code)
+      emitConnectionEvent(isFailed ? .connectionfailed : .disconnect, code)
     case RTMPConnection.Code.connectRejected.rawValue,
          RTMPConnection.Code.connectInvalidApp.rawValue:
       let desc = status.description
       let isAuth = desc.lowercased().contains("auth") || desc.lowercased().contains("not authorized")
       if isAuth {
-        onConnectionEvent?(.autherror, desc)
+        emitConnectionEvent(.autherror, desc)
       } else {
-        onConnectionEvent?(.connectionfailed, desc)
+        emitConnectionEvent(.connectionfailed, desc)
       }
     default:
       break
@@ -1397,13 +1589,13 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
       cachedIsStreaming = false
       stopBitrateTimer()
       let isAuth = desc.lowercased().contains("auth") || desc.lowercased().contains("not authorized")
-      onConnectionEvent?(isAuth ? .autherror : .connectionfailed, "publishBadName: \(desc)")
+      emitConnectionEvent(isAuth ? .autherror : .connectionfailed, "publishBadName: \(desc)")
     case RTMPStream.Code.failed.rawValue,
          RTMPStream.Code.playFailed.rawValue,
          RTMPStream.Code.playStreamNotFound.rawValue:
       cachedIsStreaming = false
       stopBitrateTimer()
-      onConnectionEvent?(.connectionfailed, "\(code): \(desc)")
+      emitConnectionEvent(.connectionfailed, "\(code): \(desc)")
     default:
       break
     }
@@ -1411,12 +1603,86 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
 
   private func subscribeToStreamStatus(_ stream: RTMPStream) {
     streamStatusObserverTask?.cancel()
+    let generation = pipelineGeneration
     streamStatusObserverTask = Task { [weak self] in
       guard let self else { return }
       for await status in await stream.status {
+        // Drop stale events from a torn-down stream actor. Swift Task
+        // cancellation is cooperative — one event in flight at cancel time
+        // can still reach this point. Without the guard, it stomps on the
+        // new session's state.
+        if self.pipelineGeneration != generation { return }
         self.handleStreamStatus(status)
       }
     }
+  }
+
+  /// (Re)subscribe to `self.connection.status`. The closure captures a
+  /// snapshot of the current connection AND pipeline generation so a later
+  /// rebuild (which swaps `self.connection` for a fresh actor and bumps the
+  /// generation) doesn't leave us reacting to the dead AsyncStream — and,
+  /// crucially, doesn't let a late `connectClosed` from the old connection
+  /// emit a spurious `.disconnect` while the new session is healthy.
+  private func subscribeToConnectionStatus() {
+    statusObserverTask?.cancel()
+    let conn = self.connection
+    let generation = pipelineGeneration
+    statusObserverTask = Task { [weak self] in
+      guard let self else { return }
+      for await status in await conn.status {
+        if self.pipelineGeneration != generation { return }
+        self.handleRtmpStatus(status)
+      }
+    }
+  }
+
+  /// Throw out the current `connection` + `stream` and build fresh ones.
+  /// Required for every restart (initial publish, JS-side `startStream`
+  /// retry, native auto-reconnect, foreground re-publish) because HK's
+  /// `RTMPConnection.streams` array only clears on `deinit` — anything
+  /// short of recreating the connection leaves dead `RTMPStream` actors
+  /// in there, and the next `connect()` calls `createStream` on every
+  /// one of them, drowning the AMF channel so our real publish's
+  /// `publishStart` reply goes unmatched.
+  private func rebuildPipeline(streamKey: String) async {
+    // Bump the generation BEFORE cancelling — once incremented, any in-flight
+    // status event from the old observers will fail the generation check and
+    // bail out before reaching `handleRtmpStatus` / `handleStreamStatus`.
+    // Cancelling alone isn't enough: Swift cancellation is cooperative and
+    // a status value already pulled from the AsyncStream iterator still
+    // fires one final handler call.
+    pipelineGeneration &+= 1
+    statusObserverTask?.cancel()
+    streamStatusObserverTask?.cancel()
+
+    let oldStream = self.stream
+    let oldConnection = self.connection
+    await self.mixer.removeOutput(oldStream)
+
+    // Fire-and-forget the polite RTMP goodbye. RTMPStream.close() sends an
+    // unpublish AMF command and awaits `unpublishSuccess` for up to
+    // `requestTimeout` (15s); RTMPConnection.close() then walks every stream,
+    // calling `FCUnpublish` + `deleteStream` and awaiting responses with the
+    // same 15s ceiling. On a dead socket (the common case after a background
+    // suspension) those calls always time out — awaiting them serially adds
+    // up to ~30s of unrecoverable latency before we can even start the new
+    // publish. ARC reclaims both actors once these tasks complete, and the
+    // OS closes the abandoned TCP socket when references drop. The server
+    // gets a clean RST either way.
+    Task { _ = try? await oldStream.close() }
+    Task { try? await oldConnection.close() }
+
+    let newConnection = RTMPConnection(requestTimeout: 15_000)
+    let newStream = RTMPStream(connection: newConnection, fcPublishName: streamKey)
+    self.connection = newConnection
+    self.stream = newStream
+
+    subscribeToConnectionStatus()
+    subscribeToStreamStatus(newStream)
+    await self.mixer.addOutput(newStream)
+    await installBitrateStrategy(on: newStream)
+    applyVideoSettings()
+    applyAudioSettings()
   }
 
   // ─── Orientation pin ──────────────────────────────────────────────────────
@@ -1436,31 +1702,37 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     }
   }
 
-  /// Snapshot the current physical device orientation, hopping to main thread
-  /// when needed (UIDevice + UIApplication are main-thread-only).
+  /// Read the latest cached orientation (refreshed by the orientation
+  /// observer and `refreshOrientationCacheOnMain`). Safe from any thread.
   private func currentVideoOrientation() -> AVCaptureVideoOrientation {
-    if !Thread.isMainThread {
-      return DispatchQueue.main.sync { self.currentVideoOrientation() }
-    }
-    let device = UIDevice.current.orientation
-    switch device {
-    case .portrait:           return .portrait
-    case .portraitUpsideDown: return .portraitUpsideDown
-    case .landscapeLeft:      return .landscapeRight
-    case .landscapeRight:     return .landscapeLeft
-    default: break
-    }
-    if #available(iOS 13.0, *),
-       let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
-      switch scene.interfaceOrientation {
-      case .landscapeLeft:      return .landscapeLeft
-      case .landscapeRight:     return .landscapeRight
-      case .portraitUpsideDown: return .portraitUpsideDown
-      case .portrait, .unknown: return .portrait
-      @unknown default:         return .portrait
+    return cachedDeviceOrientation
+  }
+
+  /// Prime / refresh `cachedDeviceOrientation` by reading UIKit on main.
+  /// UIDevice + UIApplication require main thread; this is the only place
+  /// we touch them. Fire from any context; updates the cache asynchronously.
+  private func refreshOrientationCacheOnMain() {
+    onMain { [weak self] in
+      guard let self else { return }
+      let device = UIDevice.current.orientation
+      switch device {
+      case .portrait:           self.cachedDeviceOrientation = .portrait; return
+      case .portraitUpsideDown: self.cachedDeviceOrientation = .portraitUpsideDown; return
+      case .landscapeLeft:      self.cachedDeviceOrientation = .landscapeRight; return
+      case .landscapeRight:     self.cachedDeviceOrientation = .landscapeLeft; return
+      default: break
+      }
+      if #available(iOS 13.0, *),
+         let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
+        switch scene.interfaceOrientation {
+        case .landscapeLeft:      self.cachedDeviceOrientation = .landscapeLeft
+        case .landscapeRight:     self.cachedDeviceOrientation = .landscapeRight
+        case .portraitUpsideDown: self.cachedDeviceOrientation = .portraitUpsideDown
+        case .portrait, .unknown: self.cachedDeviceOrientation = .portrait
+        @unknown default:         self.cachedDeviceOrientation = .portrait
+        }
       }
     }
-    return .portrait
   }
 
   /// Fire-and-forget hop to main thread for UIKit-touching work.
@@ -1471,13 +1743,32 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
 
+  /// Split an RTMP URL into `(connectUrl, streamKey)`.
+  ///
+  /// Naive last-slash split fails on URLs where the query string is part of
+  /// the publish name (`rtmp://host/app/streamName?auth=…`) — using
+  /// `String.range(of:"/", options:.backwards)` on the raw URL would split at
+  /// the `/` inside `auth=path/whatever` when servers embed slashes in
+  /// signed params. We split on the last `/` BEFORE any `?`, then re-attach
+  /// the query string to the stream key so HK passes it verbatim in the
+  /// publish AMF command (FB Live / Instagram / Wowza signed auth all rely
+  /// on this).
   private func splitRtmpUrl(_ url: String) -> (connectUrl: String, streamKey: String) {
-    guard let lastSlash = url.range(of: "/", options: .backwards) else {
+    let pathPart: String
+    let queryPart: String
+    if let q = url.range(of: "?") {
+      pathPart = String(url[..<q.lowerBound])
+      queryPart = String(url[q.lowerBound...])  // includes the "?"
+    } else {
+      pathPart = url
+      queryPart = ""
+    }
+    guard let lastSlash = pathPart.range(of: "/", options: .backwards) else {
       return (url, "")
     }
-    let connect = String(url[..<lastSlash.lowerBound])
-    let key = String(url[lastSlash.upperBound...])
-    return (connect, key)
+    let connect = String(pathPart[..<lastSlash.lowerBound])
+    let name = String(pathPart[lastSlash.upperBound...])
+    return (connect, name + queryPart)
   }
 
   private func log(_ message: String) {

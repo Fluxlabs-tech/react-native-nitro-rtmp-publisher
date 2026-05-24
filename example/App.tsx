@@ -36,8 +36,16 @@ export default function App() {
 
   const { logs, append, clear } = useEventLog();
   const permissionsReady = usePermissions(append);
-  const { hybridRef, publisherRef, streaming, previewing, thermal, setStreaming } =
-    usePublisher(append);
+  const {
+    hybridRef,
+    publisherRef,
+    streaming,
+    connecting,
+    previewing,
+    thermal,
+    setStreaming,
+    setConnecting,
+  } = usePublisher(append);
 
   const pinchHandlers = usePinchZoom(publisherRef, ({ zoom, min, max }) => {
     append(`zoom=${zoom.toFixed(2)} (${min.toFixed(2)}..${max.toFixed(2)})`);
@@ -47,12 +55,17 @@ export default function App() {
     const ref = publisherRef.current;
     if (!ref) return;
     try {
+      // Optimistically flip into "connecting" so the Start button disables
+      // before the first native event lands — avoids a double-tap firing a
+      // second startStream while the first is still mid-connect.
+      setConnecting(true);
       ref.startStream(url);
       append(`startStream(${url})`);
     } catch (e: unknown) {
+      setConnecting(false);
       append(`start err: ${errMsg(e)}`);
     }
-  }, [url, append, publisherRef]);
+  }, [url, append, publisherRef, setConnecting]);
 
   const onStop = useCallback(() => {
     const ref = publisherRef.current;
@@ -61,10 +74,11 @@ export default function App() {
       ref.stopStream();
       append('stopStream()');
       setStreaming(false);
+      setConnecting(false);
     } catch (e: unknown) {
       append(`stop err: ${errMsg(e)}`);
     }
-  }, [append, publisherRef, setStreaming]);
+  }, [append, publisherRef, setStreaming, setConnecting]);
 
   const onToggleNoiseSuppression = useCallback(() => {
     setNoiseSuppression((prev) => {
@@ -174,6 +188,7 @@ export default function App() {
         url={url}
         onUrlChange={setUrl}
         streaming={streaming}
+        connecting={connecting}
         logCount={logs.length}
         noiseSuppression={noiseSuppression}
         onStart={onStart}

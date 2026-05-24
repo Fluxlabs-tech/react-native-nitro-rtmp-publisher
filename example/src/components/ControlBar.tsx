@@ -5,6 +5,14 @@ type Props = {
   url: string;
   onUrlChange: (next: string) => void;
   streaming: boolean;
+  /**
+   * True while a connect / reconnect attempt is in flight (after Start tap,
+   * during native auto-reconnect on background→foreground, etc.). Used
+   * alongside `streaming` to keep Start disabled until the publisher is
+   * either fully connected or fully idle — prevents the user from firing a
+   * second `startStream` while the first is still mid-handshake.
+   */
+  connecting: boolean;
   logCount: number;
   noiseSuppression: boolean;
   onStart: () => void;
@@ -22,6 +30,7 @@ export function ControlBar({
   url,
   onUrlChange,
   streaming,
+  connecting,
   logCount,
   noiseSuppression,
   onStart,
@@ -30,6 +39,12 @@ export function ControlBar({
   onOpenLogs,
   onToggleNoiseSuppression,
 }: Props) {
+  // Start is enabled only when the publisher is fully idle. Stop stays
+  // enabled while connecting so the user can cancel an in-flight attempt
+  // (covers stuck-on-handshake and the background-reconnect edge case).
+  const startDisabled = streaming || connecting;
+  const stopDisabled = !streaming && !connecting;
+  const startLabel = connecting && !streaming ? 'Connecting…' : 'Start';
   return (
     <View style={styles.controls}>
       <Text style={styles.label}>RTMP URL</Text>
@@ -46,15 +61,15 @@ export function ControlBar({
       <View style={styles.row}>
         <Pressable
           onPress={onStart}
-          disabled={streaming}
-          style={[styles.btn, streaming && styles.btnDisabled]}
+          disabled={startDisabled}
+          style={[styles.btn, startDisabled && styles.btnDisabled]}
         >
-          <Text style={styles.btnText}>Start</Text>
+          <Text style={styles.btnText}>{startLabel}</Text>
         </Pressable>
         <Pressable
           onPress={onStop}
-          disabled={!streaming}
-          style={[styles.btn, styles.btnStop, !streaming && styles.btnDisabled]}
+          disabled={stopDisabled}
+          style={[styles.btn, styles.btnStop, stopDisabled && styles.btnDisabled]}
         >
           <Text style={styles.btnText}>Stop</Text>
         </Pressable>
