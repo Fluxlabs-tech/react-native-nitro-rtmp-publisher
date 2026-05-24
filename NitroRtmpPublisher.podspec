@@ -35,12 +35,13 @@ Pod::Spec.new do |s|
   # HaishinKit 2.2.5 — RTMP publisher engine.
   #
   # ⚠️  HaishinKit stopped publishing podspecs to CocoaPods trunk after 2.0.9.
-  # We ship our own vendored HaishinKit.podspec + RTMPHaishinKit.podspec at
-  # the root of this package. Consumers must add these two lines to their
-  # Podfile (typically `ios/Podfile`):
+  # We ship our own vendored HaishinKit.podspec + RTMPHaishinKit.podspec under
+  # the `podspecs/` directory of this package (kept out of the package root so
+  # they don't shadow this podspec during RN autolinking). Consumers must add
+  # these two lines to their Podfile (typically `ios/Podfile`):
   #
-  #   pod 'HaishinKit',     :podspec => '../node_modules/react-native-nitro-rtmp-publisher/HaishinKit.podspec'
-  #   pod 'RTMPHaishinKit', :podspec => '../node_modules/react-native-nitro-rtmp-publisher/RTMPHaishinKit.podspec'
+  #   pod 'HaishinKit',     :podspec => '../node_modules/react-native-nitro-rtmp-publisher/podspecs/HaishinKit.podspec'
+  #   pod 'RTMPHaishinKit', :podspec => '../node_modules/react-native-nitro-rtmp-publisher/podspecs/RTMPHaishinKit.podspec'
   #
   # See README.md "Install → iOS" for the full setup.
   s.dependency "HaishinKit", "2.2.5"

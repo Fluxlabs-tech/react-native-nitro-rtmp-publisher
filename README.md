@@ -81,16 +81,55 @@ npm install react-native-nitro-rtmp-publisher react-native-nitro-modules
 yarn add  react-native-nitro-rtmp-publisher react-native-nitro-modules
 ```
 
-### iOS
+### iOS — Expo (one-liner)
 
-Add the two vendored HaishinKit podspecs to your `ios/Podfile` (inside your `target` block), then `pod install`:
+Add the package's Expo config plugin to your `app.json` (or `app.config.js`) and re-run `expo prebuild`:
+
+```json
+{
+  "expo": {
+    "plugins": ["react-native-nitro-rtmp-publisher"]
+  }
+}
+```
+
+That's it. The plugin will inject the two vendored `HaishinKit` + `RTMPHaishinKit` pod entries into your generated `ios/Podfile` (idempotent — re-running prebuild won't duplicate them). It will **not** touch your `Info.plist` unless you opt in explicitly.
+
+You still need to declare camera + mic usage strings yourself. The usual place is `expo.ios.infoPlist` in `app.json`:
+
+```json
+"ios": {
+  "infoPlist": {
+    "NSCameraUsageDescription": "Stream live video from your camera.",
+    "NSMicrophoneUsageDescription": "Capture audio for live streams.",
+    "UIBackgroundModes": ["audio"]
+  }
+}
+```
+
+If you'd rather the plugin set the camera / mic strings (handy when this library is the only camera consumer in your app), pass them as props — the plugin only writes Info.plist keys when a prop is supplied:
+
+```json
+"plugins": [
+  ["react-native-nitro-rtmp-publisher", {
+    "cameraUsage": "Stream live video from your camera.",
+    "microphoneUsage": "Capture audio for live streams."
+  }]
+]
+```
+
+If neither prop is passed, Info.plist is left untouched.
+
+### iOS — bare React Native (manual Podfile)
+
+If you're not on Expo, add the two vendored HaishinKit podspecs to your `ios/Podfile` (inside your `target` block), then `pod install`:
 
 ```ruby
 target 'YourApp' do
   # … your existing config …
 
-  pod 'HaishinKit',     :podspec => '../node_modules/react-native-nitro-rtmp-publisher/HaishinKit.podspec'
-  pod 'RTMPHaishinKit', :podspec => '../node_modules/react-native-nitro-rtmp-publisher/RTMPHaishinKit.podspec'
+  pod 'HaishinKit',     :podspec => '../node_modules/react-native-nitro-rtmp-publisher/podspecs/HaishinKit.podspec'
+  pod 'RTMPHaishinKit', :podspec => '../node_modules/react-native-nitro-rtmp-publisher/podspecs/RTMPHaishinKit.podspec'
 end
 ```
 

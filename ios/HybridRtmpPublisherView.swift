@@ -53,11 +53,34 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   // ─── HaishinKit 2.x ────────────────────────────────────────────────────────
 
   private let mixer = MediaMixer()
-  private let connection = RTMPConnection()
-  private lazy var stream = RTMPStream(connection: connection)
+
+  // Per-publish RTMP timeout. HaishinKit's default is 3s which is too tight
+  // for some ingests (FB Live, YouTube Live with auth handshake on rtmps:443
+  // can take 5-8s before NetStream.Publish.Start arrives).
+  private let connection = RTMPConnection(requestTimeout: 15_000)
+
+  /// The active RTMPStream. We can't set `fcPublishName` after init, but FB /
+  /// YouTube / Wowza-style ingests require HaishinKit's FMLE handshake
+  /// (releaseStream + FCPublish before createStream + publish). HaishinKit
+  /// only emits those commands when the stream is built with a non-nil
+  /// `fcPublishName`. So we tear down + rebuild the stream inside
+  /// `startStream` with the current stream key — the init-time instance is
+  /// just a placeholder so settings setters and mixer wiring have something
+  /// to write to.
+  private var stream: RTMPStream
 
   /// Long-lived task that drains `connection.status` and forwards events to JS.
   private var statusObserverTask: Task<Void, Never>?
+
+  /// Per-stream task that drains `stream.status` (NetStream.* events:
+  /// publishStart, publishBadName, unpublishSuccess, …). Recreated on every
+  /// stream swap so it always points at the active stream.
+  private var streamStatusObserverTask: Task<Void, Never>?
+
+  /// Last throughput sample reported by `PublisherBitrateStrategy`, in bps.
+  /// Updated from a Sendable closure (any actor) — read by the bitrate timer
+  /// on the next tick. Race is benign: we never gate logic on this value.
+  private var lastMeasuredBps: Double = 0
 
   // ─── Callbacks (set from JS) ───────────────────────────────────────────────
 
@@ -92,7 +115,6 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   private var lastPreview: PreviewConfig?
   private var lastVideoCfg: VideoCfg?
   private var lastAudioCfg: AudioCfg?
-  private var pendingStreamUrl: String?
   private var pendingStreamKey: String?
 
   // Stream state cache. The HK actor's readyState is the source of truth but
@@ -115,6 +137,12 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   // auto-reconnect so we don't retry against a torn-down camera/surface.
   private var shouldBeStreaming = false
 
+  // Set true the moment we kick off a connect/publish Task and cleared in
+  // its tail (success or failure). Gates concurrent startStream calls
+  // (double-tap, JS-side races, manual retry while auto-reconnect is in
+  // flight) from spawning overlapping stream-rebuild Tasks.
+  private var publishInFlight = false
+
   // RTMP URL is split into "rtmp://host/app" (connect) + "streamKey" (publish).
   private var currentRtmpConnectUrl: String?
 
@@ -131,7 +159,6 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   private var adaptiveEnabled = false
   private var adaptiveCurrentBitrate = 0
   private var bitrateTimer: Timer?
-  private var lastSentByteCount: Int64 = 0
   private var lastKeyFrameRequestMs: Double = 0
 
   // Recording state.
@@ -249,10 +276,11 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   // ─── Init / lifecycle ──────────────────────────────────────────────────────
 
   override init() {
+    self.stream = RTMPStream(connection: connection)
     super.init()
 
     // Wire MTHKView as a mixer output so it renders captured frames.
-    Task {
+    Task { [stream] in
       await mixer.addOutput(previewView)
       // Stream is also a mixer output — it receives the encoded frames and
       // pushes them over RTMP. Adding it here ensures audio + video flow
@@ -283,6 +311,7 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
 
   deinit {
     statusObserverTask?.cancel()
+    streamStatusObserverTask?.cancel()
     NotificationCenter.default.removeObserver(self)
     bitrateTimer?.invalidate()
   }
@@ -407,39 +436,54 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
       log("startStream ignored — empty URL")
       return
     }
+    if publishInFlight {
+      log("startStream ignored — a connect/publish is already in flight")
+      return
+    }
     let (rawConnectUrl, streamKey) = splitRtmpUrl(url)
     let connectUrl = applyAuthToConnectUrl(rawConnectUrl)
     currentRtmpConnectUrl = connectUrl
     pendingStreamKey = streamKey
     shouldBeStreaming = true
+    publishInFlight = true
     retriesRemaining = autoReconnectMaxAttempts
 
-    applyVideoSettings()
-    applyAudioSettings()
     applyStreamMode()
     pinVideoOrientation()
 
     onMain { UIApplication.shared.isIdleTimerDisabled = true }
 
-    // Kick off the async connect. The publish() call follows on
-    // `connectSuccess` from the status observer.
     Task { [weak self] in
       guard let self else { return }
+      defer { self.publishInFlight = false }
       do {
+        // Rebuild the stream with `fcPublishName: streamKey` so HaishinKit
+        // emits the FMLE handshake (releaseStream + FCPublish) before
+        // createStream + publish — required by FB Live, YouTube Live, Wowza.
+        // The init-time placeholder doesn't have a key, so swap it now.
+        let oldStream = self.stream
+        await self.mixer.removeOutput(oldStream)
+        _ = try? await oldStream.close()
+        let newStream = RTMPStream(connection: self.connection, fcPublishName: streamKey)
+        self.stream = newStream
+        await self.mixer.addOutput(newStream)
+        self.subscribeToStreamStatus(newStream)
+        await self.installBitrateStrategy(on: newStream)
+        // Apply encoder settings to the fresh stream before publish.
+        self.applyVideoSettings()
+        self.applyAudioSettings()
+
         _ = try await self.connection.connect(connectUrl)
-        // connect's success is also delivered via the status stream, but
-        // we don't wait for that — publish immediately once connect resolves.
-        if let key = self.pendingStreamKey {
-          _ = try await self.stream.publish(key, type: .live)
-        }
+        _ = try await newStream.publish(streamKey, type: .live)
         self.cachedIsStreaming = true
         self.onConnectionEvent?(.connectionsuccess, "")
         self.startBitrateTimer()
       } catch {
         self.cachedIsStreaming = false
-        self.shouldBeStreaming = false
         self.log("connect/publish failed: \(error)")
+        self.stopBitrateTimer()
         if !self.tryAutoReconnect(reason: "\(error)") {
+          self.shouldBeStreaming = false
           self.onConnectionEvent?(.connectionfailed, "\(error)")
         }
       }
@@ -549,17 +593,46 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     reconnectWorkItem?.cancel()
     let work = DispatchWorkItem { [weak self] in
       guard let self = self, self.shouldBeStreaming else { return }
+      guard !self.publishInFlight else {
+        self.log("reconnect skipped — publish still in flight")
+        return
+      }
       if let url = self.currentRtmpConnectUrl {
+        self.publishInFlight = true
+        self.onConnectionEvent?(.connectionstarted, url)
         Task { [weak self] in
           guard let self else { return }
+          defer { self.publishInFlight = false }
           do {
-            _ = try await self.connection.connect(url)
+            // Reset connection before reconnecting — calling connect() on an
+            // already-connected RTMPConnection throws `invalidState`. After
+            // a drop the connection may still report connected briefly.
+            _ = try? await self.connection.close()
+            let oldStream = self.stream
+            await self.mixer.removeOutput(oldStream)
+            _ = try? await oldStream.close()
             if let key = self.pendingStreamKey {
-              _ = try await self.stream.publish(key, type: .live)
+              let newStream = RTMPStream(connection: self.connection, fcPublishName: key)
+              self.stream = newStream
+              await self.mixer.addOutput(newStream)
+              self.subscribeToStreamStatus(newStream)
+              await self.installBitrateStrategy(on: newStream)
+              self.applyVideoSettings()
+              self.applyAudioSettings()
+              _ = try await self.connection.connect(url)
+              _ = try await newStream.publish(key, type: .live)
             }
             self.cachedIsStreaming = true
+            self.onConnectionEvent?(.connectionsuccess, "")
+            self.startBitrateTimer()
           } catch {
+            self.cachedIsStreaming = false
             self.log("retry connect failed: \(error)")
+            self.stopBitrateTimer()
+            if !self.tryAutoReconnect(reason: "\(error)") {
+              self.shouldBeStreaming = false
+              self.onConnectionEvent?(.connectionfailed, "\(error)")
+            }
           }
         }
       }
@@ -611,14 +684,36 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     let max = Int(maxBitrate)
     if max <= 0 {
       adaptiveEnabled = false
-      stopBitrateTimer()
-      return
+    } else {
+      adaptiveMaxBitrate = max
+      adaptiveDecreasePct = decreaseRangePercent.clamped(0, 100)
+      adaptiveIncreasePct = increaseRangePercent.clamped(0, 100)
+      adaptiveEnabled = true
     }
-    adaptiveMaxBitrate = max
-    adaptiveDecreasePct = decreaseRangePercent.clamped(0, 100)
-    adaptiveIncreasePct = increaseRangePercent.clamped(0, 100)
-    adaptiveEnabled = true
-    if cachedIsStreaming { startBitrateTimer() }
+    // Reinstall the strategy on the active stream — the strategy holds
+    // `mamimumVideoBitRate` as a `let`, so changing the cap means creating a
+    // new instance. Safe to call mid-stream.
+    Task { [weak self] in
+      guard let self else { return }
+      await self.installBitrateStrategy(on: self.stream)
+    }
+  }
+
+  /// Build a `PublisherBitrateStrategy` from current adaptive settings and
+  /// attach it to the given stream. The strategy:
+  ///  - feeds measured throughput into `lastMeasuredBps` (for the timer to
+  ///    forward to JS)
+  ///  - delegates to HK's `StreamVideoAdaptiveBitRateStrategy` only when
+  ///    `adaptiveEnabled` is true
+  private func installBitrateStrategy(on stream: RTMPStream) async {
+    let cap = adaptiveEnabled ? adaptiveMaxBitrate : (lastVideoCfg?.bitrate ?? 0)
+    let strategy = PublisherBitrateStrategy(
+      maxVideoBitRate: cap,
+      adaptive: adaptiveEnabled
+    ) { [weak self] bps in
+      self?.lastMeasuredBps = Double(bps)
+    }
+    await stream.setBitRateStrategy(strategy)
   }
 
   func resetVideoEncoder() throws -> Bool {
@@ -909,19 +1004,22 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   func onDropView() {
     shouldBeStreaming = false
     lastPreview = nil
-    pendingStreamUrl = nil
     pendingStreamKey = nil
     userRotationOverride = nil
     reconnectWorkItem?.cancel()
     reconnectWorkItem = nil
     stopBitrateTimer()
     statusObserverTask?.cancel()
+    streamStatusObserverTask?.cancel()
     Task { [weak self] in
       guard let self else { return }
       _ = try? await self.stream.close()
       try? await self.connection.close()
       try? await self.mixer.attachVideo(nil)
       try? await self.mixer.attachAudio(nil)
+      // Release the AVCaptureSession so another publisher view (or any
+      // other AVCapture consumer) can take over without contention.
+      await self.mixer.stopRunning()
     }
     if let rec = recorder {
       Task { try? await rec.stopRecording() }
@@ -981,15 +1079,20 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
 
   private func applyAudioSettings() {
     guard let cfg = lastAudioCfg else { return }
+    let muted = cachedAudioMuted
     Task { [weak self] in
       guard let self else { return }
       var settings = await self.stream.audioSettings
       settings.bitRate = cfg.bitrate
       try? await self.stream.setAudioSettings(settings)
-      let mixerSettings = AudioMixerSettings(
+      // Preserve the user's mute state across rebuilds — AudioMixerSettings
+      // resets `isMuted` to false on init, so a re-apply (e.g. after
+      // prepareAudio) would silently unmute the user.
+      var mixerSettings = AudioMixerSettings(
         sampleRate: Float64(cfg.sampleRate),
         channels: UInt32(cfg.isStereo ? 2 : 1)
       )
+      mixerSettings.isMuted = muted
       await self.mixer.setAudioMixerSettings(mixerSettings)
     }
   }
@@ -1042,27 +1145,25 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     )
     cachedExposureRange = (camera.minExposureTargetBias, camera.maxExposureTargetBias)
 
+    let mic = AVCaptureDevice.default(for: .audio)
     Task { [weak self] in
       guard let self else { return }
       do {
         try await self.mixer.attachVideo(camera)
+        if let mic {
+          try? await self.mixer.attachAudio(mic)
+        }
+        // MediaMixer's async streams that feed outputs only start draining
+        // after startRunning() — without it the preview stays black even
+        // though capture is "attached." Safe to call repeatedly (guarded
+        // by `isRunning` internally).
+        await self.mixer.startRunning()
         // Reapply orientation/mirror/stabilization after capture is wired.
         self.pinVideoOrientation()
         self.applyMirrorFlags()
         self.applyVideoStabilizationToCaptureUnit()
       } catch {
         self.log("attachVideo failed: \(error)")
-      }
-    }
-
-    if let mic = AVCaptureDevice.default(for: .audio) {
-      Task { [weak self] in
-        guard let self else { return }
-        do {
-          try await self.mixer.attachAudio(mic)
-        } catch {
-          self.log("attachAudio failed: \(error)")
-        }
       }
     }
     applyCameraFpsLock()
@@ -1143,7 +1244,9 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
 
   private func startBitrateTimer() {
     stopBitrateTimer()
-    lastSentByteCount = 0
+    // Reset so stale samples from a previous publish don't bleed into the new
+    // session before the first NetworkMonitor tick (~3s).
+    lastMeasuredBps = 0
     bitrateTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
       self?.onBitrateTick()
     }
@@ -1155,50 +1258,24 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   }
 
   private func onBitrateTick() {
-    // HK 2.x doesn't expose totalBytesOut publicly on RTMPConnection (it lives
-    // inside the private NetworkMonitor). The JS-facing onBitrateChange is
-    // primarily used to surface the encoder's configured bitrate after adaptive
-    // changes — reading it back from videoSettings + audioSettings matches that
-    // contract without needing a network-monitor reporter.
-    Task { [weak self] in
-      guard let self else { return }
-      let vBps = await self.stream.videoSettings.bitRate
-      let aBps = await self.stream.audioSettings.bitRate
-      let bps = Double(vBps + aBps)
-      self.onBitrateChange?(bps)
-      if self.adaptiveEnabled, self.cachedIsStreaming {
-        self.adaptBitrate(measuredBps: bps)
+    // Prefer the real measured throughput captured by PublisherBitrateStrategy
+    // from HK's internal NetworkMonitor. Until the first .status event arrives
+    // (the monitor ticks every ~3s), fall back to the encoder's configured
+    // bitrate so the UI shows *something* instead of zero.
+    if lastMeasuredBps > 0 {
+      onBitrateChange?(lastMeasuredBps)
+      // Track the configured bitrate too so getCurrentBitrate stays useful.
+      Task { [weak self] in
+        guard let self else { return }
+        let vBps = await self.stream.videoSettings.bitRate
+        self.adaptiveCurrentBitrate = vBps
       }
-    }
-  }
-
-  private func adaptBitrate(measuredBps: Double) {
-    guard adaptiveMaxBitrate > 0 else { return }
-    let target = Double(adaptiveCurrentBitrate)
-    if measuredBps < target * 0.8 {
-      let nextBitrate = Int(target * (1 - adaptiveDecreasePct / 100))
-      let floor = adaptiveMaxBitrate / 4
-      let clamped = max(nextBitrate, floor)
-      if clamped != adaptiveCurrentBitrate {
-        adaptiveCurrentBitrate = clamped
-        Task { [weak self] in
-          guard let self else { return }
-          var s = await self.stream.videoSettings
-          s.bitRate = clamped
-          try? await self.stream.setVideoSettings(s)
-        }
-      }
-    } else if adaptiveCurrentBitrate < adaptiveMaxBitrate {
-      let nextBitrate = Int(target * (1 + adaptiveIncreasePct / 100))
-      let clamped = min(nextBitrate, adaptiveMaxBitrate)
-      if clamped != adaptiveCurrentBitrate {
-        adaptiveCurrentBitrate = clamped
-        Task { [weak self] in
-          guard let self else { return }
-          var s = await self.stream.videoSettings
-          s.bitRate = clamped
-          try? await self.stream.setVideoSettings(s)
-        }
+    } else {
+      Task { [weak self] in
+        guard let self else { return }
+        let vBps = await self.stream.videoSettings.bitRate
+        let aBps = await self.stream.audioSettings.bitRate
+        self.onBitrateChange?(Double(vBps + aBps))
       }
     }
   }
@@ -1291,6 +1368,54 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
       }
     default:
       break
+    }
+  }
+
+  // ─── NetStream.* status events (from RTMPStream.status AsyncStream) ───────
+  //
+  // `connection.status` carries NetConnection.* events (handshake / connect /
+  // auth). The per-stream status carries NetStream.Publish.*, .Unpublish.*,
+  // .Failed, .Play.* — these would otherwise only surface as a generic
+  // `requestTimedOut` from the publish() continuation, masking the real
+  // reason (bad stream name, server-side rejection, …).
+
+  private func handleStreamStatus(_ status: RTMPStatus) {
+    let code = status.code
+    let desc = status.description
+    switch code {
+    case RTMPStream.Code.publishStart.rawValue:
+      // Server has accepted the publish — best-effort confirmation. We
+      // already emitted .connectionsuccess from the connect path; this
+      // is just useful diagnostic info.
+      log("publishStart: \(desc)")
+    case RTMPStream.Code.unpublishSuccess.rawValue:
+      log("unpublishSuccess: \(desc)")
+    case RTMPStream.Code.publishBadName.rawValue:
+      // The stream key was rejected (auth expired, duplicate, malformed).
+      // Surface this to JS — the publish() continuation will still time
+      // out 15s later, but we can fail fast here.
+      cachedIsStreaming = false
+      stopBitrateTimer()
+      let isAuth = desc.lowercased().contains("auth") || desc.lowercased().contains("not authorized")
+      onConnectionEvent?(isAuth ? .autherror : .connectionfailed, "publishBadName: \(desc)")
+    case RTMPStream.Code.failed.rawValue,
+         RTMPStream.Code.playFailed.rawValue,
+         RTMPStream.Code.playStreamNotFound.rawValue:
+      cachedIsStreaming = false
+      stopBitrateTimer()
+      onConnectionEvent?(.connectionfailed, "\(code): \(desc)")
+    default:
+      break
+    }
+  }
+
+  private func subscribeToStreamStatus(_ stream: RTMPStream) {
+    streamStatusObserverTask?.cancel()
+    streamStatusObserverTask = Task { [weak self] in
+      guard let self else { return }
+      for await status in await stream.status {
+        self.handleStreamStatus(status)
+      }
     }
   }
 
@@ -1426,5 +1551,47 @@ private extension CGFloat {
 private extension Float {
   func clamped(_ lower: Float, _ upper: Float) -> Float {
     return Swift.min(Swift.max(self, lower), upper)
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Bit-rate strategy
+// ────────────────────────────────────────────────────────────────────────────
+//
+// HaishinKit's NetworkMonitor is private on RTMPConnection, so we can't read
+// `totalBytesOut` or `currentBytesOutPerSecond` directly. But HK *does* call
+// `stream.bitRateStrategy?.adjustBitrate(event, stream:)` on every monitor
+// tick — meaning the throughput data is plumbed through the strategy hook
+// we set via `setBitRateStrategy`. We install a custom strategy on every
+// active RTMPStream that:
+//   1. Forwards `currentBytesOutPerSecond × 8` to a Sendable sink → JS-side
+//      `onBitrateChange` reports the actual measured send rate.
+//   2. When JS-side adaptive bitrate is enabled, also delegates to HK's
+//      built-in `StreamVideoAdaptiveBitRateStrategy` which adjusts the
+//      encoder bitrate in response to `publishInsufficientBWOccured`.
+//
+final class PublisherBitrateStrategy: StreamBitRateStrategy, @unchecked Sendable {
+  let mamimumVideoBitRate: Int
+  let mamimumAudioBitRate: Int = 0
+
+  private let inner: StreamVideoAdaptiveBitRateStrategy?
+  private let onThroughputBps: @Sendable (Int) -> Void
+
+  init(maxVideoBitRate: Int, adaptive: Bool, onThroughputBps: @escaping @Sendable (Int) -> Void) {
+    self.mamimumVideoBitRate = maxVideoBitRate
+    self.inner = adaptive ? StreamVideoAdaptiveBitRateStrategy(mamimumVideoBitrate: maxVideoBitRate) : nil
+    self.onThroughputBps = onThroughputBps
+  }
+
+  func adjustBitrate(_ event: NetworkMonitorEvent, stream: some StreamConvertible) async {
+    switch event {
+    case .status(let report):
+      onThroughputBps(report.currentBytesOutPerSecond * 8)
+    case .publishInsufficientBWOccured(let report):
+      onThroughputBps(report.currentBytesOutPerSecond * 8)
+    case .reset:
+      break
+    }
+    await inner?.adjustBitrate(event, stream: stream)
   }
 }
