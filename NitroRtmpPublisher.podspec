@@ -10,7 +10,9 @@ Pod::Spec.new do |s|
   s.license      = package["license"]
   s.authors      = package["author"]
 
-  s.platforms    = { :ios => "13.0" }
+  # Minimum iOS bumped to 15 to match HaishinKit 2.2.x's deployment target.
+  # If you need iOS 13/14 support, pin to v0.3.x of this package.
+  s.platforms    = { :ios => "15.0" }
   s.source       = { :git => "https://github.com/Fluxlabs-tech/react-native-nitro-rtmp-publisher.git", :tag => "#{s.version}" }
 
   s.source_files = [
@@ -30,10 +32,19 @@ Pod::Spec.new do |s|
 
   s.dependency "React-Core"
 
-  # HaishinKit — RTMP publisher engine.
-  # Pinned to the 1.9.x line: stable, sync-style API that matches RootEncoder on Android.
-  # https://github.com/HaishinKit/HaishinKit.swift
-  s.dependency "HaishinKit", "~> 1.9"
+  # HaishinKit 2.2.5 — RTMP publisher engine.
+  #
+  # ⚠️  HaishinKit stopped publishing podspecs to CocoaPods trunk after 2.0.9.
+  # We ship our own vendored HaishinKit.podspec + RTMPHaishinKit.podspec at
+  # the root of this package. Consumers must add these two lines to their
+  # Podfile (typically `ios/Podfile`):
+  #
+  #   pod 'HaishinKit',     :podspec => '../node_modules/react-native-nitro-rtmp-publisher/HaishinKit.podspec'
+  #   pod 'RTMPHaishinKit', :podspec => '../node_modules/react-native-nitro-rtmp-publisher/RTMPHaishinKit.podspec'
+  #
+  # See README.md "Install → iOS" for the full setup.
+  s.dependency "HaishinKit", "2.2.5"
+  s.dependency "RTMPHaishinKit", "2.2.5"
 
   load "nitrogen/generated/ios/NitroRtmpPublisher+autolinking.rb"
   add_nitrogen_files(s)

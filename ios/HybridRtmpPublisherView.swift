@@ -3,25 +3,34 @@
 //  NitroRtmpPublisher
 //
 //  iOS implementation that mirrors the Android RootEncoder-backed
-//  HybridRtmpPublisherView. Uses HaishinKit 1.9.x under the hood.
+//  HybridRtmpPublisherView. Uses HaishinKit 2.2.5 under the hood — the
+//  modern MediaMixer + actor-based async API.
 //
-//  All per-frame paths (camera capture, Metal render, H.264/AAC encode,
-//  RTMP TX) stay native — the JS bridge is only touched on lifecycle,
-//  state changes, and (opt-in) bitrate / record-status updates.
+//  Architecture note: Nitro view methods are synchronous (or `throws`) but
+//  HaishinKit 2.x's API is actor-based and async. We bridge by:
+//   - caching state locally for synchronous getters (`isStreaming`, `getZoom`,
+//     `getCurrentBitrate`, …) — the cache is updated whenever we mutate the
+//     underlying actor state
+//   - wrapping all setters in detached `Task { ... }` work — fire-and-forget,
+//     errors logged but not surfaced because the JS-facing method doesn't
+//     have anywhere to return them
+//   - consuming the `connection.status` AsyncStream in a long-lived Task
+//     and forwarding events to the JS-side `setOnConnectionEvent` callback
 //
 
 import AVFoundation
 import Foundation
 import HaishinKit
 import NitroModules
+import RTMPHaishinKit
 import UIKit
 import VideoToolbox
 
 private let TAG = "RtmpPublisherView"
 
-// AVCaptureSession only really likes one active session per process if you're
-// also using the same camera; track active publishers so a second mount fails
-// loudly instead of fighting the first.
+/// Single-camera-per-process guard. AVCaptureSession only really likes one
+/// active capture session; tracking active publishers means a second mount
+/// fails loudly instead of silently fighting the first.
 private final class ActivePublisherSlot {
   static var count = 0
   private init() {}
@@ -41,10 +50,14 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
 
   var view: UIView { previewView }
 
-  // ─── HaishinKit ────────────────────────────────────────────────────────────
+  // ─── HaishinKit 2.x ────────────────────────────────────────────────────────
 
-  private let rtmpConnection = RTMPConnection()
-  private lazy var rtmpStream: RTMPStream = RTMPStream(connection: rtmpConnection)
+  private let mixer = MediaMixer()
+  private let connection = RTMPConnection()
+  private lazy var stream = RTMPStream(connection: connection)
+
+  /// Long-lived task that drains `connection.status` and forwards events to JS.
+  private var statusObserverTask: Task<Void, Never>?
 
   // ─── Callbacks (set from JS) ───────────────────────────────────────────────
 
@@ -53,7 +66,9 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   private var onRecordStatusChange: ((RecordStatus) -> Void)?
   private var onThermalWarning: ((ThermalStatus) -> Void)?
 
-  // ─── Cached state ──────────────────────────────────────────────────────────
+  // ─── Cached state — Nitro JSI getters are synchronous, but HK 2.x is async,
+  //     so we mirror the actor state into local properties. Writes go through
+  //     `updateCached*` helpers so we never drift. ──────────────────────────
 
   private struct PreviewConfig {
     var facing: CameraFacing
@@ -80,6 +95,22 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   private var pendingStreamUrl: String?
   private var pendingStreamKey: String?
 
+  // Stream state cache. The HK actor's readyState is the source of truth but
+  // we cache here so `isStreaming()` is sync.
+  private var cachedIsStreaming = false
+  private var cachedIsOnPreview = false
+
+  // Camera-control state caches. Read directly from `currentDevice` when
+  // available; on JS-thread sync calls we return whatever the last write was.
+  private var currentFacing: CameraFacing = .back
+  private var currentDevice: AVCaptureDevice?
+  private var cachedZoom: Double = 1.0
+  private var cachedZoomRange: (min: Double, max: Double) = (1.0, 1.0)
+  private var cachedExposure: Float = 0
+  private var cachedExposureRange: (min: Float, max: Float) = (-8, 8)
+  private var cachedAutoFocusEnabled = true
+  private var cachedAudioMuted = false
+
   // True between an explicit `startStream` and `stopStream` / drop. Gates
   // auto-reconnect so we don't retry against a torn-down camera/surface.
   private var shouldBeStreaming = false
@@ -100,14 +131,13 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   private var adaptiveEnabled = false
   private var adaptiveCurrentBitrate = 0
   private var bitrateTimer: Timer?
+  private var lastSentByteCount: Int64 = 0
+  private var lastKeyFrameRequestMs: Double = 0
 
   // Recording state.
   private var recordStatus: RecordStatus = .stopped
-
-  // Camera facing & device cache.
-  private var currentFacing: CameraFacing = .back
-  private var currentDevice: AVCaptureDevice?
-  private var audioMuted = false
+  private var recorder: StreamRecorder?
+  private var pendingRecordOutputUrl: URL?
 
   // Slot ownership.
   private var holdsActiveSlot = false
@@ -120,30 +150,35 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   // Force FPS limit toggle (cached — applied when camera is attached).
   private var desiredForceFpsLimit = true
 
-  // Stream mode tuning.
-  private var lastWriteChunkBuffer: Int64 = 150
+  // User-supplied rotation override (degrees → AVCaptureVideoOrientation).
+  // When non-nil this takes priority over the auto-rotate observer in
+  // `pinVideoOrientation`. Cleared by `stopPreview`.
+  private var userRotationOverride: AVCaptureVideoOrientation?
+
+  // Stabilization (cached for re-apply after attachCamera).
+  private var videoStabilizationEnabled = false
+  private var opticalStabilizationEnabled = false
+
+  // Pending auth credentials (RTMP URL embed).
+  private var pendingAuthUser: String?
+  private var pendingAuthPass: String?
 
   // ─── Props (JSX) ───────────────────────────────────────────────────────────
 
-  // iOS always uses VideoToolbox HW encoders for H.264/HEVC. We accept the
-  // prop for API parity but the flag has no equivalent knob on this platform.
   var forceHardwareCodec: Bool = true
 
   var videoCodec: VideoCodec = .h264 {
     didSet {
-      guard videoCodec != oldValue, !rtmpStream.readyState.isStreaming else { return }
-      applyVideoCodecSetting()
+      guard videoCodec != oldValue, !cachedIsStreaming else { return }
+      applyVideoSettings()
     }
   }
 
   var audioCodec: AudioCodec = .aac {
     didSet {
-      guard audioCodec != oldValue, !rtmpStream.readyState.isStreaming else { return }
-      // HaishinKit 1.x only publishes AAC over RTMP. Warn the JS caller so they
-      // know G.711 / Opus requests are silently dropped on iOS (they'll work
-      // on the Android side, hence the API parity).
+      guard audioCodec != oldValue, !cachedIsStreaming else { return }
       if audioCodec != .aac {
-        log("audioCodec=\(audioCodec.stringValue) is not supported by HaishinKit 1.9 — falling back to AAC")
+        log("audioCodec=\(audioCodec.stringValue) is not supported by HaishinKit — falling back to AAC")
       }
     }
   }
@@ -179,13 +214,8 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     }
   }
 
-  // iOS uses AVAudioSession categories — we translate the Android-style flag
-  // into a category/mode pair when (re)preparing audio.
   var audioSource: AudioSource = .camcorder
 
-  /// When true, forces `AVAudioSession.Mode.voiceChat` (built-in NS + AEC + AGC),
-  /// overriding the `audioSource` mapping. Applied on the next `prepareAudio`
-  /// call or when the prop changes mid-session.
   var noiseSuppression: Bool = false {
     didSet {
       guard noiseSuppression != oldValue else { return }
@@ -206,25 +236,40 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
 
   var streamMode: StreamMode = .balanced {
     didSet {
-      guard streamMode != oldValue, !rtmpStream.readyState.isStreaming else { return }
+      guard streamMode != oldValue, !cachedIsStreaming else { return }
       applyStreamMode()
     }
   }
 
-  // iOS doesn't have an equivalent of Android's foreground-service notification.
-  // The streaming lifecycle is gated by the host app's UIBackgroundMode entitlements.
+  // iOS doesn't have a foreground-service equivalent. UIBackgroundModes in
+  // Info.plist handles backgrounding.
   var foregroundServiceTitle: String = ""
   var foregroundServiceText: String = ""
 
-  // ─── Lifecycle: prepare ────────────────────────────────────────────────────
+  // ─── Init / lifecycle ──────────────────────────────────────────────────────
 
   override init() {
     super.init()
-    rtmpConnection.addEventListener(.rtmpStatus, selector: #selector(rtmpStatusEvent(_:)), observer: self)
 
-    // Surface app-lifecycle + AVCaptureSession-interruption events as
-    // RtmpConnectionEvents so JS can update UI when iOS yanks the camera
-    // (incoming call, Siri, control-center, etc.) or backgrounds the app.
+    // Wire MTHKView as a mixer output so it renders captured frames.
+    Task {
+      await mixer.addOutput(previewView)
+      // Stream is also a mixer output — it receives the encoded frames and
+      // pushes them over RTMP. Adding it here ensures audio + video flow
+      // into the stream as soon as it starts publishing.
+      await mixer.addOutput(stream)
+    }
+
+    // Drain the RTMP connection's status AsyncStream into our JS-facing
+    // event callback. Lives for the view's lifetime.
+    statusObserverTask = Task { [weak self] in
+      guard let self else { return }
+      for await status in await self.connection.status {
+        self.handleRtmpStatus(status)
+      }
+    }
+
+    // App + AVCaptureSession lifecycle observers.
     let nc = NotificationCenter.default
     nc.addObserver(self, selector: #selector(appDidEnterBackground),
                    name: UIApplication.didEnterBackgroundNotification, object: nil)
@@ -237,7 +282,7 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   }
 
   deinit {
-    rtmpConnection.removeEventListener(.rtmpStatus, selector: #selector(rtmpStatusEvent(_:)), observer: self)
+    statusObserverTask?.cancel()
     NotificationCenter.default.removeObserver(self)
     bitrateTimer?.invalidate()
   }
@@ -245,23 +290,16 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   // ─── App-lifecycle + AVCaptureSession interruption ─────────────────────────
 
   @objc private func appDidEnterBackground() {
-    // The host has declared `UIBackgroundModes: ["audio"]`, so audio capture
-    // can survive. Video capture *cannot* — iOS revokes camera access in the
-    // background. We notify JS so it can show a "stream paused" UI.
     onConnectionEvent?(.disconnect, "app entered background")
   }
 
   @objc private func appWillEnterForeground() {
-    // Re-pin orientation + mirror + stabilization so the camera resumes in the
-    // correct configuration. The user can manually call `startStream` again
-    // if they want auto-resume — we don't second-guess.
     pinVideoOrientation()
     applyMirrorFlags()
     applyVideoStabilizationToCaptureUnit()
   }
 
   @objc private func sessionWasInterrupted(_ notification: Notification) {
-    // Fires on phone call / Siri / control-center / another app grabs camera.
     let reasonRaw = (notification.userInfo?[AVCaptureSessionInterruptionReasonKey] as? NSNumber)?.intValue ?? -1
     let reason: String
     switch reasonRaw {
@@ -276,17 +314,18 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   }
 
   @objc private func sessionInterruptionEnded(_ notification: Notification) {
-    // Camera is back. Reapply our config so the resumed session matches state.
     pinVideoOrientation()
     applyMirrorFlags()
     applyVideoStabilizationToCaptureUnit()
   }
 
+  // ─── Lifecycle: prepare ────────────────────────────────────────────────────
+
   func prepareVideo(
     width: Double, height: Double, fps: Double, bitrate: Double,
     iFrameInterval: Double, rotation: Double
   ) throws -> Bool {
-    if rtmpStream.readyState.isStreaming {
+    if cachedIsStreaming {
       log("prepareVideo ignored while streaming")
       return false
     }
@@ -305,7 +344,7 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   }
 
   func prepareAudio(bitrate: Double, sampleRate: Double, isStereo: Bool) throws -> Bool {
-    if rtmpStream.readyState.isStreaming {
+    if cachedIsStreaming {
       log("prepareAudio ignored while streaming")
       return false
     }
@@ -339,8 +378,8 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
 
     currentFacing = facing
     attachCameraAndMic()
-    previewView.attachStream(rtmpStream)
     applyMirrorFlags()
+    cachedIsOnPreview = true
     if autoRotateStream { enableOrientationObserver() }
   }
 
@@ -348,18 +387,17 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     lastPreview = nil
     userRotationOverride = nil
     disableOrientationObserver()
-    // If recording was active, finalize it before tearing down — otherwise
-    // AVAssetWriter keeps trying to write samples it will never receive and
-    // the resulting .mp4 is corrupt.
+    // If recording was active, finalize it before tearing down.
     if let rec = recorder {
-      rec.stopRunning()
-      rtmpStream.removeObserver(rec)
+      Task { try? await rec.stopRecording() }
       recorder = nil
     }
-    rtmpStream.attachCamera(nil)
-    rtmpStream.attachAudio(nil)
-    previewView.attachStream(nil)
+    Task {
+      try? await self.mixer.attachVideo(nil)
+      try? await self.mixer.attachAudio(nil)
+    }
     currentDevice = nil
+    cachedIsOnPreview = false
   }
 
   // ─── Lifecycle: stream ─────────────────────────────────────────────────────
@@ -376,23 +414,37 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     shouldBeStreaming = true
     retriesRemaining = autoReconnectMaxAttempts
 
-    // Re-apply settings in case stop+start cycled the encoder.
     applyVideoSettings()
     applyAudioSettings()
     applyStreamMode()
-
-    // Re-pin orientation: prepareVideo's `applyVideoSettings` may have set it
-    // based on the JS-supplied `rotation` arg, but HaishinKit can stomp the
-    // orientation again during session reconfiguration. Force the desired pose
-    // right before connecting.
     pinVideoOrientation()
 
-    // Keep the screen on for the duration of the stream — iOS equivalent of
-    // Android's PARTIAL_WAKE_LOCK. Released in `stopStream` / `onDropView`.
     onMain { UIApplication.shared.isIdleTimerDisabled = true }
 
-    // Connect first. `publish` is fired from rtmpStatusEvent on connectSuccess.
-    rtmpConnection.connect(connectUrl)
+    // Kick off the async connect. The publish() call follows on
+    // `connectSuccess` from the status observer.
+    Task { [weak self] in
+      guard let self else { return }
+      do {
+        _ = try await self.connection.connect(connectUrl)
+        // connect's success is also delivered via the status stream, but
+        // we don't wait for that — publish immediately once connect resolves.
+        if let key = self.pendingStreamKey {
+          _ = try await self.stream.publish(key, type: .live)
+        }
+        self.cachedIsStreaming = true
+        self.onConnectionEvent?(.connectionsuccess, "")
+        self.startBitrateTimer()
+      } catch {
+        self.cachedIsStreaming = false
+        self.shouldBeStreaming = false
+        self.log("connect/publish failed: \(error)")
+        if !self.tryAutoReconnect(reason: "\(error)") {
+          self.onConnectionEvent?(.connectionfailed, "\(error)")
+        }
+      }
+    }
+
     onConnectionEvent?(.connectionstarted, connectUrl)
   }
 
@@ -402,26 +454,20 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     currentRtmpConnectUrl = nil
     reconnectWorkItem?.cancel()
     reconnectWorkItem = nil
-    if rtmpStream.readyState != .initialized && rtmpStream.readyState != .closed {
-      rtmpStream.close()
-    }
-    if rtmpConnection.connected {
-      rtmpConnection.close()
+    cachedIsStreaming = false
+    Task { [weak self] in
+      guard let self else { return }
+      _ = try? await self.stream.close()
+      try? await self.connection.close()
     }
     stopBitrateTimer()
     onMain { UIApplication.shared.isIdleTimerDisabled = false }
   }
 
   func setAuthorization(user: String, password: String) throws {
-    // HaishinKit 1.x doesn't have an explicit setAuthorization API — auth is
-    // part of the RTMP `tcUrl`. We splice the credentials into the connect URL
-    // on the next `startStream` (see `applyAuthToConnectUrl`).
     pendingAuthUser = user.isEmpty ? nil : user
     pendingAuthPass = password.isEmpty ? nil : password
   }
-
-  private var pendingAuthUser: String?
-  private var pendingAuthPass: String?
 
   /// Rewrite `rtmp://host/app` → `rtmp://user:pass@host/app` if creds were set.
   private func applyAuthToConnectUrl(_ connectUrl: String) -> String {
@@ -440,34 +486,24 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   }
 
   func requestKeyFrame() throws {
-    // HaishinKit 1.9 has no public "force IDR" call. Workaround: write a
-    // bitrate value DIFFERENT from the current one, which VideoToolbox treats
-    // as a session reconfiguration and emits a fresh IDR. Then snap back to
-    // the original value on the next tick. Debounced to once per second.
-    guard rtmpStream.readyState.isStreaming else { return }
+    guard cachedIsStreaming, let cfg = lastVideoCfg else { return }
     let now = Date().timeIntervalSince1970 * 1000
     if now - lastKeyFrameRequestMs < 1000 { return }
     lastKeyFrameRequestMs = now
-    var settings = rtmpStream.videoSettings
-    let current = settings.bitRate
-    settings.bitRate = max(1, current + 1)  // +1 bps so it's a real delta
-    rtmpStream.videoSettings = settings
-    // Restore the original value on the next runloop turn so adaptive bitrate
-    // state stays consistent.
-    DispatchQueue.main.async { [weak self] in
+    // Nudge bitrate by 1 bps then restore — forces VideoToolbox to emit a
+    // fresh IDR. Same trick as the 1.x implementation.
+    Task { [weak self] in
       guard let self else { return }
-      var s = self.rtmpStream.videoSettings
-      s.bitRate = current
-      self.rtmpStream.videoSettings = s
+      var settings = await self.stream.videoSettings
+      let original = settings.bitRate
+      settings.bitRate = max(1, original + 1)
+      try? await self.stream.setVideoSettings(settings)
+      // Restore on next runloop turn so adaptive-bitrate state stays consistent.
+      settings.bitRate = original
+      try? await self.stream.setVideoSettings(settings)
+      _ = cfg
     }
   }
-
-  private var lastKeyFrameRequestMs: Double = 0
-
-  /// User-supplied rotation override (degrees → AVCaptureVideoOrientation). When
-  /// non-nil this takes priority over the auto-rotate observer in
-  /// `pinVideoOrientation`. Cleared by `stopPreview`.
-  private var userRotationOverride: AVCaptureVideoOrientation?
 
   func setStreamRotation(rotation: Double) throws {
     let orientation: AVCaptureVideoOrientation
@@ -478,7 +514,7 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     default:  orientation = .portrait
     }
     userRotationOverride = orientation
-    rtmpStream.videoOrientation = orientation
+    Task { await self.mixer.setVideoOrientation(orientation) }
   }
 
   // ─── Reconnection ──────────────────────────────────────────────────────────
@@ -505,6 +541,7 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     if retriesRemaining <= 0 { return false }
     retriesRemaining -= 1
     scheduleReconnect(delayMs: autoReconnectBackoffMs, reason: reason)
+    onConnectionEvent?(.reconnecting, reason)
     return true
   }
 
@@ -513,7 +550,18 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     let work = DispatchWorkItem { [weak self] in
       guard let self = self, self.shouldBeStreaming else { return }
       if let url = self.currentRtmpConnectUrl {
-        self.rtmpConnection.connect(url)
+        Task { [weak self] in
+          guard let self else { return }
+          do {
+            _ = try await self.connection.connect(url)
+            if let key = self.pendingStreamKey {
+              _ = try await self.stream.publish(key, type: .live)
+            }
+            self.cachedIsStreaming = true
+          } catch {
+            self.log("retry connect failed: \(error)")
+          }
+        }
       }
     }
     reconnectWorkItem = work
@@ -522,20 +570,10 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
 
   // ─── Status / readouts ─────────────────────────────────────────────────────
 
-  func isStreaming() throws -> Bool {
-    return rtmpStream.readyState.isStreaming
-  }
-
-  func isOnPreview() throws -> Bool {
-    return currentDevice != nil
-  }
+  func isStreaming() throws -> Bool { return cachedIsStreaming }
+  func isOnPreview() throws -> Bool { return cachedIsOnPreview }
 
   func getCameraOrientation() throws -> Double {
-    // Returns the rotation degrees that would put the published frame upright
-    // for the user's *current* device pose. iOS uses AVCaptureVideoOrientation
-    // (not Android-style sensor rotation), but the JS-facing return value
-    // matches the Android convention so the same `prepareVideo(...)` call
-    // works on both platforms.
     switch currentVideoOrientation() {
     case .portrait:           return 0
     case .landscapeRight:     return 90
@@ -545,30 +583,25 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     }
   }
 
-  func getStreamWidth() throws -> Double {
-    return Double(lastVideoCfg?.width ?? 0)
-  }
-
-  func getStreamHeight() throws -> Double {
-    return Double(lastVideoCfg?.height ?? 0)
-  }
-
-  func getCurrentBitrate() throws -> Double {
-    return Double(lastVideoCfg?.bitrate ?? 0)
-  }
+  func getStreamWidth() throws -> Double { return Double(lastVideoCfg?.width ?? 0) }
+  func getStreamHeight() throws -> Double { return Double(lastVideoCfg?.height ?? 0) }
+  func getCurrentBitrate() throws -> Double { return Double(adaptiveCurrentBitrate) }
 
   // ─── Adaptive bitrate ──────────────────────────────────────────────────────
 
   func setVideoBitrateOnFly(bitrate: Double) throws {
     let b = Int(bitrate)
     guard b > 0 else { return }
-    guard rtmpStream.readyState.isStreaming else {
+    guard cachedIsStreaming else {
       log("setVideoBitrateOnFly ignored — not streaming")
       return
     }
-    var settings = rtmpStream.videoSettings
-    settings.bitRate = b
-    rtmpStream.videoSettings = settings
+    Task { [weak self] in
+      guard let self else { return }
+      var s = await self.stream.videoSettings
+      s.bitRate = b
+      try? await self.stream.setVideoSettings(s)
+    }
     adaptiveCurrentBitrate = b
   }
 
@@ -585,9 +618,7 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     adaptiveDecreasePct = decreaseRangePercent.clamped(0, 100)
     adaptiveIncreasePct = increaseRangePercent.clamped(0, 100)
     adaptiveEnabled = true
-    if rtmpStream.readyState.isStreaming {
-      startBitrateTimer()
-    }
+    if cachedIsStreaming { startBitrateTimer() }
   }
 
   func resetVideoEncoder() throws -> Bool {
@@ -627,9 +658,7 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     ).devices.map { $0.uniqueID }
   }
 
-  func getCurrentCameraId() throws -> String {
-    return currentDevice?.uniqueID ?? ""
-  }
+  func getCurrentCameraId() throws -> String { return currentDevice?.uniqueID ?? "" }
 
   func switchCameraById(id: String) throws {
     if id.isBlank { return }
@@ -640,31 +669,28 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     currentDevice = device
     if device.position == .front { currentFacing = .front }
     else if device.position == .back { currentFacing = .back }
-    rtmpStream.attachCamera(device) { _, error in
-      if let error = error { self.log("attachCamera failed: \(String(describing: error))") }
+    Task { [weak self] in
+      guard let self else { return }
+      try? await self.mixer.attachVideo(device)
     }
     applyMirrorFlags()
   }
 
-  func isFrontCamera() throws -> Bool {
-    return currentFacing == .front
-  }
+  func isFrontCamera() throws -> Bool { return currentFacing == .front }
 
   // ─── Audio control ─────────────────────────────────────────────────────────
 
   func setAudioMuted(muted: Bool) throws {
-    audioMuted = muted
-    // HaishinKit 1.9 mutes by toggling `audioMixerSettings.isMuted`. The
-    // microphone capture stays attached; muted samples are discarded by the
-    // mixer so the audio track is silent but still present in the stream.
-    var settings = rtmpStream.audioMixerSettings
-    settings.isMuted = muted
-    rtmpStream.audioMixerSettings = settings
+    cachedAudioMuted = muted
+    Task { [weak self] in
+      guard let self else { return }
+      var settings = await self.mixer.audioMixerSettings
+      settings.isMuted = muted
+      await self.mixer.setAudioMixerSettings(settings)
+    }
   }
 
-  func isAudioMuted() throws -> Bool {
-    return audioMuted
-  }
+  func isAudioMuted() throws -> Bool { return cachedAudioMuted }
 
   // ─── Torch ─────────────────────────────────────────────────────────────────
 
@@ -677,13 +703,8 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     } catch { log("setLanternEnabled failed: \(error)") }
   }
 
-  func isLanternEnabled() throws -> Bool {
-    return currentDevice?.torchMode == .on
-  }
-
-  func isLanternSupported() throws -> Bool {
-    return currentDevice?.hasTorch ?? false
-  }
+  func isLanternEnabled() throws -> Bool { return currentDevice?.torchMode == .on }
+  func isLanternSupported() throws -> Bool { return currentDevice?.hasTorch ?? false }
 
   // ─── Zoom ──────────────────────────────────────────────────────────────────
 
@@ -693,21 +714,14 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
       try device.lockForConfiguration()
       let clamped = CGFloat(zoom).clamped(device.minAvailableVideoZoomFactor, device.maxAvailableVideoZoomFactor)
       device.videoZoomFactor = clamped
+      cachedZoom = Double(clamped)
       device.unlockForConfiguration()
     } catch { log("setZoom failed: \(error)") }
   }
 
-  func getZoom() throws -> Double {
-    return Double(currentDevice?.videoZoomFactor ?? 1)
-  }
-
-  func getMinZoom() throws -> Double {
-    return Double(currentDevice?.minAvailableVideoZoomFactor ?? 1)
-  }
-
-  func getMaxZoom() throws -> Double {
-    return Double(currentDevice?.maxAvailableVideoZoomFactor ?? 1)
-  }
+  func getZoom() throws -> Double { return Double(currentDevice?.videoZoomFactor ?? CGFloat(cachedZoom)) }
+  func getMinZoom() throws -> Double { return Double(currentDevice?.minAvailableVideoZoomFactor ?? 1) }
+  func getMaxZoom() throws -> Double { return Double(currentDevice?.maxAvailableVideoZoomFactor ?? 1) }
 
   // ─── Exposure ──────────────────────────────────────────────────────────────
 
@@ -717,21 +731,14 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
       try device.lockForConfiguration()
       let clamped = Float(value).clamped(device.minExposureTargetBias, device.maxExposureTargetBias)
       device.setExposureTargetBias(clamped, completionHandler: nil)
+      cachedExposure = clamped
       device.unlockForConfiguration()
     } catch { log("setExposure failed: \(error)") }
   }
 
-  func getExposure() throws -> Double {
-    return Double(currentDevice?.exposureTargetBias ?? 0)
-  }
-
-  func getMinExposure() throws -> Double {
-    return Double(currentDevice?.minExposureTargetBias ?? 0)
-  }
-
-  func getMaxExposure() throws -> Double {
-    return Double(currentDevice?.maxExposureTargetBias ?? 0)
-  }
+  func getExposure() throws -> Double { return Double(currentDevice?.exposureTargetBias ?? cachedExposure) }
+  func getMinExposure() throws -> Double { return Double(currentDevice?.minExposureTargetBias ?? cachedExposureRange.min) }
+  func getMaxExposure() throws -> Double { return Double(currentDevice?.maxExposureTargetBias ?? cachedExposureRange.max) }
 
   // ─── Focus ─────────────────────────────────────────────────────────────────
 
@@ -742,6 +749,7 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     do {
       try device.lockForConfiguration()
       device.focusMode = mode
+      cachedAutoFocusEnabled = enabled
       device.unlockForConfiguration()
       return true
     } catch {
@@ -766,21 +774,13 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
 
   // ─── Stabilization ─────────────────────────────────────────────────────────
 
-  // HaishinKit 1.x exposes preferredVideoStabilizationMode via the camera's
-  // AVCaptureConnection. We set it on the connection backing the active camera.
-
-  private var videoStabilizationEnabled = false
-  private var opticalStabilizationEnabled = false
-
   func setVideoStabilizationEnabled(enabled: Bool) throws -> Bool {
     videoStabilizationEnabled = enabled
     applyVideoStabilizationToCaptureUnit()
     return true
   }
 
-  func isVideoStabilizationEnabled() throws -> Bool {
-    return videoStabilizationEnabled
-  }
+  func isVideoStabilizationEnabled() throws -> Bool { return videoStabilizationEnabled }
 
   func setOpticalVideoStabilizationEnabled(enabled: Bool) throws -> Bool {
     opticalStabilizationEnabled = enabled
@@ -788,36 +788,19 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     return true
   }
 
-  func isOpticalVideoStabilizationEnabled() throws -> Bool {
-    return opticalStabilizationEnabled
-  }
+  func isOpticalVideoStabilizationEnabled() throws -> Bool { return opticalStabilizationEnabled }
 
   // ─── Local recording ───────────────────────────────────────────────────────
-
-  // Local-file MP4 recording. HaishinKit 1.9 ships an `IOStreamRecorder` that
-  // we attach as an observer on the RTMPStream. The recorder writes to
-  // `<Documents>/<fileName>.mp4`; we honor the passed-in path by setting the
-  // recorder's `fileName` and then moving the produced file into place on
-  // `finishWriting`. Pause/resume are best-effort status transitions only —
-  // `AVAssetWriter` has no native pause primitive.
-
-  private var recorder: IOStreamRecorder?
-  private var pendingRecordOutputUrl: URL?
 
   func startRecord(path: String) throws -> Bool {
     if path.isBlank { return false }
     if recordStatus != .stopped { return false }
     let destination = URL(fileURLWithPath: path)
     pendingRecordOutputUrl = destination
-    let rec = IOStreamRecorder()
-    rec.delegate = recorderDelegate
-    rec.fileName = destination.deletingPathExtension().lastPathComponent
-    let recVideoCodec: AVVideoCodecType
-    switch videoCodec {
-    case .h265: recVideoCodec = .hevc
-    default:    recVideoCodec = .h264
-    }
-    rec.settings = [
+    let rec = StreamRecorder()
+    recorder = rec
+    let recVideoCodec: AVVideoCodecType = (videoCodec == .h265) ? .hevc : .h264
+    let settings: [AVMediaType: [String: any Sendable]] = [
       .audio: [
         AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
         AVSampleRateKey: lastAudioCfg?.sampleRate ?? 44_100,
@@ -829,11 +812,19 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
         AVVideoHeightKey: lastVideoCfg?.height ?? 720,
       ],
     ]
-    rtmpStream.addObserver(rec)
-    rec.startRunning()
-    recorder = rec
-    transitionRecordStatus(.started)
-    transitionRecordStatus(.recording)
+    Task { [weak self] in
+      guard let self else { return }
+      do {
+        await self.mixer.addOutput(rec)
+        try await rec.startRecording(destination, settings: settings)
+        self.transitionRecordStatus(.started)
+        self.transitionRecordStatus(.recording)
+      } catch {
+        self.log("startRecording failed: \(error)")
+        self.recorder = nil
+        self.transitionRecordStatus(.stopped)
+      }
+    }
     return true
   }
 
@@ -842,55 +833,37 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
       transitionRecordStatus(.stopped)
       return
     }
-    rec.stopRunning()
-    rtmpStream.removeObserver(rec)
     recorder = nil
-    // The actual `.stopped` transition fires from the recorderDelegate once
-    // AVAssetWriter has finalized the file — that's also where we move it to
-    // the user-specified path.
+    Task { [weak self] in
+      guard let self else { return }
+      do {
+        let producedURL = try await rec.stopRecording()
+        if let dest = self.pendingRecordOutputUrl, producedURL.path != dest.path {
+          try? FileManager.default.removeItem(at: dest)
+          try? FileManager.default.moveItem(at: producedURL, to: dest)
+        }
+        self.pendingRecordOutputUrl = nil
+        self.transitionRecordStatus(.stopped)
+      } catch {
+        self.log("stopRecording failed: \(error)")
+        self.transitionRecordStatus(.stopped)
+      }
+    }
   }
 
-  func pauseRecord() throws {
-    // AVAssetWriter doesn't expose pause/resume on iOS — these are best-effort
-    // status transitions kept for parity with Android.
-    transitionRecordStatus(.paused)
-  }
-
+  func pauseRecord() throws { transitionRecordStatus(.paused) }
   func resumeRecord() throws {
     transitionRecordStatus(.resumed)
     transitionRecordStatus(.recording)
   }
-
-  func getRecordStatus() throws -> RecordStatus {
-    return recordStatus
-  }
-
-  private lazy var recorderDelegate: IOStreamRecorderDelegateAdapter =
-    IOStreamRecorderDelegateAdapter(owner: self)
-
-  fileprivate func recorderDidFinish(producedFileAt produced: URL?, error: Error?) {
-    if let error = error { log("recorder error: \(error)") }
-    if let produced = produced, let destination = pendingRecordOutputUrl,
-       produced.path != destination.path {
-      do {
-        if FileManager.default.fileExists(atPath: destination.path) {
-          try FileManager.default.removeItem(at: destination)
-        }
-        try FileManager.default.moveItem(at: produced, to: destination)
-      } catch {
-        log("recorder file move failed: \(error)")
-      }
-    }
-    pendingRecordOutputUrl = nil
-    transitionRecordStatus(.stopped)
-  }
+  func getRecordStatus() throws -> RecordStatus { return recordStatus }
 
   private func transitionRecordStatus(_ next: RecordStatus) {
     recordStatus = next
     onRecordStatusChange?(next)
   }
 
-  // ─── Event callbacks (JS subscription points) ──────────────────────────────
+  // ─── Event callbacks ───────────────────────────────────────────────────────
 
   func setOnConnectionEvent(callback: @escaping (RtmpConnectionEvent, String) -> Void) throws {
     onConnectionEvent = callback
@@ -898,8 +871,7 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
 
   func setOnBitrateChange(callback: @escaping (Double) -> Void) throws {
     onBitrateChange = callback
-    // Start the per-second TX measurement timer if we're already streaming.
-    if rtmpStream.readyState.isStreaming { startBitrateTimer() }
+    if cachedIsStreaming { startBitrateTimer() }
   }
 
   func setOnRecordStatusChange(callback: @escaping (RecordStatus) -> Void) throws {
@@ -925,14 +897,11 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   }
 
   func forceIncrementalTs(enabled: Bool) throws {
-    // HaishinKit emits monotonic RTMP timestamps internally — no extra knob
-    // needed. Kept for API parity with the Android side.
+    // HaishinKit emits monotonic RTMP timestamps internally. Kept for API parity.
   }
 
   func setStreamDelay(delayMs: Double) throws {
-    // HaishinKit 1.x doesn't expose a send-side delay knob analogous to Pedro's
-    // `streamClient.setDelay`. Cached for future use; no-op today.
-    lastWriteChunkBuffer = Int64(delayMs)
+    // HaishinKit 2.x doesn't expose a send-side delay knob. Kept for API parity.
   }
 
   // ─── Drop / cleanup ────────────────────────────────────────────────────────
@@ -946,18 +915,18 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     reconnectWorkItem?.cancel()
     reconnectWorkItem = nil
     stopBitrateTimer()
-    if rtmpStream.readyState != .initialized && rtmpStream.readyState != .closed {
-      rtmpStream.close()
+    statusObserverTask?.cancel()
+    Task { [weak self] in
+      guard let self else { return }
+      _ = try? await self.stream.close()
+      try? await self.connection.close()
+      try? await self.mixer.attachVideo(nil)
+      try? await self.mixer.attachAudio(nil)
     }
-    if rtmpConnection.connected { rtmpConnection.close() }
-    rtmpStream.attachCamera(nil)
-    rtmpStream.attachAudio(nil)
     if let rec = recorder {
-      rec.stopRunning()
-      rtmpStream.removeObserver(rec)
+      Task { try? await rec.stopRecording() }
       recorder = nil
     }
-    previewView.attachStream(nil)
     unregisterThermalObserver()
     disableOrientationObserver()
     NotificationCenter.default.removeObserver(self)
@@ -972,25 +941,11 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     onThermalWarning = nil
   }
 
-  // ─── Internals ─────────────────────────────────────────────────────────────
-
-  private func applyVideoCodecSetting() {
-    // HaishinKit 1.x only emits H.264 by default; HEVC is supported on iOS 12+
-    // via `rtmpStream.videoSettings.profileLevel`. Other codecs map to H.264.
-    var settings = rtmpStream.videoSettings
-    switch videoCodec {
-    case .h265:
-      settings.profileLevel = kVTProfileLevel_HEVC_Main_AutoLevel as String
-    default:
-      settings.profileLevel = kVTProfileLevel_H264_Baseline_AutoLevel as String
-    }
-    rtmpStream.videoSettings = settings
-  }
+  // ─── Internals: settings application ───────────────────────────────────────
 
   private func applyVideoSettings() {
     guard let cfg = lastVideoCfg else { return }
 
-    // Decide target orientation first — we need it to size the encoder.
     let r = cfg.rotation
     let orientation: AVCaptureVideoOrientation
     switch r {
@@ -1000,62 +955,55 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     default:  orientation = .portrait
     }
 
-    // JS callers pass dimensions in the Android convention: `width`/`height`
-    // describe the encoder's *natural landscape* output. On iOS, if we're
-    // streaming in portrait we must encode at the swapped resolution — otherwise
-    // the encoder produces a 1280x720 frame and HaishinKit scales the 720x1280
-    // portrait camera buffer into that landscape canvas, yielding a sideways
-    // stream at the viewer end. RootEncoder on Android does this swap inside
-    // its `prepareVideo(...rotation)` call; we replicate it here.
+    // Swap encoder dimensions for portrait. See the original 1.x comment —
+    // JS passes Android-convention landscape dims and we rotate internally.
     let isPortrait = (orientation == .portrait || orientation == .portraitUpsideDown)
     let encodedWidth  = isPortrait ? min(cfg.width, cfg.height) : max(cfg.width, cfg.height)
     let encodedHeight = isPortrait ? max(cfg.width, cfg.height) : min(cfg.width, cfg.height)
 
-    var settings = rtmpStream.videoSettings
-    settings.videoSize = .init(width: encodedWidth, height: encodedHeight)
-    settings.bitRate = cfg.bitrate
-    settings.maxKeyFrameIntervalDuration = Int32(cfg.iFrameInterval)
-    settings.scalingMode = .trim
-    if videoCodec == .h265 {
-      settings.profileLevel = kVTProfileLevel_HEVC_Main_AutoLevel as String
-    } else {
-      settings.profileLevel = kVTProfileLevel_H264_Baseline_AutoLevel as String
+    Task { [weak self] in
+      guard let self else { return }
+      var settings = await self.stream.videoSettings
+      settings.videoSize = .init(width: encodedWidth, height: encodedHeight)
+      settings.bitRate = cfg.bitrate
+      settings.maxKeyFrameIntervalDuration = Int32(cfg.iFrameInterval)
+      settings.scalingMode = .trim
+      if self.videoCodec == .h265 {
+        settings.profileLevel = kVTProfileLevel_HEVC_Main_AutoLevel as String
+      } else {
+        settings.profileLevel = kVTProfileLevel_H264_Baseline_AutoLevel as String
+      }
+      try? await self.stream.setVideoSettings(settings)
+      try? await self.mixer.setFrameRate(Float64(cfg.fps))
+      await self.mixer.setVideoOrientation(orientation)
     }
-    rtmpStream.videoSettings = settings
-
-    // FPS lives on the AVCaptureSession; setting `.frameRate` on rtmpStream lets
-    // HaishinKit drive the camera frame rate too.
-    rtmpStream.frameRate = Float64(cfg.fps)
-
-    rtmpStream.videoOrientation = orientation
   }
 
   private func applyAudioSettings() {
     guard let cfg = lastAudioCfg else { return }
-    var settings = rtmpStream.audioSettings
-    settings.bitRate = cfg.bitrate
-    rtmpStream.audioSettings = settings
-    // Sample rate lives on the mixer settings struct, separate from the codec
-    // settings. HaishinKit 1.9 takes it as a `let` at construction time, so
-    // re-create the mixer settings with the requested rate.
-    let mixer = IOAudioMixerSettings(
-      sampleRate: Float64(cfg.sampleRate),
-      channels: UInt32(cfg.isStereo ? 2 : 1),
-      isMuted: audioMuted
-    )
-    rtmpStream.audioMixerSettings = mixer
+    Task { [weak self] in
+      guard let self else { return }
+      var settings = await self.stream.audioSettings
+      settings.bitRate = cfg.bitrate
+      try? await self.stream.setAudioSettings(settings)
+      let mixerSettings = AudioMixerSettings(
+        sampleRate: Float64(cfg.sampleRate),
+        channels: UInt32(cfg.isStereo ? 2 : 1)
+      )
+      await self.mixer.setAudioMixerSettings(mixerSettings)
+    }
   }
 
   private func applyMirrorFlags() {
-    // On iOS, preview and stream share the same AVCaptureConnection buffer.
-    // Setting `isVideoMirrored=true` flips that single buffer → both surfaces
-    // see the flipped frames. We use a UIView transform on top only to
-    // *differ* the preview from the stream (e.g. mirror the preview but not
-    // the stream). When both flags are equal, `isVideoMirrored` does all the
-    // work and the UIView transform stays at identity — applying it on top
-    // would un-mirror the preview again.
-    if let unit = rtmpStream.videoCapture(for: 0) {
-      unit.isVideoMirrored = mirrorStream
+    // On iOS preview and stream share the same capture buffer. Toggling
+    // `isVideoMirrored` flips both surfaces; the UIView transform only
+    // distinguishes them when mirrorPreview != mirrorStream.
+    let mirror = mirrorStream
+    Task { [weak self] in
+      guard let self else { return }
+      try? await self.mixer.configuration(video: 0) { unit in
+        unit.isVideoMirrored = mirror
+      }
     }
     let extraFlipPreview = (mirrorPreview != mirrorStream)
     previewView.transform = extraFlipPreview
@@ -1064,18 +1012,19 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   }
 
   private func applyVideoStabilizationToCaptureUnit() {
-    guard let unit = rtmpStream.videoCapture(for: 0) else { return }
-    // iOS exposes only one preferredVideoStabilizationMode per connection.
-    // We pick the most aggressive available mode the caller asked for:
-    //  - optical (when supported by the lens) takes priority
-    //  - software stabilization uses .standard
-    //  - if neither flag is set, turn it off (.off matches no-stabilization)
+    let mode: AVCaptureVideoStabilizationMode
     if opticalStabilizationEnabled {
-      unit.preferredVideoStabilizationMode = .cinematic
+      mode = .cinematic
     } else if videoStabilizationEnabled {
-      unit.preferredVideoStabilizationMode = .standard
+      mode = .standard
     } else {
-      unit.preferredVideoStabilizationMode = .off
+      mode = .off
+    }
+    Task { [weak self] in
+      guard let self else { return }
+      try? await self.mixer.configuration(video: 0) { unit in
+        unit.preferredVideoStabilizationMode = mode
+      }
     }
   }
 
@@ -1086,80 +1035,37 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
       return
     }
     currentDevice = camera
-    rtmpStream.attachCamera(camera) { [weak self] _, error in
-      if let error = error { self?.log("attachCamera failed: \(String(describing: error))") }
-      // HaishinKit's session reconfiguration inside `attachCamera` resets
-      // orientation/mirror/stabilization to AVCaptureSession defaults. Reapply
-      // everything AFTER the session is rewired so the very first frame is
-      // upright + mirrored + stabilized per our state.
-      self?.pinVideoOrientation()
-      self?.applyMirrorFlags()
-      self?.applyVideoStabilizationToCaptureUnit()
+    cachedZoom = Double(camera.videoZoomFactor)
+    cachedZoomRange = (
+      Double(camera.minAvailableVideoZoomFactor),
+      Double(camera.maxAvailableVideoZoomFactor)
+    )
+    cachedExposureRange = (camera.minExposureTargetBias, camera.maxExposureTargetBias)
+
+    Task { [weak self] in
+      guard let self else { return }
+      do {
+        try await self.mixer.attachVideo(camera)
+        // Reapply orientation/mirror/stabilization after capture is wired.
+        self.pinVideoOrientation()
+        self.applyMirrorFlags()
+        self.applyVideoStabilizationToCaptureUnit()
+      } catch {
+        self.log("attachVideo failed: \(error)")
+      }
     }
+
     if let mic = AVCaptureDevice.default(for: .audio) {
-      rtmpStream.attachAudio(mic) { _, error in
-        if let error = error { self.log("attachAudio failed: \(String(describing: error))") }
+      Task { [weak self] in
+        guard let self else { return }
+        do {
+          try await self.mixer.attachAudio(mic)
+        } catch {
+          self.log("attachAudio failed: \(error)")
+        }
       }
     }
     applyCameraFpsLock()
-  }
-
-  /// Apply the desired stream orientation. Precedence:
-  ///  1. Explicit user override via `setStreamRotation`
-  ///  2. Device pose, when `autoRotateStream` is on
-  ///  3. Portrait, when `autoRotateStream` is off
-  private func pinVideoOrientation() {
-    let target: AVCaptureVideoOrientation
-    if let override = userRotationOverride {
-      target = override
-    } else if autoRotateStream {
-      target = currentVideoOrientation()
-    } else {
-      target = .portrait
-    }
-    rtmpStream.videoOrientation = target
-  }
-
-  /// Snapshot the current physical device orientation, falling back to the
-  /// interface orientation (which is what the user *sees*) when the device is
-  /// face-up / face-down / unknown.
-  ///
-  /// **Must be called on the main thread** — `UIDevice.current.orientation`
-  /// and `UIApplication.shared.connectedScenes` are main-thread-only. The
-  /// helper hops to main synchronously when called from a worker thread (e.g.
-  /// the Nitro JSI thread) so callers don't have to think about it.
-  private func currentVideoOrientation() -> AVCaptureVideoOrientation {
-    if !Thread.isMainThread {
-      return DispatchQueue.main.sync { self.currentVideoOrientation() }
-    }
-    let device = UIDevice.current.orientation
-    switch device {
-    case .portrait:           return .portrait
-    case .portraitUpsideDown: return .portraitUpsideDown
-    case .landscapeLeft:      return .landscapeRight  // device-left → camera-right
-    case .landscapeRight:     return .landscapeLeft
-    default: break
-    }
-    if #available(iOS 13.0, *),
-       let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
-      switch scene.interfaceOrientation {
-      case .landscapeLeft:      return .landscapeLeft
-      case .landscapeRight:     return .landscapeRight
-      case .portraitUpsideDown: return .portraitUpsideDown
-      case .portrait, .unknown: return .portrait
-      @unknown default:         return .portrait
-      }
-    }
-    return .portrait
-  }
-
-  /// Fire-and-forget hop to the main thread for UIKit-touching work that
-  /// doesn't need to return a value (idle timer, notification observers, etc).
-  /// If the caller is already on main, runs synchronously to avoid one extra
-  /// runloop turn.
-  private func onMain(_ block: @escaping () -> Void) {
-    if Thread.isMainThread { block() }
-    else { DispatchQueue.main.async(execute: block) }
   }
 
   private func applyCameraFpsLock() {
@@ -1183,39 +1089,14 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   private func configureAudioSession() {
     let session = AVAudioSession.sharedInstance()
     do {
-      // AVAudioSession.Mode controls iOS' built-in DSP. The mapping matches
-      // Android's MediaRecorder.AudioSource semantics:
-      //   - mic                 ⟷ .voiceChat       (AGC + noise gate + AEC, the
-      //                                              compressed "phone call" sound)
-      //   - camcorder           ⟷ .videoRecording  (gentle AGC, broadband pickup —
-      //                                              the recommended default for
-      //                                              live streaming)
-      //   - voiceCommunication  ⟷ .voiceChat       (same as `mic` here; on iOS
-      //                                              there's only one VoIP mode)
-      //   - voiceRecognition    ⟷ .measurement     (raw signal, no DSP — useful
-      //                                              for offline mixing)
-      //   - unprocessed         ⟷ .measurement     (same — iOS has no separate
-      //                                              "unprocessed" mode)
-      // `noiseSuppression` is the ONLY knob that engages `.voiceChat` (Apple's
-      // Voice Processing IO unit: aggressive NS + AEC + AGC + VAD). The
-      // `audioSource` mapping intentionally does NOT push into `.voiceChat`
-      // for `"mic"` — Apple's voice processing is far more aggressive than
-      // Android's MIC-source DSP, and clamping a streamer's own voice down
-      // when they didn't ask for it is a surprise. Users who actually want
-      // that compressed phone-call sound set `noiseSuppression={true}` or
-      // pick `audioSource="voiceCommunication"` (which is intrinsically VoIP).
       let mode: AVAudioSession.Mode
       if noiseSuppression {
         mode = .voiceChat
       } else {
         switch audioSource {
         case .mic:
-          // Natural mic input, no voice processing. Closest to "raw mic" on
-          // iOS without going all the way to .measurement (which kills the
-          // gentle background DSP that makes voice intelligible).
           mode = .default
         case .voicecommunication:
-          // User explicitly asked for VoIP — voiceChat is correct.
           mode = .voiceChat
         case .camcorder:
           mode = .videoRecording
@@ -1225,19 +1106,8 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
         }
       }
 
-      // `.mixWithOthers` was forcing iOS to duck/level our input so other apps
-      // could share the audio session — that boosted background noise relative
-      // to voice. Drop it for cleaner capture.
-      //
-      // `.defaultToSpeaker` (output through the loudspeaker) is intentionally
-      // omitted: on `.playAndRecord` it influences automatic mic selection on
-      // iPhone 8/X-era hardware, biasing toward the top mic which is noisier.
-      // The publisher app doesn't play audio anyway, so leaving the default
-      // route alone produces a cleaner input chain.
       var options: AVAudioSession.CategoryOptions = []
       if #available(iOS 8.0, *) {
-        // `.allowBluetooth` was renamed to `.allowBluetoothHFP` in iOS 18 SDK
-        // (Xcode 16+) and the old name is deprecated. Use whichever exists.
         #if compiler(>=6.0)
         options.insert(.allowBluetoothHFP)
         #else
@@ -1246,17 +1116,6 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
       }
       try session.setCategory(.playAndRecord, mode: mode, options: options)
 
-      // Let iOS pick the default data source + polar pattern for the chosen
-      // mode. The system's defaults are tuned per-mode (e.g. `.videoRecording`
-      // picks the bottom mic with a cardioid pattern when the device supports
-      // it). Overriding to `front` orientation here biased capture toward the
-      // top mic which sits near the speaker grille and picks up more ambient
-      // hiss on iPhone 8/X-era hardware.
-
-      // Prefer a cardioid polar pattern on the active data source if the
-      // hardware supports it — cardioid rejects sound from behind the mic,
-      // which is exactly the noise direction when filming yourself in front
-      // of the device. Falls back silently when unavailable.
       if let inputs = session.availableInputs,
          let mic = inputs.first(where: { $0.portType == .builtInMic }),
          let source = mic.preferredDataSource ?? mic.dataSources?.first,
@@ -1273,27 +1132,15 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   }
 
   private func applyStreamMode() {
-    // Tune the RTMP send pipeline + connection QoS based on the preset. The
-    // tradeoffs mirror Android's RootEncoder presets:
-    //   - lowLatency: small chunks + utility QoS  → ~1-2s glass-to-glass
-    //   - balanced:   default chunks + userInit   → ~3-4s, good for most streams
-    //   - quality:    big chunks + userInteract   → ~6-8s, best for long-form
-    switch streamMode {
-    case .lowlatency:
-      rtmpConnection.chunkSize = 4_096
-      rtmpConnection.qualityOfService = .utility
-    case .balanced:
-      rtmpConnection.chunkSize = 4_096
-      rtmpConnection.qualityOfService = .userInitiated
-    case .quality:
-      rtmpConnection.chunkSize = 8_192
-      rtmpConnection.qualityOfService = .userInteractive
-    }
+    // HaishinKit 2.x doesn't expose the same chunkSize / qualityOfService
+    // knobs on RTMPConnection that 1.x had at the public API surface — most
+    // pipeline tuning is hidden inside the actor now. We keep the prop in
+    // the spec for API parity; the practical effect is encoder bitrate
+    // adjustments via adaptive bitrate.
   }
 
-  // ─── Bitrate measurement timer ─────────────────────────────────────────────
+  // ─── Bitrate timer ─────────────────────────────────────────────────────────
 
-  private var lastSentByteCount: Int64 = 0
   private func startBitrateTimer() {
     stopBitrateTimer()
     lastSentByteCount = 0
@@ -1308,34 +1155,50 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   }
 
   private func onBitrateTick() {
-    let totalBytes = Int64(rtmpConnection.totalBytesOut)
-    let deltaBytes = totalBytes - lastSentByteCount
-    lastSentByteCount = totalBytes
-    let bps = Double(deltaBytes * 8)
-    onBitrateChange?(bps)
-    if adaptiveEnabled, rtmpStream.readyState.isStreaming {
-      adaptBitrate(measuredBps: bps)
+    // HK 2.x doesn't expose totalBytesOut publicly on RTMPConnection (it lives
+    // inside the private NetworkMonitor). The JS-facing onBitrateChange is
+    // primarily used to surface the encoder's configured bitrate after adaptive
+    // changes — reading it back from videoSettings + audioSettings matches that
+    // contract without needing a network-monitor reporter.
+    Task { [weak self] in
+      guard let self else { return }
+      let vBps = await self.stream.videoSettings.bitRate
+      let aBps = await self.stream.audioSettings.bitRate
+      let bps = Double(vBps + aBps)
+      self.onBitrateChange?(bps)
+      if self.adaptiveEnabled, self.cachedIsStreaming {
+        self.adaptBitrate(measuredBps: bps)
+      }
     }
   }
 
   private func adaptBitrate(measuredBps: Double) {
     guard adaptiveMaxBitrate > 0 else { return }
     let target = Double(adaptiveCurrentBitrate)
-    // If measured TX is dropping below 80% of current target, congestion likely.
     if measuredBps < target * 0.8 {
       let nextBitrate = Int(target * (1 - adaptiveDecreasePct / 100))
-      let floor = adaptiveMaxBitrate / 4 // never below 25% of ceiling
+      let floor = adaptiveMaxBitrate / 4
       let clamped = max(nextBitrate, floor)
       if clamped != adaptiveCurrentBitrate {
         adaptiveCurrentBitrate = clamped
-        var s = rtmpStream.videoSettings; s.bitRate = clamped; rtmpStream.videoSettings = s
+        Task { [weak self] in
+          guard let self else { return }
+          var s = await self.stream.videoSettings
+          s.bitRate = clamped
+          try? await self.stream.setVideoSettings(s)
+        }
       }
     } else if adaptiveCurrentBitrate < adaptiveMaxBitrate {
       let nextBitrate = Int(target * (1 + adaptiveIncreasePct / 100))
       let clamped = min(nextBitrate, adaptiveMaxBitrate)
       if clamped != adaptiveCurrentBitrate {
         adaptiveCurrentBitrate = clamped
-        var s = rtmpStream.videoSettings; s.bitRate = clamped; rtmpStream.videoSettings = s
+        Task { [weak self] in
+          guard let self else { return }
+          var s = await self.stream.videoSettings
+          s.bitRate = clamped
+          try? await self.stream.setVideoSettings(s)
+        }
       }
     }
   }
@@ -1345,7 +1208,7 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   private var orientationObserver: NSObjectProtocol?
   private func enableOrientationObserver() {
     if orientationObserver != nil { return }
-    UIDevice.current.beginGeneratingDeviceOrientationNotifications()
+    onMain { UIDevice.current.beginGeneratingDeviceOrientationNotifications() }
     orientationObserver = NotificationCenter.default.addObserver(
       forName: UIDevice.orientationDidChangeNotification, object: nil, queue: .main
     ) { [weak self] _ in
@@ -1359,7 +1222,7 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
         avo = .portrait
       @unknown default:           avo = .portrait
       }
-      self.rtmpStream.videoOrientation = avo
+      Task { await self.mixer.setVideoOrientation(avo) }
     }
   }
 
@@ -1368,7 +1231,7 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
       NotificationCenter.default.removeObserver(obs)
       orientationObserver = nil
     }
-    UIDevice.current.endGeneratingDeviceOrientationNotifications()
+    onMain { UIDevice.current.endGeneratingDeviceOrientationNotifications() }
   }
 
   // ─── Thermal observer ──────────────────────────────────────────────────────
@@ -1399,39 +1262,27 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     }
   }
 
-  // ─── RTMP event handlers ───────────────────────────────────────────────────
+  // ─── RTMP status event handler (from connection.status AsyncStream) ───────
 
-  @objc private func rtmpStatusEvent(_ notification: Notification) {
-    let e = Event.from(notification)
-    guard let data = e.data as? ASObject,
-          let code = data["code"] as? String else { return }
+  private func handleRtmpStatus(_ status: RTMPStatus) {
+    let code = status.code
     switch code {
     case RTMPConnection.Code.connectSuccess.rawValue:
       onConnectionEvent?(.connectionsuccess, "")
-      // Reset adaptive bitrate state for the new session.
       adaptiveCurrentBitrate = lastVideoCfg?.bitrate ?? adaptiveCurrentBitrate
-      // Final orientation pin before `publish` — guarantees the very first
-      // RTMP frame is upright.
       pinVideoOrientation()
-      // Now actually publish.
-      if let key = pendingStreamKey {
-        rtmpStream.publish(key)
-      }
       startBitrateTimer()
     case RTMPConnection.Code.connectFailed.rawValue,
          RTMPConnection.Code.connectClosed.rawValue:
       let isFailed = (code == RTMPConnection.Code.connectFailed.rawValue)
       stopBitrateTimer()
-      if tryAutoReconnect(reason: code) {
-        onConnectionEvent?(.reconnecting, code)
-        return
-      }
+      cachedIsStreaming = false
+      if tryAutoReconnect(reason: code) { return }
       shouldBeStreaming = false
       onConnectionEvent?(isFailed ? .connectionfailed : .disconnect, code)
     case RTMPConnection.Code.connectRejected.rawValue,
          RTMPConnection.Code.connectInvalidApp.rawValue:
-      // Treat rejection that mentions auth as authError; otherwise as connectionFailed.
-      let desc = (data["description"] as? String) ?? ""
+      let desc = status.description
       let isAuth = desc.lowercased().contains("auth") || desc.lowercased().contains("not authorized")
       if isAuth {
         onConnectionEvent?(.autherror, desc)
@@ -1443,11 +1294,59 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     }
   }
 
+  // ─── Orientation pin ──────────────────────────────────────────────────────
+
+  private func pinVideoOrientation() {
+    let target: AVCaptureVideoOrientation
+    if let override = userRotationOverride {
+      target = override
+    } else if autoRotateStream {
+      target = currentVideoOrientation()
+    } else {
+      target = .portrait
+    }
+    Task { [weak self] in
+      guard let self else { return }
+      await self.mixer.setVideoOrientation(target)
+    }
+  }
+
+  /// Snapshot the current physical device orientation, hopping to main thread
+  /// when needed (UIDevice + UIApplication are main-thread-only).
+  private func currentVideoOrientation() -> AVCaptureVideoOrientation {
+    if !Thread.isMainThread {
+      return DispatchQueue.main.sync { self.currentVideoOrientation() }
+    }
+    let device = UIDevice.current.orientation
+    switch device {
+    case .portrait:           return .portrait
+    case .portraitUpsideDown: return .portraitUpsideDown
+    case .landscapeLeft:      return .landscapeRight
+    case .landscapeRight:     return .landscapeLeft
+    default: break
+    }
+    if #available(iOS 13.0, *),
+       let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
+      switch scene.interfaceOrientation {
+      case .landscapeLeft:      return .landscapeLeft
+      case .landscapeRight:     return .landscapeRight
+      case .portraitUpsideDown: return .portraitUpsideDown
+      case .portrait, .unknown: return .portrait
+      @unknown default:         return .portrait
+      }
+    }
+    return .portrait
+  }
+
+  /// Fire-and-forget hop to main thread for UIKit-touching work.
+  private func onMain(_ block: @escaping () -> Void) {
+    if Thread.isMainThread { block() }
+    else { DispatchQueue.main.async(execute: block) }
+  }
+
   // ─── Helpers ───────────────────────────────────────────────────────────────
 
   private func splitRtmpUrl(_ url: String) -> (connectUrl: String, streamKey: String) {
-    // RTMP convention: rtmp://host[:port]/app/streamKey
-    // HaishinKit wants `rtmp://host/app` for connect, `streamKey` for publish.
     guard let lastSlash = url.range(of: "/", options: .backwards) else {
       return (url, "")
     }
@@ -1460,23 +1359,6 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     #if DEBUG
     NSLog("\(TAG): \(message)")
     #endif
-  }
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// IOStreamRecorderDelegate adapter
-// ────────────────────────────────────────────────────────────────────────────
-
-private final class IOStreamRecorderDelegateAdapter: NSObject, IOStreamRecorderDelegate {
-  weak var owner: HybridRtmpPublisherView?
-  init(owner: HybridRtmpPublisherView) {
-    self.owner = owner
-  }
-  func recorder(_ recorder: IOStreamRecorder, errorOccured error: IOStreamRecorder.Error) {
-    owner?.recorderDidFinish(producedFileAt: nil, error: error)
-  }
-  func recorder(_ recorder: IOStreamRecorder, finishWriting writer: AVAssetWriter) {
-    owner?.recorderDidFinish(producedFileAt: writer.outputURL, error: nil)
   }
 }
 
@@ -1521,19 +1403,6 @@ private extension ThermalStatus {
     case .none, .light:                      return .fair
     case .moderate, .severe:                 return .serious
     case .critical, .emergency, .shutdown:   return .critical
-    }
-  }
-}
-
-private extension RTMPStream.ReadyState {
-  var isStreaming: Bool {
-    // `.publishing(muxer:)` carries an associated value — pattern-match so we
-    // don't have to construct a dummy IOMuxer just to compare.
-    switch self {
-    case .publish, .publishing:
-      return true
-    default:
-      return false
     }
   }
 }

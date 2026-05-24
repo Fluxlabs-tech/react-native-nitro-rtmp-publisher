@@ -4,7 +4,7 @@
   <a href="https://www.npmjs.com/package/react-native-nitro-rtmp-publisher"><img alt="npm" src="https://img.shields.io/npm/v/react-native-nitro-rtmp-publisher.svg"></a>
   <a href="https://www.npmjs.com/package/react-native-nitro-rtmp-publisher"><img alt="downloads" src="https://img.shields.io/npm/dm/react-native-nitro-rtmp-publisher.svg"></a>
   <a href="./LICENSE"><img alt="license" src="https://img.shields.io/npm/l/react-native-nitro-rtmp-publisher.svg"></a>
-  <img alt="iOS" src="https://img.shields.io/badge/iOS-13.0%2B-000000.svg?logo=apple">
+  <img alt="iOS" src="https://img.shields.io/badge/iOS-15.0%2B-000000.svg?logo=apple">
   <img alt="Android" src="https://img.shields.io/badge/Android-21%2B-3DDC84.svg?logo=android">
   <img alt="Nitro" src="https://img.shields.io/badge/Nitro-Modules-FF6B35.svg">
 </p>
@@ -83,7 +83,18 @@ yarn add  react-native-nitro-rtmp-publisher react-native-nitro-modules
 
 ### iOS
 
-Run `pod install` in your `ios/` directory. The library declares HaishinKit as a CocoaPods dependency, so no additional setup is needed.
+Add the two vendored HaishinKit podspecs to your `ios/Podfile` (inside your `target` block), then `pod install`:
+
+```ruby
+target 'YourApp' do
+  # … your existing config …
+
+  pod 'HaishinKit',     :podspec => '../node_modules/react-native-nitro-rtmp-publisher/HaishinKit.podspec'
+  pod 'RTMPHaishinKit', :podspec => '../node_modules/react-native-nitro-rtmp-publisher/RTMPHaishinKit.podspec'
+end
+```
+
+> **Why two extra lines?** Upstream HaishinKit stopped publishing podspecs to CocoaPods after 2.0.9 (they moved fully to SPM). This package vendors podspecs that point at the current 2.2.x GitHub tag so CocoaPods consumers can still get the latest HaishinKit without forking. We pin both pods at the same version so cross-module `package`-level symbols resolve.
 
 Add the privacy descriptions to your `Info.plist` so iOS can prompt the user the first time the publisher accesses the camera / microphone:
 
@@ -103,7 +114,7 @@ If you want streaming to continue while the user briefly backgrounds the app, al
 </array>
 ```
 
-**Minimum**: iOS 13. **Xcode**: 15+ recommended.
+**Minimum**: iOS 15 (HaishinKit 2.2.x requirement). **Xcode**: 15+ recommended. If you need iOS 13/14 support, pin to v0.3.x of this package (HaishinKit 1.9.x).
 
 ### Android
 

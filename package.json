@@ -1,6 +1,6 @@
 {
   "name": "react-native-nitro-rtmp-publisher",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "High-performance RTMP camera publisher for React Native, built on Nitro Modules and RootEncoder.",
   "main": "lib/index",
   "module": "lib/index",
@@ -19,6 +19,8 @@
     "android/src",
     "ios",
     "NitroRtmpPublisher.podspec",
+    "HaishinKit.podspec",
+    "RTMPHaishinKit.podspec",
     "nitro.json",
     "README.md",
     "LICENSE"
