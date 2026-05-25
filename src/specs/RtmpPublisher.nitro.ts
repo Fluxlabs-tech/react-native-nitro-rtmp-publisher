@@ -212,6 +212,21 @@ export interface RtmpPublisherViewProps extends HybridViewProps {
    * @default ''
    */
   foregroundServiceText: string
+
+  /**
+   * **Android only.** Drawable resource name to use as the foreground-service
+   * notification's small icon. Pass the bare resource name *without* package
+   * prefix or extension, e.g. `'ic_notification'` for `res/drawable/ic_notification.png`.
+   *
+   * The drawable must live in the host app's `res/drawable*` directory (this
+   * library is a runtime resolver — no compile-time link). When empty or
+   * unresolvable, a generic system icon is used.
+   *
+   * No-op on iOS (iOS has no foreground-service notification).
+   *
+   * @default ''
+   */
+  foregroundServiceIcon: string
 }
 
 // ────────────────────────────────────────────────────────────────────────────

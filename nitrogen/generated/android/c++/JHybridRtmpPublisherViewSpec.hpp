@@ -76,6 +76,8 @@ namespace margelo::nitro::rtmppublisher {
     void setForegroundServiceTitle(const std::string& foregroundServiceTitle) override;
     std::string getForegroundServiceText() override;
     void setForegroundServiceText(const std::string& foregroundServiceText) override;
+    std::string getForegroundServiceIcon() override;
+    void setForegroundServiceIcon(const std::string& foregroundServiceIcon) override;
 
   public:
     // Methods

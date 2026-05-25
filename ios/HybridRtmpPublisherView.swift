@@ -377,6 +377,7 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   // Info.plist handles backgrounding.
   var foregroundServiceTitle: String = ""
   var foregroundServiceText: String = ""
+  var foregroundServiceIcon: String = ""
 
   // ─── Init / lifecycle ────────────────────────────────────────────────────
 

@@ -2,36 +2,21 @@ package com.margelo.nitro.rtmppublisher
 
 import android.annotation.SuppressLint
 import android.content.Context
-import android.content.Intent
-import android.media.MediaRecorder
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
 import android.view.OrientationEventListener
 import android.view.SurfaceHolder
 import android.view.View
-import androidx.core.content.ContextCompat
-import com.margelo.nitro.views.HybridView
-import com.pedro.common.AudioCodec as PedroAudioCodec
 import com.pedro.common.ConnectChecker
-import com.pedro.common.VideoCodec as PedroVideoCodec
-import com.pedro.encoder.TimestampMode
 import com.pedro.encoder.input.video.CameraHelper
-import com.pedro.encoder.utils.CodecUtil
-import com.pedro.encoder.utils.gl.AspectRatioMode as PedroAspectRatioMode
 import com.pedro.library.base.recording.RecordController
 import com.pedro.library.rtmp.RtmpCamera2
 import com.pedro.library.util.BitrateAdapter
 import com.pedro.library.view.OpenGlView
-
-private const val TAG = "RtmpPublisherView"
-private const val WAKE_LOCK_TAG = "RtmpPublisher::WakeLock"
-
-// Camera2 only allows one open camera per process. Track the active publisher
-// instance so a second mount can fail loudly instead of silently breaking the
-// first one's preview.
-@Volatile private var activePublisherCount = 0
 
 /**
  * Nitro HybridView that wraps RootEncoder's [RtmpCamera2] + [OpenGlView] and
@@ -40,62 +25,128 @@ private const val WAKE_LOCK_TAG = "RtmpPublisher::WakeLock"
  * All per-frame paths (camera capture, GL render, H.264/AAC encode, RTMP TX)
  * stay native — the JS bridge is only touched on lifecycle, state changes,
  * and (opt-in) bitrate / record-status updates.
+ *
+ * **File layout.** Kotlin requires every `override fun` to live in this class
+ * body, so the spec implementations and tightly-coupled callback objects
+ * (ConnectChecker, SurfaceHolder.Callback, RecordController.Listener) stay
+ * here. The topical extensions live in sibling files:
+ *
+ *  - [HybridRtmpPublisherView+Helpers.kt]         — `safe`, `postToMain`,
+ *    `cancelPendingResume`
+ *  - [HybridRtmpPublisherView+Encoders.kt]        — codec/mirror/audio setup,
+ *    `rePrepareEncodersIfNeeded`, `applyStreamMode`
+ *  - [HybridRtmpPublisherView+SystemHooks.kt]     — wakelock, keep-screen-on,
+ *    foreground service
+ *  - [HybridRtmpPublisherView+Observers.kt]       — orientation + thermal
+ *  - [HybridRtmpPublisherView+Reconnect.kt]       — `tryAutoReconnect`
+ *  - [PublisherMappings.kt]                       — enum mappers
+ *  - [PublisherTypes.kt]                          — data classes + constants
  */
 @SuppressLint("ViewConstructor")
-class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublisherViewSpec() {
+class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublisherViewSpec() {
 
   // ─── Native views & encoder ──────────────────────────────────────────────
 
-  private val openGlView = OpenGlView(context)
+  internal val openGlView = OpenGlView(context)
 
-  @Volatile private var onConnectionEvent: ((RtmpConnectionEvent, String) -> Unit)? = null
-  @Volatile private var onBitrateChange: ((Double) -> Unit)? = null
-  @Volatile private var onRecordStatusChange: ((RecordStatus) -> Unit)? = null
-  @Volatile private var onThermalWarning: ((ThermalStatus) -> Unit)? = null
+  @Volatile internal var onConnectionEvent: ((RtmpConnectionEvent, String) -> Unit)? = null
+  @Volatile internal var onBitrateChange: ((Double) -> Unit)? = null
+  @Volatile internal var onRecordStatusChange: ((RecordStatus) -> Unit)? = null
+  @Volatile internal var onThermalWarning: ((ThermalStatus) -> Unit)? = null
 
   // Last known preview config. Kept alive across surface destroy/create cycles
   // (host activity background/foreground, rotation) so the preview auto-restores.
   // Cleared only on explicit `stopPreview()` or `onDropView()`.
-  private var lastPreview: PreviewConfig? = null
-  private var pendingStream: String? = null
-  private var surfaceReady = false
+  internal var lastPreview: PreviewConfig? = null
+  internal var pendingStream: String? = null
+  // When the surface is destroyed while streaming, we save the URL here so
+  // surfaceCreated can re-publish automatically (matches iOS' foreground-resume
+  // behaviour in appWillEnterForeground). Carries a delay so the cached
+  // pendingStream path (initial mount race) stays zero-delay.
+  internal var pendingStreamDelayMs: Long = 0L
+  // Last URL passed to startStream. Used to seed the auto-resume on the next
+  // surface restoration. Cleared on explicit stopStream / onDropView.
+  @Volatile internal var lastStreamUrl: String? = null
+  // Cancellable handle for the delayed resume. @Volatile because cancelPendingResume
+  // may be reached from a Nitro-dispatched method on a non-main thread depending
+  // on how the host configures the view bridge; the writes happen on main
+  // (surfaceCreated callback) and reads cross-thread must see the latest ref.
+  @Volatile internal var pendingResumeRunnable: Runnable? = null
+
+  // One-shot: did we already emit DISCONNECT for the current session? Set by
+  // the surface-destroyed path, cleared in startStreamInternal /
+  // onConnectionSuccess. Used to suppress the second DISCONNECT that Pedro's
+  // own onDisconnect callback would otherwise fire just after we tore the
+  // socket down ourselves.
+  @Volatile internal var disconnectEmitted = false
+
+  // Warn-once on POST_NOTIFICATIONS: the FG-service preflight is called on
+  // every startStreamInternal (including the auto-resume after bg→fg), and
+  // spamming the log on every cycle is noise. Reset on stopStream / onDropView.
+  @Volatile internal var postNotificationsWarned = false
+
+  // Mutex for thermal listener register/unregister so two concurrent
+  // setOnThermalWarning calls can't both pass the registered check and
+  // double-subscribe.
+  internal val thermalLock = Any()
+
+  internal var surfaceReady = false
 
   // Encoder prepare-state caches. RootEncoder's BaseEncoder.stop() releases the
   // MediaCodec and flips `prepared` to false, so the next startStream would
   // throw IllegalStateException("not prepared yet"). We cache the last-known
   // prepareVideo / prepareAudio args and silently re-prepare in startStream so
   // JS can stop+start repeatedly without having to call prepare* again.
-  private var lastVideoCfg: VideoCfg? = null
-  private var lastAudioCfg: AudioCfg? = null
-  @Volatile private var videoPrepared = false
-  @Volatile private var audioPrepared = false
+  internal var lastVideoCfg: VideoCfg? = null
+  internal var lastAudioCfg: AudioCfg? = null
+  @Volatile internal var videoPrepared = false
+  @Volatile internal var audioPrepared = false
 
   // Auto-reconnect config + state.
-  private var autoReconnectMaxAttempts = 0
-  private var autoReconnectBackoffMs = 0L
+  internal var autoReconnectMaxAttempts = 0
+  internal var autoReconnectBackoffMs = 0L
+
+  // Dead-man timer for auto-reconnect. Pedro's streamClient.reTry() can queue
+  // a retry that never completes (TCP hang, DNS stall) without firing another
+  // onConnectionFailed — without this, shouldBeStreaming stays true forever
+  // and JS sits in RECONNECTING with nothing to react to.
+  internal val mainHandler = Handler(Looper.getMainLooper())
+  internal val reconnectTimeoutMs = 30_000L
+  internal val reconnectTimeoutRunnable = Runnable {
+    if (shouldBeStreaming && !camera.isStreaming) {
+      Log.w(TAG, "Auto-reconnect timed out after ${reconnectTimeoutMs}ms")
+      shouldBeStreaming = false
+      releaseWakeLock()
+      setKeepScreenOn(false)
+      onConnectionEvent?.invoke(
+        RtmpConnectionEvent.CONNECTIONFAILED,
+        "reconnect timed out"
+      )
+    }
+  }
 
   // Adaptive bitrate. Null when disabled.
-  @Volatile private var bitrateAdapter: BitrateAdapter? = null
+  @Volatile internal var bitrateAdapter: BitrateAdapter? = null
   // True between `startStream` and an explicit `stopStream` / drop / surface loss.
   // Gates auto-reconnect so we don't retry against a torn-down camera/surface.
-  @Volatile private var shouldBeStreaming = false
+  @Volatile internal var shouldBeStreaming = false
 
   // True iff WE started the FG service (so we know it's safe to stop it on
   // stopStream / drop without yanking some other component's notification).
-  private var fgServiceStartedByUs = false
+  internal var fgServiceStartedByUs = false
 
   // True iff this instance currently holds the single active-publisher slot.
   // Set in startPreviewInternal, cleared in onDropView. Used so multiple
   // mounted views fail loudly instead of silently fighting for the camera.
-  private var holdsActiveSlot = false
+  internal var holdsActiveSlot = false
 
   // Thermal monitoring. The OS listener is only registered after JS subscribes
   // via `setOnThermalWarning` — if you never subscribe, the library never
   // touches PowerManager.
-  private var thermalThresholdLevel = PowerManager.THERMAL_STATUS_SEVERE
-  @Volatile private var lastThermalStatusInt = PowerManager.THERMAL_STATUS_NONE
-  private var thermalListenerRegistered = false
-  private val thermalListener =
+  internal var thermalThresholdLevel = PowerManager.THERMAL_STATUS_SEVERE
+  @Volatile internal var lastThermalStatusInt = PowerManager.THERMAL_STATUS_NONE
+  internal var thermalListenerRegistered = false
+  internal val thermalListener =
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
       PowerManager.OnThermalStatusChangedListener { status -> onThermalStatusChanged(status) }
     else null
@@ -104,12 +155,12 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
   // to [fps, fps]; otherwise auto-exposure can drop to 15fps in low light.
   // The actual call into RootEncoder needs preview to be alive, so we cache
   // the desired value and reapply after each startPreview.
-  private var desiredForceFpsLimit = true
+  internal var desiredForceFpsLimit = true
 
   // Orientation listener. Drives setStreamRotation automatically when
   // `autoRotateStream` is true.
-  @Volatile private var lastAutoAppliedRotation = -1
-  private val orientationListener: OrientationEventListener =
+  @Volatile internal var lastAutoAppliedRotation = -1
+  internal val orientationListener: OrientationEventListener =
     object : OrientationEventListener(context) {
       override fun onOrientationChanged(orientation: Int) {
         if (orientation == ORIENTATION_UNKNOWN) return
@@ -127,37 +178,46 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
       }
     }
 
-  private var wakeLock: PowerManager.WakeLock? = null
+  internal var wakeLock: PowerManager.WakeLock? = null
 
   // Cached system service lookup. Cheap individually but called from hot-ish
   // paths (acquireWakeLock, thermal register/getter); the cache avoids
   // repeated ContextImpl HashMap lookups.
-  private val powerManager: PowerManager? by lazy {
+  internal val powerManager: PowerManager? by lazy {
     context.getSystemService(Context.POWER_SERVICE) as? PowerManager
   }
 
-  private val recordListener = RecordController.Listener { status ->
-    onRecordStatusChange?.invoke(status.toNitro())
+  internal val recordListener = RecordController.Listener { status ->
+    val nitro = status.toNitro()
+    postToMain { onRecordStatusChange?.invoke(nitro) }
   }
 
-  private val connectChecker = object : ConnectChecker {
-    override fun onConnectionStarted(url: String) {
+  // Pedro fires ConnectChecker callbacks from its RTMP I/O coroutine threads.
+  // We force every JS-bound emission onto the main thread so the Nitro callback
+  // and any subsequent state writes (shouldBeStreaming, wakelock, screen-on,
+  // reconnect timer, bitrate-adapter mutation) all happen on one thread —
+  // removes the read-decide-write window between Pedro thread and main thread.
+  internal val connectChecker = object : ConnectChecker {
+    override fun onConnectionStarted(url: String) = postToMain {
       onConnectionEvent?.invoke(RtmpConnectionEvent.CONNECTIONSTARTED, url)
     }
-    override fun onConnectionSuccess() {
+    override fun onConnectionSuccess() = postToMain {
+      mainHandler.removeCallbacks(reconnectTimeoutRunnable)
+      disconnectEmitted = false
       onConnectionEvent?.invoke(RtmpConnectionEvent.CONNECTIONSUCCESS, "")
     }
-    override fun onConnectionFailed(reason: String) {
+    override fun onConnectionFailed(reason: String) = postToMain {
       if (tryAutoReconnect(reason)) {
         onConnectionEvent?.invoke(RtmpConnectionEvent.RECONNECTING, reason)
-        return
+      } else {
+        mainHandler.removeCallbacks(reconnectTimeoutRunnable)
+        shouldBeStreaming = false
+        releaseWakeLock()
+        setKeepScreenOn(false)
+        onConnectionEvent?.invoke(RtmpConnectionEvent.CONNECTIONFAILED, reason)
       }
-      shouldBeStreaming = false
-      releaseWakeLock()
-      setKeepScreenOn(false)
-      onConnectionEvent?.invoke(RtmpConnectionEvent.CONNECTIONFAILED, reason)
     }
-    override fun onNewBitrate(bitrate: Long) {
+    override fun onNewBitrate(bitrate: Long) = postToMain {
       // Feed adaptive-bitrate adapter if enabled. It calls back into
       // `setVideoBitrateOnFly` via its listener, no allocation per tick.
       bitrateAdapter?.let { adapter ->
@@ -168,68 +228,135 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
       }
       onBitrateChange?.invoke(bitrate.toDouble())
     }
-    override fun onDisconnect() {
+    override fun onDisconnect() = postToMain {
       if (tryAutoReconnect("disconnect")) {
         onConnectionEvent?.invoke(RtmpConnectionEvent.RECONNECTING, "disconnect")
-        return
+      } else {
+        mainHandler.removeCallbacks(reconnectTimeoutRunnable)
+        shouldBeStreaming = false
+        releaseWakeLock()
+        setKeepScreenOn(false)
+        // Suppress the duplicate when surfaceDestroyed already emitted
+        // DISCONNECT — Pedro fires its own onDisconnect a moment after our
+        // synchronous teardown and JS would otherwise see two in a row.
+        if (!disconnectEmitted) {
+          onConnectionEvent?.invoke(RtmpConnectionEvent.DISCONNECT, "")
+        }
+        disconnectEmitted = false
       }
-      shouldBeStreaming = false
-      releaseWakeLock()
-      setKeepScreenOn(false)
-      onConnectionEvent?.invoke(RtmpConnectionEvent.DISCONNECT, "")
     }
-    override fun onAuthError() {
+    override fun onAuthError() = postToMain {
       onConnectionEvent?.invoke(RtmpConnectionEvent.AUTHERROR, "")
     }
-    override fun onAuthSuccess() {
+    override fun onAuthSuccess() = postToMain {
       onConnectionEvent?.invoke(RtmpConnectionEvent.AUTHSUCCESS, "")
     }
   }
 
-  private val camera: RtmpCamera2 = RtmpCamera2(openGlView, connectChecker)
+  internal val camera: RtmpCamera2 = RtmpCamera2(openGlView, connectChecker)
 
-  init {
-    openGlView.holder.addCallback(object : SurfaceHolder.Callback {
-      override fun surfaceCreated(holder: SurfaceHolder) {
-        surfaceReady = true
-        // Re-open the camera every time the surface comes back (first mount AND
-        // background→foreground / rotation). Stream auto-resume is intentionally
-        // NOT done — JS already got a `disconnect` event and can decide.
-        lastPreview?.let { p -> startPreviewInternal(p.facing, p.width, p.height) }
-        pendingStream?.let { url ->
+  // Held as a field so onDropView can remove it. Surface-lifecycle callbacks
+  // firing on a dropped view would touch a half-released camera and is exactly
+  // the kind of "subtle crash 5s after navigation" we want to avoid.
+  private val surfaceCallback = object : SurfaceHolder.Callback {
+    override fun surfaceCreated(holder: SurfaceHolder) {
+      surfaceReady = true
+      // Re-open the camera every time the surface comes back (first mount AND
+      // background→foreground / rotation).
+      val previewOk = lastPreview?.let { p ->
+        startPreviewInternal(p.facing, p.width, p.height)
+      }
+      // If preview was requested AND failed (active-slot collision is the
+      // realistic case), bail before touching the stream pipeline — Pedro
+      // requires preview to be live to start the encoder.
+      if (previewOk == false) return
+
+      pendingStream?.let { url ->
+        val delay = pendingStreamDelayMs
+        pendingStream = null
+        pendingStreamDelayMs = 0L
+        if (delay > 0L) {
+          // Foreground-resume path. Match iOS' 1500ms grace so:
+          //  (1) Android can finish restoring networking after the bg→fg
+          //      transition (otherwise the first publish often hits ECONNRESET),
+          //  (2) ingests like Facebook Live / YouTube release the previous
+          //      session lock — re-publishing immediately under the same
+          //      stream key hits NetStream.Publish.BadName.
+          onConnectionEvent?.invoke(RtmpConnectionEvent.RECONNECTING, "foreground")
+          val r = Runnable {
+            pendingResumeRunnable = null
+            if (surfaceReady && !camera.isStreaming) {
+              startStreamInternal(url)
+            } else {
+              // We promised JS a reconnect via the RECONNECTING event above.
+              // If we silently bail here (surface dropped again, race with
+              // a manual startStream, etc.), JS sits in RECONNECTING forever.
+              onConnectionEvent?.invoke(
+                RtmpConnectionEvent.CONNECTIONFAILED,
+                "resume aborted (surface gone or already streaming)"
+              )
+            }
+          }
+          pendingResumeRunnable = r
+          mainHandler.postDelayed(r, delay)
+        } else {
           startStreamInternal(url)
-          pendingStream = null
         }
       }
-      override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
-      override fun surfaceDestroyed(holder: SurfaceHolder) {
-        surfaceReady = false
-        val wasStreaming = camera.isStreaming
-        // Disable auto-reconnect BEFORE stopStream: the subsequent onDisconnect
-        // would otherwise try to retry against a dead surface.
-        shouldBeStreaming = false
-        try {
-          if (camera.isStreaming) {
-            camera.stopStream()
-            // Codecs released — re-prepare on next start.
-            videoPrepared = false
-            audioPrepared = false
-          }
-          if (camera.isOnPreview) camera.stopPreview()
-        } catch (e: Exception) {
-          Log.w(TAG, "Error during surfaceDestroyed cleanup", e)
+    }
+    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
+    override fun surfaceDestroyed(holder: SurfaceHolder) {
+      surfaceReady = false
+      val wasStreaming = camera.isStreaming
+      // Capture intent BEFORE cancelling the runnable. If we're in a bg→fg→bg
+      // sequence, the resume runnable was already scheduled (so wasStreaming
+      // is false because we hadn't restarted yet) — without this we'd lose
+      // the resume intent and the user's stream silently dies.
+      val hadPendingResume = pendingResumeRunnable != null
+      // Disable auto-reconnect BEFORE stopStream: the subsequent onDisconnect
+      // would otherwise try to retry against a dead surface.
+      shouldBeStreaming = false
+      mainHandler.removeCallbacks(reconnectTimeoutRunnable)
+      cancelPendingResume()
+      try {
+        if (camera.isStreaming) {
+          camera.stopStream()
+          // Codecs released — re-prepare on next start.
+          videoPrepared = false
+          audioPrepared = false
         }
-        releaseWakeLock()
+        if (camera.isOnPreview) camera.stopPreview()
+      } catch (e: Exception) {
+        // Drop the throwable (its stack-trace prefix would contain the
+        // unscrubbed message) and scrub the message ourselves.
+        Log.w(TAG, "surfaceDestroyed cleanup failed: " +
+          "${e.javaClass.simpleName}: ${e.message.scrubRtmpKey()}")
+      }
+      releaseWakeLock()
+      if (wasStreaming || hadPendingResume) {
+        // Seed the next surfaceCreated to auto-republish — matches iOS'
+        // foreground-resume semantics.
+        lastStreamUrl?.let { url ->
+          pendingStream = url
+          pendingStreamDelayMs = 1500L
+        }
         if (wasStreaming) {
-          // The stream was forcibly torn down by the host (rotation, backgrounding,
-          // unmount). Notify JS so its `streaming` state doesn't silently diverge.
+          // Only emit DISCONNECT when an actual session was torn down. The
+          // hadPendingResume-only case (bg→fg→bg before resume runs) means
+          // JS already got DISCONNECT on the first backgrounding — emitting
+          // again would just be noise.
+          disconnectEmitted = true
           onConnectionEvent?.invoke(
             RtmpConnectionEvent.DISCONNECT,
             "surface destroyed"
           )
         }
       }
-    })
+    }
+  }
+
+  init {
+    openGlView.holder.addCallback(surfaceCallback)
   }
 
   override val view: View
@@ -304,8 +431,10 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
         return
       }
       field = value
-      // Reapplied on the next prepareAudio call. If audio is already prepared,
-      // the user should resetAudioEncoder() to pick this up.
+      // If audio was already prepared, re-run prepareAudio with the new source.
+      // Pedro's resetAudioEncoder() rebuilds from the encoder's last-applied
+      // values, so a bare property write would NOT take effect without this.
+      if (audioPrepared) reapplyAudioConfig()
     }
 
   override var noiseSuppression: Boolean = false
@@ -316,9 +445,9 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
         return
       }
       field = value
-      // Applied on the next prepareAudio call. Existing AudioRecord session
-      // won't have the new DSP state until the encoder is re-prepared, so
-      // recommend the caller invoke resetAudioEncoder() afterwards.
+      // Same rationale as audioSource: re-prepare so the new DSP state is
+      // applied immediately instead of silently waiting for the next prepareAudio.
+      if (audioPrepared) reapplyAudioConfig()
     }
 
   override var autoRotateStream: Boolean = true
@@ -343,27 +472,34 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
     }
 
   override var foregroundServiceTitle: String = ""
-  override var foregroundServiceText: String = ""
-
-  private fun applyCodecType() {
-    val videoType = if (forceHardwareCodec) CodecUtil.CodecType.HARDWARE
-                    else CodecUtil.CodecType.FIRST_COMPATIBLE_FOUND
-    // AAC encoder is software on most Android devices (`c2.android.aac.encoder`
-    // / `OMX.google.aac.encoder`). Forcing HARDWARE there makes Pedro's
-    // chooseEncoder return null, prepareAudioEncoder returns false, and the
-    // entire audio track is silently dropped from the RTMP stream. Always let
-    // it pick whichever AAC encoder the device actually ships.
-    val audioType = CodecUtil.CodecType.FIRST_COMPATIBLE_FOUND
-    camera.forceCodecType(videoType, audioType)
-  }
-
-  private fun applyMirrorFlags() {
-    // glInterface is only fully initialised once preview is up. Wrap in
-    // try/catch so a prop set before preview never crashes the JS side.
-    safe("applyMirrorFlags") {
-      camera.glInterface.setIsPreviewHorizontalFlip(mirrorPreview)
-      camera.glInterface.setIsStreamHorizontalFlip(mirrorStream)
+    set(value) {
+      if (field == value) return
+      field = value
+      refreshForegroundNotificationIfRunning()
     }
+  override var foregroundServiceText: String = ""
+    set(value) {
+      if (field == value) return
+      field = value
+      refreshForegroundNotificationIfRunning()
+    }
+  override var foregroundServiceIcon: String = ""
+    set(value) {
+      if (field == value) return
+      field = value
+      refreshForegroundNotificationIfRunning()
+    }
+
+  // Push the latest title/text/icon to the live notification mid-stream.
+  // The SDK has no separate "update FGS notification" API, so we re-fire
+  // startService with the new extras — Android delivers another onStartCommand
+  // that re-invokes startForeground with the freshly-built notification.
+  private fun refreshForegroundNotificationIfRunning() {
+    if (!fgServiceStartedByUs) return
+    if (foregroundServiceTitle.isEmpty()) return
+    RtmpForegroundService.update(
+      context, foregroundServiceTitle, foregroundServiceText, foregroundServiceIcon
+    )
   }
 
   // ─── Lifecycle ──────────────────────────────────────────────────────────
@@ -450,35 +586,6 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
     return ok
   }
 
-  // Re-prepare the encoders that Pedro released in stopStream. Skips work if
-  // they're already prepared (first ever start, or JS explicitly re-prepared).
-  private fun rePrepareEncodersIfNeeded() {
-    if (!videoPrepared) {
-      val v = lastVideoCfg
-      if (v != null) {
-        applyCodecType()
-        applyStreamMode()
-        val ok = safe("rePrepareVideo", default = false) {
-          camera.prepareVideo(v.w, v.h, v.fps, v.bitrate, v.iFrame, v.rotation)
-        }
-        if (ok) videoPrepared = true
-      }
-    }
-    if (!audioPrepared) {
-      val a = lastAudioCfg
-      if (a != null) {
-        val source = audioSource.toMediaRecorderSource()
-        val keepDsp = noiseSuppression ||
-          audioSource == AudioSource.MIC ||
-          audioSource == AudioSource.VOICECOMMUNICATION
-        val ok = safe("rePrepareAudio", default = false) {
-          camera.prepareAudio(source, a.bitrate, a.sampleRate, a.isStereo, keepDsp, keepDsp)
-        }
-        if (ok) audioPrepared = true
-      }
-    }
-  }
-
   override fun startPreview(facing: CameraFacing, width: Double, height: Double) {
     val w = width.toInt().coerceAtLeast(1)
     val h = height.toInt().coerceAtLeast(1)
@@ -488,26 +595,30 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
     startPreviewInternal(facing, w, h)
   }
 
-  private fun startPreviewInternal(facing: CameraFacing, width: Int, height: Int) {
+  // Returns true iff preview successfully started (or was already running).
+  // False on slot collision or exception so callers can skip dependent work
+  // — most importantly, the surface-restore path must not try to start a
+  // stream against a camera that never opened.
+  internal fun startPreviewInternal(facing: CameraFacing, width: Int, height: Int): Boolean {
     // Refuse if another publisher instance already holds the camera —
     // Camera2 doesn't allow concurrent opens from the same process and the
     // failure mode otherwise is silent (a black preview + cryptic logcat).
     if (!holdsActiveSlot) {
-      if (activePublisherCount > 0) {
+      if (!activePublisherCount.compareAndSet(0, 1)) {
         Log.w(TAG, "Refusing to start preview — another <RtmpPublisherView> is active")
         onConnectionEvent?.invoke(
           RtmpConnectionEvent.CONNECTIONFAILED,
           "another <RtmpPublisherView> already holds the camera"
         )
-        return
+        return false
       }
-      activePublisherCount += 1
       holdsActiveSlot = true
     }
     val helperFacing = when (facing) {
       CameraFacing.FRONT -> CameraHelper.Facing.FRONT
       CameraFacing.BACK -> CameraHelper.Facing.BACK
     }
+    var ok = false
     safe("startPreview") {
       if (camera.isOnPreview) camera.stopPreview()
       camera.startPreview(helperFacing, width, height)
@@ -516,7 +627,9 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
       applyMirrorFlags()
       safe("forceFpsLimit") { camera.forceFpsLimit(desiredForceFpsLimit) }
       if (autoRotateStream) enableOrientationListener()
+      ok = true
     }
+    return ok
   }
 
   override fun stopPreview() {
@@ -532,19 +645,37 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
       Log.w(TAG, "startStream ignored — empty URL")
       return
     }
+    lastStreamUrl = url
+    // An explicit startStream supersedes any pending auto-resume from a prior
+    // background sequence.
+    cancelPendingResume()
     if (!surfaceReady) {
       pendingStream = url
+      pendingStreamDelayMs = 0L
       return
     }
     startStreamInternal(url)
   }
 
-  private fun startStreamInternal(url: String) {
+  internal fun startStreamInternal(url: String) {
+    // FG service must come up BEFORE we kick off the encoder. On Android 12+
+    // background-start restrictions and 14+ FGS-type rules cause this to fail
+    // silently otherwise — the encoder runs, the OS kills the camera/mic, and
+    // JS only sees a generic disconnect. Surface the failure as CONNECTIONFAILED
+    // up front so callers can react (re-prompt for notification permission, etc.).
+    if (!ensureForegroundServiceIfRequested()) {
+      onConnectionEvent?.invoke(
+        RtmpConnectionEvent.CONNECTIONFAILED,
+        "foreground service failed to start " +
+          "(Android background-start restriction or missing POST_NOTIFICATIONS)"
+      )
+      return
+    }
     safe("startStream") {
-      maybeStartForegroundService()
       acquireWakeLock()
       setKeepScreenOn(true)
       shouldBeStreaming = true
+      disconnectEmitted = false
       // Pedro's BaseEncoder.stop() releases the MediaCodec and sets prepared=false,
       // so the next BaseEncoder.start() throws "not prepared yet". Re-prepare from
       // cached config before letting Pedro start the encoders.
@@ -566,7 +697,13 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
 
   override fun stopStream() {
     pendingStream = null
+    pendingStreamDelayMs = 0L
+    lastStreamUrl = null
+    cancelPendingResume()
     shouldBeStreaming = false
+    disconnectEmitted = false
+    postNotificationsWarned = false
+    mainHandler.removeCallbacks(reconnectTimeoutRunnable)
     safe("stopStream") {
       if (camera.isStreaming) {
         camera.stopStream()
@@ -619,6 +756,14 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
     val max = maxBitrate.toInt()
     if (max <= 0) {
       bitrateAdapter = null
+      // Restore the configured ceiling so the user isn't stuck at whatever
+      // ABR last reduced to. No-op when not streaming — next prepareVideo
+      // will set the bitrate from cached config anyway.
+      lastVideoCfg?.let { cfg ->
+        if (camera.isStreaming) {
+          safe("restoreBitrate") { camera.setVideoBitrateOnFly(cfg.bitrate) }
+        }
+      }
       return
     }
     val dec = decreaseRangePercent.toFloat().coerceIn(0f, 100f)
@@ -663,11 +808,22 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
   // ─── Long-stream tuning ─────────────────────────────────────────────────
 
   override fun forceIncrementalTs(enabled: Boolean) {
+    if (camera.isStreaming) {
+      Log.w(TAG, "forceIncrementalTs($enabled) overrides the current streamMode " +
+        "($streamMode) — call this only if you need to bypass mode tuning.")
+    }
     safe("forceIncrementalTs") { camera.streamClient.forceIncrementalTs(enabled) }
   }
 
   override fun setStreamDelay(delayMs: Double) {
-    val d = delayMs.toLong()
+    // Clamp to a sane upper bound — Pedro will allocate buffers per the delay,
+    // and JS can pass arbitrary values. 10s is already well past any
+    // reasonable interleave / jitter window.
+    val d = delayMs.toLong().coerceIn(0L, 10_000L)
+    if (camera.isStreaming) {
+      Log.w(TAG, "setStreamDelay($d) overrides the current streamMode " +
+        "($streamMode) delay — set only if mode tuning isn't enough.")
+    }
     safe("setStreamDelay") { camera.streamClient.setDelay(d) }
   }
 
@@ -675,33 +831,32 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
   // ─── Reconnection ────────────────────────────────────────────────────────
 
   override fun setReTries(count: Double) {
-    val c = count.toInt().coerceAtLeast(0)
+    // Clamp to a sane ceiling — Pedro counts down internally and a runaway
+    // value just exhausts client cycles on a permanently-dead endpoint.
+    val c = count.toInt().coerceIn(0, MAX_RETRY_ATTEMPTS)
     safe("setReTries") { camera.streamClient.setReTries(c) }
   }
 
   override fun reTry(delayMs: Double, reason: String): Boolean {
-    val d = delayMs.toLong().coerceAtLeast(0L)
+    val d = delayMs.toLong().coerceIn(0L, MAX_RETRY_BACKOFF_MS)
     return safe("reTry", default = false) {
       camera.streamClient.reTry(d, reason, null)
     }
   }
 
   override fun setAutoReconnect(maxAttempts: Double, backoffMs: Double) {
-    autoReconnectMaxAttempts = maxAttempts.toInt().coerceAtLeast(0)
-    autoReconnectBackoffMs = backoffMs.toLong().coerceAtLeast(0L)
+    autoReconnectMaxAttempts = maxAttempts.toInt().coerceIn(0, MAX_RETRY_ATTEMPTS)
+    autoReconnectBackoffMs = backoffMs.toLong().coerceIn(0L, MAX_RETRY_BACKOFF_MS)
+    // Disabling mid-flight: kill any armed dead-man timer too. Otherwise it
+    // ticks down to a stale CONNECTIONFAILED 30s later even though Pedro has
+    // already stopped retrying.
+    if (autoReconnectMaxAttempts == 0) {
+      mainHandler.removeCallbacks(reconnectTimeoutRunnable)
+    }
     // Seed the budget right away so a manual `reTry()` call works without
     // first going through `startStream`.
     safe("setAutoReconnect/setReTries") {
       camera.streamClient.setReTries(autoReconnectMaxAttempts)
-    }
-  }
-
-  private fun tryAutoReconnect(reason: String): Boolean {
-    if (!shouldBeStreaming) return false
-    if (autoReconnectMaxAttempts <= 0) return false
-    if (!surfaceReady) return false
-    return safe("reTry(auto)", default = false) {
-      camera.streamClient.reTry(autoReconnectBackoffMs, reason, null)
     }
   }
 
@@ -783,6 +938,10 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
   // ─── Zoom ────────────────────────────────────────────────────────────────
 
   override fun setZoom(zoom: Double) {
+    if (!zoom.isFinite()) {
+      Log.w(TAG, "setZoom ignored — non-finite value ($zoom)")
+      return
+    }
     safe("setZoom") {
       val range = camera.zoomRange
       val min = range?.lower?.toFloat() ?: 1f
@@ -798,6 +957,10 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
   // ─── Exposure ────────────────────────────────────────────────────────────
 
   override fun setExposure(value: Double) {
+    if (!value.isFinite()) {
+      Log.w(TAG, "setExposure ignored — non-finite value ($value)")
+      return
+    }
     safe("setExposure") {
       val clamped = value.toInt().coerceIn(camera.minExposure, camera.maxExposure)
       camera.exposure = clamped
@@ -819,6 +982,10 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
     safe("isAutoFocusEnabled", default = false) { camera.isAutoFocusEnabled }
 
   override fun setFocusDistance(distance: Double) {
+    if (!distance.isFinite()) {
+      Log.w(TAG, "setFocusDistance ignored — non-finite value ($distance)")
+      return
+    }
     safe("setFocusDistance") { camera.setFocusDistance(distance.toFloat()) }
   }
 
@@ -855,10 +1022,21 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
       Log.w(TAG, "startRecord ignored — recorder not in STOPPED state")
       return false
     }
-    return safe("startRecord", default = false) {
+    val ok = safe("startRecord", default = false) {
       camera.startRecord(path, recordListener)
       true
     }
+    if (!ok) {
+      // Pedro's startRecord opens a FileOutputStream on the given path. On
+      // modern Android the common failure modes are storage-related and very
+      // unhelpful from the bare exception — surface a concrete pointer here.
+      Log.w(TAG, "startRecord FAILED for path '$path'. " +
+        "On Android 10+, writes outside app-specific dirs " +
+        "(Context.getExternalFilesDir(null)) require MediaStore. " +
+        "On Android 9 and below, declare WRITE_EXTERNAL_STORAGE and request it. " +
+        "Also verify the parent directory exists and is writable.")
+    }
+    return ok
   }
 
   override fun stopRecord() {
@@ -914,10 +1092,22 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
   // ─── Cleanup ────────────────────────────────────────────────────────────
 
   override fun onDropView() {
+    // Detach the surface callback first so subsequent surface-lifecycle events
+    // (which can fire during the cleanup below as the OpenGlView is detached
+    // from the window) can't re-enter and touch a half-released camera.
+    safe("onDropView/removeSurfaceCallback") {
+      openGlView.holder.removeCallback(surfaceCallback)
+    }
     shouldBeStreaming = false
+    disconnectEmitted = false
+    postNotificationsWarned = false
     lastPreview = null
     pendingStream = null
+    pendingStreamDelayMs = 0L
+    lastStreamUrl = null
+    cancelPendingResume()
     bitrateAdapter = null
+    mainHandler.removeCallbacks(reconnectTimeoutRunnable)
     safe("onDropView/stopStream") { if (camera.isStreaming) camera.stopStream() }
     safe("onDropView/stopPreview") { if (camera.isOnPreview) camera.stopPreview() }
     safe("onDropView/stopRecord") {
@@ -932,257 +1122,15 @@ class HybridRtmpPublisherView(private val context: Context) : HybridRtmpPublishe
     maybeStopForegroundService()
     if (holdsActiveSlot) {
       holdsActiveSlot = false
-      activePublisherCount = (activePublisherCount - 1).coerceAtLeast(0)
+      activePublisherCount.updateAndGet { (it - 1).coerceAtLeast(0) }
     }
+    // Clear JS callbacks LAST, after the cleanup above. Pedro's onDisconnect
+    // (triggered by our stopStream) is marshalled through postToMain, so it
+    // runs on a later main-thread tick — by which time these are null and
+    // the `?.invoke` no-ops. Don't reorder.
     onConnectionEvent = null
     onBitrateChange = null
     onRecordStatusChange = null
     onThermalWarning = null
-  }
-
-  // ─── Wake-lock helpers ──────────────────────────────────────────────────
-
-  private fun acquireWakeLock() {
-    if (wakeLock?.isHeld == true) return
-    try {
-      val pm = powerManager ?: return
-      val lock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG).apply {
-        setReferenceCounted(false)
-      }
-      lock.acquire(10 * 60 * 60 * 1000L /* 10h cap */)
-      wakeLock = lock
-    } catch (e: Exception) {
-      Log.w(TAG, "acquireWakeLock failed: ${e.message}")
-    }
-  }
-
-  private fun releaseWakeLock() {
-    val lock = wakeLock ?: return
-    try {
-      if (lock.isHeld) lock.release()
-    } catch (e: Exception) {
-      Log.w(TAG, "releaseWakeLock failed: ${e.message}")
-    }
-    wakeLock = null
-  }
-
-  private fun setKeepScreenOn(on: Boolean) {
-    safe("setKeepScreenOn") { openGlView.keepScreenOn = on }
-  }
-
-  // ─── Stream-mode helper ─────────────────────────────────────────────────
-
-  private fun applyStreamMode() {
-    val client = safe("applyStreamMode/client", default = null) { camera.streamClient }
-      ?: return
-    // Note on send delay: Pedro's `forceIncrementalTs(true)` is literally just
-    // `setDelay(300L)` (and `forceIncrementalTs(false)` is a no-op). We use
-    // `setDelay(...)` directly so it's obvious what's actually happening. The
-    // delay buffers the first ~Nms of frames before sending, which lets the
-    // sender interleave the video config (SPS/PPS), the first IDR keyframe,
-    // and audio config in the right order — fragile ingests (YouTube, some
-    // Nginx-RTMP setups) reject the publish if audio arrives before SPS/IDR.
-    when (streamMode) {
-      StreamMode.LOWLATENCY -> safe("streamMode/lowLatency") {
-        client.resizeCache(60)               // ~1s at 30fps video frames
-        client.setWriteChunkSize(4096)       // small chunks
-        client.setDelay(0L)                  // no buffering — accepts the fragile-ingest risk
-        client.setBitrateExponentialFactor(2f)
-        // Use BUFFER timestamps (encoder pts) — lowest added latency.
-        safe("setTimestampMode/lowLatency") {
-          camera.setTimestampMode(TimestampMode.BUFFER, TimestampMode.BUFFER)
-        }
-      }
-      StreamMode.BALANCED -> safe("streamMode/balanced") {
-        client.resizeCache(120)
-        client.setWriteChunkSize(4096)
-        client.setDelay(150L)                // small buffer for interleave; trades 150ms latency for ingest compat
-        client.setBitrateExponentialFactor(1f)
-        safe("setTimestampMode/balanced") {
-          camera.setTimestampMode(TimestampMode.CLOCK, TimestampMode.CLOCK)
-        }
-      }
-      StreamMode.QUALITY -> safe("streamMode/quality") {
-        client.resizeCache(240)              // ~4s of frames buffered
-        client.setWriteChunkSize(8192)
-        client.setDelay(300L)                // large buffer — safe even on slow/fragile ingests
-        client.setBitrateExponentialFactor(0.5f)
-        // CLOCK timestamps are derived from monotonic system clock — best
-        // for long sessions where MediaCodec PTS may drift.
-        safe("setTimestampMode/quality") {
-          camera.setTimestampMode(TimestampMode.CLOCK, TimestampMode.CLOCK)
-        }
-      }
-    }
-  }
-
-  // ─── Foreground service helpers ─────────────────────────────────────────
-
-  private fun maybeStartForegroundService() {
-    if (foregroundServiceTitle.isEmpty()) return
-    if (RtmpForegroundService.running) return
-    if (RtmpForegroundService.start(context, foregroundServiceTitle, foregroundServiceText)) {
-      fgServiceStartedByUs = true
-    }
-  }
-
-  private fun maybeStopForegroundService() {
-    if (!fgServiceStartedByUs) return
-    safe("stopForegroundService") { RtmpForegroundService.stop(context) }
-    fgServiceStartedByUs = false
-  }
-
-  // ─── Orientation helpers ─────────────────────────────────────────────────
-
-  private fun enableOrientationListener() {
-    if (!autoRotateStream) return
-    if (orientationListener.canDetectOrientation()) {
-      safe("enableOrientationListener") { orientationListener.enable() }
-    }
-  }
-
-  private fun disableOrientationListener() {
-    safe("disableOrientationListener") { orientationListener.disable() }
-    lastAutoAppliedRotation = -1
-  }
-
-  // ─── Thermal helpers ────────────────────────────────────────────────────
-
-  private fun registerThermalListener() {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
-    if (thermalListenerRegistered) return
-    val listener = thermalListener ?: return
-    val pm = powerManager ?: return
-    safe("registerThermalListener") {
-      pm.addThermalStatusListener(ContextCompat.getMainExecutor(context), listener)
-      lastThermalStatusInt = pm.currentThermalStatus
-      thermalListenerRegistered = true
-    }
-  }
-
-  private fun unregisterThermalListener() {
-    if (!thermalListenerRegistered) return
-    val listener = thermalListener ?: return
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
-    val pm = powerManager ?: return
-    safe("unregisterThermalListener") {
-      pm.removeThermalStatusListener(listener)
-    }
-    thermalListenerRegistered = false
-  }
-
-  private fun onThermalStatusChanged(newStatus: Int) {
-    val previous = lastThermalStatusInt
-    lastThermalStatusInt = newStatus
-    val threshold = thermalThresholdLevel
-    // Fire when:
-    //  - new state >= threshold (entering / staying in warning zone), OR
-    //  - previous state was >= threshold AND new state is < threshold (clearing).
-    val enteringOrInZone = newStatus >= threshold
-    val justCleared = previous >= threshold && newStatus < threshold
-    if (enteringOrInZone || justCleared) {
-      onThermalWarning?.invoke(newStatus.fromPowerManagerStatus())
-    }
-  }
-
-  // ─── Error-bounded execution ────────────────────────────────────────────
-
-  private inline fun safe(op: String, crossinline block: () -> Unit) {
-    try {
-      block()
-    } catch (e: Exception) {
-      Log.w(TAG, "$op failed: ${e.message}", e)
-    }
-  }
-
-  private inline fun <T> safe(op: String, default: T, crossinline block: () -> T): T {
-    return try {
-      block()
-    } catch (e: Exception) {
-      Log.w(TAG, "$op failed: ${e.message}", e)
-      default
-    }
-  }
-
-  private data class PreviewConfig(val facing: CameraFacing, val width: Int, val height: Int)
-
-  private data class VideoCfg(
-    val w: Int,
-    val h: Int,
-    val fps: Int,
-    val bitrate: Int,
-    val iFrame: Int,
-    val rotation: Int,
-  )
-
-  private data class AudioCfg(
-    val bitrate: Int,
-    val sampleRate: Int,
-    val isStereo: Boolean,
-  )
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// Enum mappers between Nitro and RootEncoder
-// ────────────────────────────────────────────────────────────────────────────
-
-private fun VideoCodec.toPedro(): PedroVideoCodec = when (this) {
-  VideoCodec.H264 -> PedroVideoCodec.H264
-  VideoCodec.H265 -> PedroVideoCodec.H265
-  VideoCodec.AV1  -> PedroVideoCodec.AV1
-}
-
-private fun AudioCodec.toPedro(): PedroAudioCodec = when (this) {
-  AudioCodec.AAC  -> PedroAudioCodec.AAC
-  AudioCodec.G711 -> PedroAudioCodec.G711
-  AudioCodec.OPUS -> PedroAudioCodec.OPUS
-}
-
-private fun AspectRatioMode.toPedro(): PedroAspectRatioMode = when (this) {
-  AspectRatioMode.FILL   -> PedroAspectRatioMode.Fill
-  AspectRatioMode.ADJUST -> PedroAspectRatioMode.Adjust
-  AspectRatioMode.NONE   -> PedroAspectRatioMode.NONE
-}
-
-private fun RecordController.Status.toNitro(): RecordStatus = when (this) {
-  RecordController.Status.STARTED   -> RecordStatus.STARTED
-  RecordController.Status.STOPPED   -> RecordStatus.STOPPED
-  RecordController.Status.RECORDING -> RecordStatus.RECORDING
-  RecordController.Status.PAUSED    -> RecordStatus.PAUSED
-  RecordController.Status.RESUMED   -> RecordStatus.RESUMED
-}
-
-private fun ThermalStatus.toPowerManagerStatus(): Int = when (this) {
-  ThermalStatus.NONE      -> PowerManager.THERMAL_STATUS_NONE
-  ThermalStatus.LIGHT     -> PowerManager.THERMAL_STATUS_LIGHT
-  ThermalStatus.MODERATE  -> PowerManager.THERMAL_STATUS_MODERATE
-  ThermalStatus.SEVERE    -> PowerManager.THERMAL_STATUS_SEVERE
-  ThermalStatus.CRITICAL  -> PowerManager.THERMAL_STATUS_CRITICAL
-  ThermalStatus.EMERGENCY -> PowerManager.THERMAL_STATUS_EMERGENCY
-  ThermalStatus.SHUTDOWN  -> PowerManager.THERMAL_STATUS_SHUTDOWN
-}
-
-private fun Int.fromPowerManagerStatus(): ThermalStatus = when (this) {
-  PowerManager.THERMAL_STATUS_NONE      -> ThermalStatus.NONE
-  PowerManager.THERMAL_STATUS_LIGHT     -> ThermalStatus.LIGHT
-  PowerManager.THERMAL_STATUS_MODERATE  -> ThermalStatus.MODERATE
-  PowerManager.THERMAL_STATUS_SEVERE    -> ThermalStatus.SEVERE
-  PowerManager.THERMAL_STATUS_CRITICAL  -> ThermalStatus.CRITICAL
-  PowerManager.THERMAL_STATUS_EMERGENCY -> ThermalStatus.EMERGENCY
-  PowerManager.THERMAL_STATUS_SHUTDOWN  -> ThermalStatus.SHUTDOWN
-  else                                  -> ThermalStatus.NONE
-}
-
-private fun AudioSource.toMediaRecorderSource(): Int = when (this) {
-  AudioSource.MIC                -> MediaRecorder.AudioSource.MIC
-  AudioSource.CAMCORDER          -> MediaRecorder.AudioSource.CAMCORDER
-  AudioSource.VOICERECOGNITION   -> MediaRecorder.AudioSource.VOICE_RECOGNITION
-  AudioSource.VOICECOMMUNICATION -> MediaRecorder.AudioSource.VOICE_COMMUNICATION
-  AudioSource.UNPROCESSED -> {
-    // UNPROCESSED is API 24+. Fall back to VOICE_RECOGNITION on older devices.
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N)
-      MediaRecorder.AudioSource.UNPROCESSED
-    else
-      MediaRecorder.AudioSource.VOICE_RECOGNITION
   }
 }

@@ -98,6 +98,8 @@ namespace margelo::nitro::rtmppublisher {
       virtual void setForegroundServiceTitle(const std::string& foregroundServiceTitle) = 0;
       virtual std::string getForegroundServiceText() = 0;
       virtual void setForegroundServiceText(const std::string& foregroundServiceText) = 0;
+      virtual std::string getForegroundServiceIcon() = 0;
+      virtual void setForegroundServiceIcon(const std::string& foregroundServiceIcon) = 0;
 
     public:
       // Methods

@@ -200,6 +200,15 @@ namespace margelo::nitro::rtmppublisher {
     static const auto method = _javaPart->javaClassStatic()->getMethod<void(jni::alias_ref<jni::JString> /* foregroundServiceText */)>("setForegroundServiceText");
     method(_javaPart, jni::make_jstring(foregroundServiceText));
   }
+  std::string JHybridRtmpPublisherViewSpec::getForegroundServiceIcon() {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<jni::local_ref<jni::JString>()>("getForegroundServiceIcon");
+    auto __result = method(_javaPart);
+    return __result->toStdString();
+  }
+  void JHybridRtmpPublisherViewSpec::setForegroundServiceIcon(const std::string& foregroundServiceIcon) {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<void(jni::alias_ref<jni::JString> /* foregroundServiceIcon */)>("setForegroundServiceIcon");
+    method(_javaPart, jni::make_jstring(foregroundServiceIcon));
+  }
 
   // Methods
   bool JHybridRtmpPublisherViewSpec::prepareVideo(double width, double height, double fps, double bitrate, double iFrameInterval, double rotation) {

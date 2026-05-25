@@ -23,6 +23,7 @@ public protocol HybridRtmpPublisherViewSpec_protocol: HybridObject, HybridView {
   var streamMode: StreamMode { get set }
   var foregroundServiceTitle: String { get set }
   var foregroundServiceText: String { get set }
+  var foregroundServiceIcon: String { get set }
 
   // Methods
   func prepareVideo(width: Double, height: Double, fps: Double, bitrate: Double, iFrameInterval: Double, rotation: Double) throws -> Bool

@@ -103,6 +103,12 @@ abstract class HybridRtmpPublisherViewSpec: HybridView() {
   @set:DoNotStrip
   @set:Keep
   abstract var foregroundServiceText: String
+  
+  @get:DoNotStrip
+  @get:Keep
+  @set:DoNotStrip
+  @set:Keep
+  abstract var foregroundServiceIcon: String
 
   // Methods
   @DoNotStrip

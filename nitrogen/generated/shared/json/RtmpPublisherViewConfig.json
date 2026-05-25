@@ -17,6 +17,7 @@
     "streamMode": true,
     "foregroundServiceTitle": true,
     "foregroundServiceText": true,
+    "foregroundServiceIcon": true,
     "hybridRef": true
   }
 }

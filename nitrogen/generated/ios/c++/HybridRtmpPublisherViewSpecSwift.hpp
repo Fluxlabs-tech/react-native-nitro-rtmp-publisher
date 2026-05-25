@@ -176,6 +176,13 @@ namespace margelo::nitro::rtmppublisher {
     inline void setForegroundServiceText(const std::string& foregroundServiceText) noexcept override {
       _swiftPart.setForegroundServiceText(foregroundServiceText);
     }
+    inline std::string getForegroundServiceIcon() noexcept override {
+      auto __result = _swiftPart.getForegroundServiceIcon();
+      return __result;
+    }
+    inline void setForegroundServiceIcon(const std::string& foregroundServiceIcon) noexcept override {
+      _swiftPart.setForegroundServiceIcon(foregroundServiceIcon);
+    }
 
   public:
     // Methods

@@ -89,6 +89,10 @@ void JHybridRtmpPublisherViewStateUpdater::updateViewProps(jni::alias_ref<jni::J
     hybridView->setForegroundServiceText(props->foregroundServiceText.value);
     props->foregroundServiceText.isDirty = false;
   }
+  if (props->foregroundServiceIcon.isDirty) {
+    hybridView->setForegroundServiceIcon(props->foregroundServiceIcon.value);
+    props->foregroundServiceIcon.isDirty = false;
+  }
 
   // Update hybridRef if it changed
   if (props->hybridRef.isDirty) {

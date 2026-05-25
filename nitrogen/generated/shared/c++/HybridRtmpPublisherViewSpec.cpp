@@ -40,6 +40,8 @@ namespace margelo::nitro::rtmppublisher {
       prototype.registerHybridSetter("foregroundServiceTitle", &HybridRtmpPublisherViewSpec::setForegroundServiceTitle);
       prototype.registerHybridGetter("foregroundServiceText", &HybridRtmpPublisherViewSpec::getForegroundServiceText);
       prototype.registerHybridSetter("foregroundServiceText", &HybridRtmpPublisherViewSpec::setForegroundServiceText);
+      prototype.registerHybridGetter("foregroundServiceIcon", &HybridRtmpPublisherViewSpec::getForegroundServiceIcon);
+      prototype.registerHybridSetter("foregroundServiceIcon", &HybridRtmpPublisherViewSpec::setForegroundServiceIcon);
       prototype.registerHybridMethod("prepareVideo", &HybridRtmpPublisherViewSpec::prepareVideo);
       prototype.registerHybridMethod("prepareAudio", &HybridRtmpPublisherViewSpec::prepareAudio);
       prototype.registerHybridMethod("startPreview", &HybridRtmpPublisherViewSpec::startPreview);

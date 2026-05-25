@@ -144,6 +144,11 @@ using namespace margelo::nitro::rtmppublisher::views;
     swiftPart.setForegroundServiceText(newViewProps.foregroundServiceText.value);
     newViewProps.foregroundServiceText.isDirty = false;
   }
+  // foregroundServiceIcon: string
+  if (newViewProps.foregroundServiceIcon.isDirty) {
+    swiftPart.setForegroundServiceIcon(newViewProps.foregroundServiceIcon.value);
+    newViewProps.foregroundServiceIcon.isDirty = false;
+  }
 
   swiftPart.afterUpdate();
 

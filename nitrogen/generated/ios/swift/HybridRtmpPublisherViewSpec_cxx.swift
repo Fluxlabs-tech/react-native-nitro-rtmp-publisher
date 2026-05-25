@@ -263,6 +263,17 @@ open class HybridRtmpPublisherViewSpec_cxx {
       self.__implementation.foregroundServiceText = String(newValue)
     }
   }
+  
+  public final var foregroundServiceIcon: std.string {
+    @inline(__always)
+    get {
+      return std.string(self.__implementation.foregroundServiceIcon)
+    }
+    @inline(__always)
+    set {
+      self.__implementation.foregroundServiceIcon = String(newValue)
+    }
+  }
 
   // Methods
   @inline(__always)

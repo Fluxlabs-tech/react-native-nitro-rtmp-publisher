@@ -61,6 +61,7 @@ namespace margelo::nitro::rtmppublisher::views {
     CachedProp<StreamMode> streamMode;
     CachedProp<std::string> foregroundServiceTitle;
     CachedProp<std::string> foregroundServiceText;
+    CachedProp<std::string> foregroundServiceIcon;
     CachedProp<std::optional<std::function<void(const std::shared_ptr<HybridRtmpPublisherViewSpec>& /* ref */)>>> hybridRef;
 
   private:
