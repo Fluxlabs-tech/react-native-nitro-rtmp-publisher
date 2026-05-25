@@ -1,6 +1,7 @@
 package com.margelo.nitro.rtmppublisher
 
 import com.pedro.encoder.TimestampMode
+import com.pedro.encoder.input.video.CameraHelper
 import com.pedro.encoder.utils.CodecUtil
 
 /**
@@ -23,15 +24,39 @@ internal fun HybridRtmpPublisherView.applyCodecType() {
 }
 
 internal fun HybridRtmpPublisherView.applyMirrorFlags() {
-  // glInterface is only fully initialised once preview is up. Wrap in
-  // try/catch so a prop set before preview never crashes the JS side.
-  // Per-call wrap so the stream-flip still applies if the preview-flip
-  // throws (and vice versa).
+  // `mirrorPreview` controls the publisher (on-screen) view ONLY.
+  // `mirrorStream` controls the subscriber (encoded RTMP) view ONLY.
+  // The two are fully independent — changing one never affects the other.
+  //
+  // Front-camera inversion: Pedro's `setIsPreviewHorizontalFlip(true)` on
+  // the GL render produces the selfie view (raw camera horizontally flipped
+  // → user's raised left hand appears on the left of the screen). iOS with
+  // the same prop value produces the raw / viewer-perspective view (left
+  // hand on the right of the screen). To match iOS so the same JSX gives
+  // the same visual on both platforms, we INVERT the flag's effect on the
+  // front camera. Back camera is left literal — Pedro's raw output for the
+  // back camera already matches the natural viewing convention.
+  //
+  // Net effect with the example's `mirrorPreview={isFront} mirrorStream={isFront}`:
+  //   Front camera, both = true  → both flags applied as `false` → raw preview + raw stream (matches iOS)
+  //   Back  camera, both = false → both flags applied as `false` → raw preview + raw stream
+  //   Asymmetric (e.g. mirrorPreview=true, mirrorStream=false on front):
+  //     preview = raw (publisher sees natural)
+  //     stream  = flipped (subscriber sees the publisher mirrored)
+  //
+  // glInterface is only fully initialised once preview is up — per-call
+  // safe() so a prop set before preview never crashes the JS side, and a
+  // failed preview-flip can't block the stream-flip (and vice versa).
+  val isFront = safe("applyMirrorFlags/facing", default = false) {
+    camera.cameraFacing == CameraHelper.Facing.FRONT
+  }
+  val previewFlip = if (isFront) !mirrorPreview else mirrorPreview
+  val streamFlip  = if (isFront) !mirrorStream  else mirrorStream
   safe("applyMirrorFlags/preview") {
-    camera.glInterface.setIsPreviewHorizontalFlip(mirrorPreview)
+    camera.glInterface.setIsPreviewHorizontalFlip(previewFlip)
   }
   safe("applyMirrorFlags/stream") {
-    camera.glInterface.setIsStreamHorizontalFlip(mirrorStream)
+    camera.glInterface.setIsStreamHorizontalFlip(streamFlip)
   }
 }
 

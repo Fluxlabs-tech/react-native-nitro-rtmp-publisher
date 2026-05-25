@@ -272,8 +272,8 @@ All props are required (set them once in JSX; runtime mutations are honored wher
 | `videoCodec`          | `'h264' \| 'h265' \| 'av1'`           | `'h264'`    | RTMP servers almost always require H.264. iOS supports `h264`/`h265`; Android adds `av1`. |
 | `audioCodec`          | `'aac' \| 'g711' \| 'opus'`           | `'aac'`     | RTMP standard is AAC. Other values are accepted for API parity but only AAC actually publishes over RTMP on iOS. |
 | `aspectRatioMode`     | `'fill' \| 'adjust' \| 'none'`        | `'adjust'`  | How the preview maps onto the view bounds. |
-| `mirrorPreview`       | `boolean`                             | `false`     | Flip on-screen preview horizontally. |
-| `mirrorStream`        | `boolean`                             | `false`     | Flip encoded stream horizontally. |
+| `mirrorPreview`       | `boolean`                             | `false`     | Controls the **publisher (on-screen) view only**. On front camera, `true` = "viewer's perspective" (raise left → see right side of screen), `false` = selfie-mirror view. On back camera, the value applies literally as a horizontal flip. |
+| `mirrorStream`        | `boolean`                             | `false`     | Controls the **subscriber (encoded RTMP) view only**. Fully independent of `mirrorPreview` — changing one never affects the other. Same front-camera semantics as `mirrorPreview` for cross-platform consistency. |
 | `thermalWarningThreshold` | `ThermalStatus`                   | `'severe'`  | Minimum OS thermal level that fires `setOnThermalWarning`. `'none'` disables monitoring entirely. |
 | `audioSource`         | `'mic' \| 'camcorder' \| 'voiceRecognition' \| 'voiceCommunication' \| 'unprocessed'` | `'camcorder'` | Capture mode. `'camcorder'` is the right default for live streaming on both platforms. |
 | `noiseSuppression`    | `boolean`                             | `false`     | Engage on-device noise suppression + echo cancellation + AGC. See [Noise suppression](#noise-suppression). Best used for talk streams in noisy environments; leave off for vlogs/music. |
@@ -283,7 +283,7 @@ All props are required (set them once in JSX; runtime mutations are honored wher
 | `foregroundServiceText`  | `string`                           | `''`        | Notification text shown alongside `foregroundServiceTitle`. Live setter — change mid-stream for "Streaming · 12:34"-style timers. |
 | `foregroundServiceIcon`  | `string`                           | `''`        | **Android-only.** Drawable resource name (bare, no package or extension, e.g. `'ic_notification'`) used as the FG-service notification small icon. Resolved at runtime against the host app's `res/drawable*` then `res/mipmap*`. Falls back to a generic system icon when empty or unresolvable. Live setter — mid-stream changes refresh the notification. No-op on iOS. |
 
-> **Combining `mirrorPreview` and `mirrorStream`** — on the front camera, set both to `true` so the streamer and viewer see the same orientation (selfie convention). On iOS we go through `AVCaptureConnection.isVideoMirrored` for the shared buffer plus a UIView transform for asymmetric cases — see [example/App.tsx](./example/App.tsx) for the canonical setup.
+> **Mirror semantics — read this once.** The two mirror props are **fully independent**: `mirrorPreview` only touches the local preview, `mirrorStream` only touches the encoded stream. On the **front camera** both props use the "viewer's perspective" convention — `true` means *show the camera output as someone facing you would see it* (raise left, see right). `false` flips to the selfie-mirror view. On the **back camera** they apply as literal horizontal flips. The platforms are aligned: the same JSX produces the same visual on iOS and Android. See [example/App.tsx](./example/App.tsx) for the canonical setup (`mirrorPreview={isFront} mirrorStream={isFront}` gives matching publisher and subscriber views on both ends).
 
 ---
 

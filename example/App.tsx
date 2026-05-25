@@ -168,6 +168,7 @@ export default function App() {
             // where the `audio` UIBackgroundMode in app.json does the same job.
             foregroundServiceTitle="Live stream"
             foregroundServiceText="Broadcasting"
+            foregroundServiceIcon=""
             hybridRef={hybridRef}
           />
         ) : (
