@@ -249,16 +249,21 @@ The library ships a single `requestRtmpPermissions()` helper that works on both 
 ```ts
 import { requestRtmpPermissions } from 'react-native-nitro-rtmp-publisher'
 
-const { granted, camera, microphone } = await requestRtmpPermissions()
+const { granted, camera, microphone, notifications } = await requestRtmpPermissions()
 if (!granted) {
   // surface a UI prompting the user to enable in Settings
 }
+if (notifications === 'denied') {
+  // Android 13+ only — optional but recommended.
+  // Stream still works, but the foreground-service notification will not
+  // appear and some OEMs may suspend the background stream.
+}
 ```
 
-- **Android**: shows the standard `PermissionsAndroid` runtime dialog for `CAMERA` + `RECORD_AUDIO`.
+- **Android**: shows the standard `PermissionsAndroid` runtime dialog for `CAMERA` + `RECORD_AUDIO`. On Android 13+ (API 33), also requests `POST_NOTIFICATIONS` in the same prompt batch so the FG-service notification can actually appear when streaming with a non-empty `foregroundServiceTitle`. The `notifications` field reports the result — `'unknown'` on Android ≤ 12 (the permission didn't exist as a runtime grant) and on iOS.
 - **iOS**: resolves to `granted: true` immediately. iOS shows the system permission sheet automatically the first time `AVCaptureDevice` opens the camera or microphone — the publisher view stays idle until the user accepts, so it's safe to mount before the user has decided.
 
-If you want to roll your own permission flow (e.g. using `expo-camera`), you can — just make sure both permissions are granted before mounting `<RtmpPublisherView>` on Android. On iOS you can mount anytime.
+If you want to roll your own permission flow (e.g. using `expo-camera` + `expo-notifications`), you can — just make sure all three permissions (camera, microphone, notifications on Android 13+) are granted before mounting `<RtmpPublisherView>` on Android. On iOS you can mount anytime.
 
 ---
 

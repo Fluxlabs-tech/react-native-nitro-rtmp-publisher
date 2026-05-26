@@ -46,7 +46,16 @@ internal fun HybridRtmpPublisherView.releaseWakeLock() {
 }
 
 internal fun HybridRtmpPublisherView.setKeepScreenOn(on: Boolean) {
-  safe("setKeepScreenOn") { openGlView.keepScreenOn = on }
+  // `openGlView.keepScreenOn` is a `View` setter and must be invoked on the
+  // main thread (it touches the view hierarchy). startStream / stopStream
+  // are dispatched from the JS thread by Nitro, so without a hop we hit
+  // CalledFromWrongThreadException ("Only the original thread that created
+  // a view hierarchy can touch its views. Expected: main Calling: mqt_v_js"),
+  // safe() swallows it, and the flag silently never sets — leading to a
+  // dim screen mid-stream on devices without our keep-alive flag.
+  postToMain {
+    safe("setKeepScreenOn") { openGlView.keepScreenOn = on }
+  }
 }
 
 // ─── Foreground service ──────────────────────────────────────────────────
