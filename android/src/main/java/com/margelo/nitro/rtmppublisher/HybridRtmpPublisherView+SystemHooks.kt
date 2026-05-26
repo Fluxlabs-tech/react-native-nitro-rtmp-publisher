@@ -1,11 +1,14 @@
 package com.margelo.nitro.rtmppublisher
 
 import android.Manifest
+import android.content.ComponentName
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.content.ContextCompat
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Talk-to-the-OS layer: wake lock, keep-screen-on, and the foreground service
@@ -63,12 +66,32 @@ internal fun HybridRtmpPublisherView.setKeepScreenOn(on: Boolean) {
 // Returns true iff the caller can safely proceed to start the stream.
 //  - empty title: no FG service was requested → caller responsible for
 //    keeping app in foreground; warn loud and proceed.
+//  - FGS opt-out at build time: library was built with
+//    `nitroRtmpPublisherFgs=false`, the RtmpForegroundService isn't in the
+//    merged manifest — ignore the title, warn once, proceed without starting
+//    a service.
 //  - non-empty title: service must actually start; if it doesn't, refuse.
+private val fgsOptOutWarnedOnce = AtomicBoolean(false)
+
 internal fun HybridRtmpPublisherView.ensureForegroundServiceIfRequested(): Boolean {
   if (foregroundServiceTitle.isEmpty()) {
     Log.w(TAG, "startStream called without foregroundServiceTitle — on Android " +
       "14+ the OS will revoke camera/mic when the app backgrounds. Set " +
       "foregroundServiceTitle to keep the stream alive in background.")
+    return true
+  }
+  // Build-time opt-out detection. The library compiles with one of two
+  // manifests depending on the `nitroRtmpPublisherFgs` gradle property; in
+  // the no-fgs variant the service isn't declared. Resolving it through
+  // PackageManager is the reliable runtime signal because we can't read the
+  // gradle property after build.
+  if (!isForegroundServiceDeclared()) {
+    if (fgsOptOutWarnedOnce.compareAndSet(false, true)) {
+      Log.w(TAG, "foregroundServiceTitle='$foregroundServiceTitle' was set, but " +
+        "the library was built with nitroRtmpPublisherFgs=false (or the host " +
+        "removed the RtmpForegroundService via manifest merger). The prop is " +
+        "being ignored — stream will be foreground-only.")
+    }
     return true
   }
   // Pre-flight: POST_NOTIFICATIONS is runtime-granted on Android 13+. Without
@@ -110,4 +133,27 @@ internal fun HybridRtmpPublisherView.maybeStopForegroundService() {
   if (!fgServiceStartedByUs) return
   safe("stopForegroundService") { RtmpForegroundService.stop(context) }
   fgServiceStartedByUs = false
+}
+
+// True iff RtmpForegroundService is declared in the merged manifest. Cheap
+// enough to call on every startStream — PackageManager caches component
+// metadata in a process-local map after the first lookup. We resolve via
+// explicit ComponentName so this works even if there are multiple services
+// with the same package; the no-fgs build variant strips this component
+// from the manifest entirely so resolveService returns null.
+private fun HybridRtmpPublisherView.isForegroundServiceDeclared(): Boolean {
+  return safe("isForegroundServiceDeclared", default = false) {
+    val intent = Intent().setComponent(
+      ComponentName(context, RtmpForegroundService::class.java)
+    )
+    val resolved = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      context.packageManager.resolveService(
+        intent, PackageManager.ResolveInfoFlags.of(0L)
+      )
+    } else {
+      @Suppress("DEPRECATION")
+      context.packageManager.resolveService(intent, 0)
+    }
+    resolved != null
+  }
 }

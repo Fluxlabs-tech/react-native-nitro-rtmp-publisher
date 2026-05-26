@@ -36,12 +36,24 @@
 //   "plugins": [
 //     ["react-native-nitro-rtmp-publisher", {
 //       "cameraUsage": "Stream live video from your camera.",
-//       "microphoneUsage": "Capture audio for live streams."
+//       "microphoneUsage": "Capture audio for live streams.",
+//       "disableForegroundService": true   // Android only — opt out of FGS
 //     }]
 //   ]
 //
+// Setting `disableForegroundService: true` writes
+// `nitroRtmpPublisherFgs=false` into android/gradle.properties at prebuild
+// time. The library then builds with a stripped Android manifest (no FGS
+// permissions, no <service> declaration) so Play Console doesn't require
+// the "Foreground services" form. The trade-off is that streams cannot
+// survive backgrounding on Android 14+. See README.md.
+//
 
-const { withDangerousMod, withInfoPlist } = require('@expo/config-plugins');
+const {
+  withDangerousMod,
+  withGradleProperties,
+  withInfoPlist,
+} = require('@expo/config-plugins');
 const { mergeContents } = require('@expo/config-plugins/build/utils/generateCode');
 const fs = require('fs');
 const path = require('path');
@@ -117,9 +129,38 @@ const withPermissions = (config, { cameraUsage, microphoneUsage } = {}) => {
   });
 };
 
+// Toggles the Android FGS opt-out. Writes `nitroRtmpPublisherFgs=false` into
+// android/gradle.properties when `disableForegroundService: true`. The
+// library's android/build.gradle reads this property at build time and swaps
+// to the stripped manifest (no FOREGROUND_SERVICE_* perms, no <service>).
+//
+// Idempotent: replaces an existing entry with the new value rather than
+// duplicating. When the flag is omitted or false we don't touch the file —
+// gradle.properties stays clean for users who never need this.
+const FGS_GRADLE_KEY = 'nitroRtmpPublisherFgs';
+
+const withFgsOptOut = (config, { disableForegroundService } = {}) => {
+  if (!disableForegroundService) {
+    return config;
+  }
+  return withGradleProperties(config, (config) => {
+    const existing = config.modResults.findIndex(
+      (item) => item.type === 'property' && item.key === FGS_GRADLE_KEY
+    );
+    const entry = { type: 'property', key: FGS_GRADLE_KEY, value: 'false' };
+    if (existing >= 0) {
+      config.modResults[existing] = entry;
+    } else {
+      config.modResults.push(entry);
+    }
+    return config;
+  });
+};
+
 const withRtmpPublisher = (config, props = {}) => {
   config = withPodfilePatch(config);
   config = withPermissions(config, props);
+  config = withFgsOptOut(config, props);
   return config;
 };
 

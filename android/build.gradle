@@ -115,6 +115,23 @@ android {
           "${project.buildDir}/generated/source/codegen/java"
         ]
       }
+      // Foreground-service opt-out. Consumer sets
+      // `nitroRtmpPublisherFgs=false` in their android/gradle.properties to
+      // build the library without the FGS permissions and service. This is
+      // useful for foreground-only apps that don't want to fill the Play
+      // Console "Foreground services" declaration form. Default is `true`
+      // (FGS enabled — backwards compatible).
+      //
+      // Runtime side detects the missing service via
+      // packageManager.resolveService(...) and short-circuits with a
+      // warn-once log rather than throwing ServiceNotDeclared.
+      def fgsEnabled = !rootProject.hasProperty("nitroRtmpPublisherFgs") ||
+                       rootProject.getProperty("nitroRtmpPublisherFgs").toString() != "false"
+      if (!fgsEnabled) {
+        manifest.srcFile "src/main/AndroidManifest-no-fgs.xml"
+        println "[nitroRtmpPublisher] FGS support disabled — using AndroidManifest-no-fgs.xml. " +
+                "Stream will not survive backgrounding on Android 14+."
+      }
     }
   }
 }
