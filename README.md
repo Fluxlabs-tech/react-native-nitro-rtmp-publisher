@@ -45,7 +45,7 @@ Live streaming from a phone is two hard problems entangled — owning the camera
   - [Android](#android)
 - [Quickstart](#quickstart)
 - [Permissions](#permissions)
-- [iOS: Agora & legacy RTMP ingests](#ios-connecting-to-agora-and-other-legacy-rtmp-ingests)
+- [iOS: Agora & legacy RTMP servers](#ios-streaming-to-agora-or-other-servers-with-a-legacy-rtmp-architecture)
 - [Props](#props)
 - [Methods](#methods)
   - [Lifecycle](#lifecycle)
@@ -126,7 +126,7 @@ If you'd rather the plugin set the camera / mic strings (handy when this library
 
 If neither prop is passed, Info.plist is left untouched.
 
-> **Plugin options are grouped by platform.** Pass an `ios` and/or `android` sub-object for platform-specific options; any key at the top level is treated as common and applied to both platforms (a platform key overrides a common key of the same name). Available options: `ios.cameraUsage`, `ios.microphoneUsage`, `ios.legacyRtmpCompatibility` (see [iOS: Agora & legacy RTMP ingests](#ios-connecting-to-agora-and-other-legacy-rtmp-ingests)), and `android.disableForegroundService` (see [Android: opting out of the foreground service](#android-opting-out-of-the-foreground-service)).
+> **Plugin options are grouped by platform.** Pass an `ios` and/or `android` sub-object for platform-specific options; any key at the top level is treated as common and applied to both platforms (a platform key overrides a common key of the same name). Available options: `ios.cameraUsage`, `ios.microphoneUsage`, `ios.legacyRtmpCompatibility` (see [iOS: Agora & legacy RTMP servers](#ios-streaming-to-agora-or-other-servers-with-a-legacy-rtmp-architecture)), and `android.disableForegroundService` (see [Android: opting out of the foreground service](#android-opting-out-of-the-foreground-service)).
 
 ### iOS — bare React Native (manual Podfile)
 
@@ -325,17 +325,32 @@ The flag is **build-time only.** If you later need background streaming, you hav
 
 ---
 
-## iOS: connecting to Agora and other legacy RTMP ingests
+## iOS: streaming to Agora or other servers with a legacy RTMP architecture
 
-**Symptom (iOS only):** publishing to **Agora's RTLS ingest** (`rtmp://rtls-ingress-*.agoramdn.com/live/…`) takes **~15–17 seconds** to fire `connectionSuccess`, while the *same* app reaches the same event in 2–4 s on YouTube, Twitch, Facebook/Instagram Live, OBS relays, and on Android against the very same Agora URL. Once connected the stream is healthy; it's purely a slow *start*.
+> **TL;DR** — If your iOS stream takes ~15–17 s to connect to **Agora** (or any ingest built on a **legacy RTMP / Adobe Flash Media Server architecture**) while the same app connects in 2–4 s everywhere else, set `ios.legacyRtmpCompatibility: true` in the config plugin. It's **off by default**; most servers don't need it.
 
-**Cause.** Agora's ingest identifies as `fmsVer = FMS/3,0,1,123` — it emulates a 2008-era Adobe Flash Media Server. The iOS engine (HaishinKit) sends the FMLE-compatibility commands `releaseStream` and `FCPublish` and **awaits a reply** before sending `createStream` / `publish`. Legacy FMS-style servers never reply to those two commands, so the client blocks until its internal request timeout (~15 s) elapses, then proceeds. OBS/librtmp and Android (Pedro) fire those commands fire-and-forget and never wait — which is why only iOS is slow, and only against these servers.
+**Symptom (iOS only).** Publishing takes **~15–17 seconds** to fire `connectionSuccess`, while the *same* app reaches the same event in 2–4 s on YouTube, Twitch, Facebook/Instagram Live, and OBS relays — and Android connects to the *same* URL in ~4 s. Once connected the stream is perfectly healthy; only the *start* is slow. The most common place this shows up is **Agora's RTLS ingest** (`rtmp://rtls-ingress-*.agoramdn.com/live/…`), but it can happen with any server that presents an old Flash-Media-Server-style RTMP front end.
 
-**The fix is opt-in and off by default**, because the overwhelming majority of ingests reply normally and don't need it. When enabled, the library patches HaishinKit's `RTMPStream.createStream()` so `releaseStream`/`FCPublish` are sent fire-and-forget (matching OBS), dropping the Agora connect from ~17 s to ~2–3 s. It's harmless against modern servers (they just receive the two commands without the client blocking on a response).
+**Why it happens.** These servers identify themselves as something like `fmsVer = FMS/3,0,1,123` — i.e. they emulate a 2008-era Adobe Flash Media Server and expect the old **FMLE** (Flash Media Live Encoder) publish handshake. The iOS RTMP engine this library uses (HaishinKit) follows that handshake strictly: before it sends `createStream` / `publish`, it sends two FMLE-compatibility commands, `releaseStream` and `FCPublish`, and **waits for the server to acknowledge them**. Modern servers reply instantly. These legacy servers simply never reply to those two commands — so HaishinKit blocks on each until its internal request timeout (~15 s) expires, *then* continues. That timeout is the entire delay. OBS/`librtmp` and Android (the Pedro engine) send those same commands **fire-and-forget** and never wait for a reply, which is exactly why they're fast against the same server and iOS is not.
 
-**Enable it only if you publish to Agora RTLS or another legacy FMS/FMLE ingest that's slow to connect on iOS.**
+### What this option changes, and why it's safe
 
-### Expo (managed)
+When you enable `ios.legacyRtmpCompatibility`, the library applies a one-line-per-statement patch to HaishinKit's `RTMPStream.createStream()`:
+
+```diff
+- async let _ = connection?.call("releaseStream", arguments: fcPublishName)
+- async let _ = connection?.call("FCPublish",     arguments: fcPublishName)
++ Task { _ = try? await connection?.call("releaseStream", arguments: fcPublishName) }
++ Task { _ = try? await connection?.call("FCPublish",     arguments: fcPublishName) }
+```
+
+The original `async let _` bindings look fire-and-forget but aren't: Swift **implicitly awaits** an `async let` at the end of its enclosing scope, so `createStream()` couldn't proceed until both calls returned (or timed out). Wrapping each call in a detached `Task` makes it *genuinely* fire-and-forget — `releaseStream`/`FCPublish` are still sent (legacy servers that do care about them still receive them, in order, on the same RTMP chunk stream), but `createStream`/`publish` no longer block waiting on a reply. This is the same behavior OBS and the Android engine already use, and it drops the connect time from ~17 s to ~2–3 s. Against modern servers it's a no-op in practice: they were replying instantly anyway, so not awaiting the reply changes nothing observable.
+
+**Why it's opt-in / off by default.** It's a source patch of a third-party dependency (HaishinKit), and the overwhelming majority of ingests connect fine without it. So we don't apply it unless you explicitly ask for it — enable it **only** if you publish to Agora RTLS or another legacy FMS/FMLE-style server that's slow to connect on iOS.
+
+### How to enable it
+
+#### Expo (managed)
 
 ```jsonc
 {
@@ -351,7 +366,7 @@ The flag is **build-time only.** If you later need background streaming, you hav
 
 Re-run `expo prebuild` and `pod install` after toggling. The plugin injects a `post_install` hook into `ios/Podfile` that applies the patch on every install. (It runs against the freshly-installed `Pods/` tree, so unlike a podspec `prepare_command` it isn't affected by the CocoaPods download cache and stays per-app.)
 
-### Bare React Native (manual Podfile)
+#### Bare React Native (manual Podfile)
 
 Add this inside the `post_install do |installer|` block of your `ios/Podfile`, then `pod install`:
 
@@ -359,9 +374,10 @@ Add this inside the `post_install do |installer|` block of your `ios/Podfile`, t
 post_install do |installer|
   # … your existing react_native_post_install(…) call …
 
-  # Legacy-FMS RTMP fix (Agora RTLS et al): fire releaseStream/FCPublish
-  # fire-and-forget so createStream isn't blocked ~15s on servers that
-  # never reply to them. Idempotent; no-op if upstream renames the lines.
+  # Legacy-RTMP fix (Agora RTLS or any legacy FMS-style server): send
+  # releaseStream/FCPublish fire-and-forget so createStream isn't blocked
+  # ~15s on servers that never reply to them. Idempotent; no-op if upstream
+  # renames the lines.
   rtmp_hk_stream = File.join(__dir__, 'Pods', 'RTMPHaishinKit', 'RTMPHaishinKit', 'Sources', 'RTMP', 'RTMPStream.swift')
   if File.exist?(rtmp_hk_stream)
     rtmp_src = File.read(rtmp_hk_stream)
