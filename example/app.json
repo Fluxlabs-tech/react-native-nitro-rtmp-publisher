@@ -41,7 +41,14 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "react-native-nitro-rtmp-publisher"
+      [
+        "react-native-nitro-rtmp-publisher",
+        {
+          "ios": {
+            "legacyRtmpCompatibility": true
+          }
+        }
+      ]
     ]
   }
 }

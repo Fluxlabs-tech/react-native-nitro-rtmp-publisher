@@ -31,13 +31,21 @@
 //     }
 //   }
 //
-// Or with per-app permission strings:
+// Or with options. Options are grouped by platform — `ios` and `android`
+// sub-objects hold platform-specific options; any key at the top level is
+// treated as "common" and applied to both platforms (a platform sub-object
+// key wins over a top-level key of the same name on that platform):
 //
 //   "plugins": [
 //     ["react-native-nitro-rtmp-publisher", {
-//       "cameraUsage": "Stream live video from your camera.",
-//       "microphoneUsage": "Capture audio for live streams.",
-//       "disableForegroundService": true   // Android only — opt out of FGS
+//       "ios": {
+//         "cameraUsage": "Stream live video from your camera.",
+//         "microphoneUsage": "Capture audio for live streams.",
+//         "legacyRtmpCompatibility": true   // legacy-FMS RTMP connect fix
+//       },
+//       "android": {
+//         "disableForegroundService": true  // opt out of the FG service
+//       }
 //     }]
 //   ]
 //
@@ -47,6 +55,16 @@
 // permissions, no <service> declaration) so Play Console doesn't require
 // the "Foreground services" form. The trade-off is that streams cannot
 // survive backgrounding on Android 14+. See README.md.
+//
+// Setting `legacyRtmpCompatibility: true` (iOS only, default false) injects
+// a post_install hook into ios/Podfile that patches HaishinKit's
+// RTMPStream.createStream() to fire the FMLE releaseStream/FCPublish
+// commands fire-and-forget. Without it, publishing to legacy Flash-Media-
+// Server-style ingests (e.g. Agora RTLS, fmsVer FMS/3,0,1,123) stalls ~15s
+// because those servers never reply to those commands and HaishinKit awaits
+// them before sending createStream. Most ingests (YouTube, Twitch,
+// Facebook/Instagram, OBS-relay, Wowza) don't need it, so it's off by
+// default. Harmless when enabled against modern servers. See README.md.
 //
 
 const {
@@ -157,10 +175,95 @@ const withFgsOptOut = (config, { disableForegroundService } = {}) => {
   });
 };
 
+// Opt-in iOS fix for legacy Flash-Media-Server-style RTMP ingests (e.g.
+// Agora RTLS). Injects a post_install hook into ios/Podfile that rewrites
+// HaishinKit RTMPStream.createStream() so the FMLE releaseStream/FCPublish
+// calls are fire-and-forget detached Tasks instead of `async let _` bindings
+// (which Swift implicitly awaits at the end of the enclosing `if`, blocking
+// createStream ~15s on servers that never reply to those commands).
+//
+// Why a post_install hook and not the podspec's prepare_command: a
+// prepare_command always runs and its output is baked into the CocoaPods
+// download cache (keyed by git tag, not by our flag), so it can't be toggled
+// per-app and would leak across projects sharing the cache. post_install
+// runs on every `pod install` against the freshly-laid-down Pods/ tree, so
+// it's both opt-in and cache-immune. The patch is idempotent (skips if
+// already applied) and a no-op if upstream renames the lines on a bump.
+const PODFILE_LEGACY_RTMP_PATCH = `  rtmp_hk_stream = File.join(__dir__, 'Pods', 'RTMPHaishinKit', 'RTMPHaishinKit', 'Sources', 'RTMP', 'RTMPStream.swift')
+  if File.exist?(rtmp_hk_stream)
+    rtmp_src = File.read(rtmp_hk_stream)
+    {
+      'async let _ = connection?.call("releaseStream", arguments: fcPublishName)' =>
+        'Task { _ = try? await connection?.call("releaseStream", arguments: fcPublishName) }',
+      'async let _ = connection?.call("FCPublish", arguments: fcPublishName)' =>
+        'Task { _ = try? await connection?.call("FCPublish", arguments: fcPublishName) }',
+    }.each do |rtmp_from, rtmp_to|
+      next if rtmp_src.include?(rtmp_to)
+      rtmp_src = rtmp_src.sub(rtmp_from, rtmp_to) if rtmp_src.include?(rtmp_from)
+    end
+    File.write(rtmp_hk_stream, rtmp_src)
+  end`;
+
+const withLegacyRtmpCompatibility = (
+  config,
+  { legacyRtmpCompatibility } = {}
+) => {
+  if (!legacyRtmpCompatibility) {
+    return config;
+  }
+  return withDangerousMod(config, [
+    'ios',
+    async (config) => {
+      const podfilePath = path.join(
+        config.modRequest.platformProjectRoot,
+        'Podfile'
+      );
+      if (!fs.existsSync(podfilePath)) {
+        throw new Error(
+          `[${PKG_NAME}] ios/Podfile not found at ${podfilePath} — has prebuild run?`
+        );
+      }
+      const before = fs.readFileSync(podfilePath, 'utf8');
+
+      const result = mergeContents({
+        tag: `${PKG_NAME}-legacy-rtmp`,
+        src: before,
+        newSrc: PODFILE_LEGACY_RTMP_PATCH,
+        // Insert as the first statements inside the existing post_install
+        // block — by then every pod is downloaded into Pods/.
+        anchor: /post_install do \|[^|]*\|/,
+        offset: 1,
+        comment: '#',
+      });
+
+      if (!result.contents.includes(`@generated begin ${PKG_NAME}-legacy-rtmp`)) {
+        throw new Error(
+          `[${PKG_NAME}] couldn't find a \`post_install do |installer|\` block in ios/Podfile to inject the legacy-RTMP compatibility patch. Add it manually — see the README.`
+        );
+      }
+
+      if (result.contents !== before) {
+        fs.writeFileSync(podfilePath, result.contents);
+      }
+      return config;
+    },
+  ]);
+};
+
+// Props are grouped by platform: `ios` / `android` sub-objects carry
+// platform-specific options, and any remaining top-level key is "common" and
+// applied to both platforms. A platform key overrides a common key of the
+// same name. Each modifier below is inherently single-platform, so we hand it
+// the merged set for its platform and it picks out the keys it cares about.
 const withRtmpPublisher = (config, props = {}) => {
+  const { ios = {}, android = {}, ...common } = props;
+  const iosProps = { ...common, ...ios };
+  const androidProps = { ...common, ...android };
+
   config = withPodfilePatch(config);
-  config = withPermissions(config, props);
-  config = withFgsOptOut(config, props);
+  config = withPermissions(config, iosProps);
+  config = withFgsOptOut(config, androidProps);
+  config = withLegacyRtmpCompatibility(config, iosProps);
   return config;
 };
 

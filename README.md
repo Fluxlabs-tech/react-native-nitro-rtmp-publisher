@@ -45,6 +45,7 @@ Live streaming from a phone is two hard problems entangled — owning the camera
   - [Android](#android)
 - [Quickstart](#quickstart)
 - [Permissions](#permissions)
+- [iOS: Agora & legacy RTMP ingests](#ios-connecting-to-agora-and-other-legacy-rtmp-ingests)
 - [Props](#props)
 - [Methods](#methods)
   - [Lifecycle](#lifecycle)
@@ -115,13 +116,17 @@ If you'd rather the plugin set the camera / mic strings (handy when this library
 ```json
 "plugins": [
   ["react-native-nitro-rtmp-publisher", {
-    "cameraUsage": "Stream live video from your camera.",
-    "microphoneUsage": "Capture audio for live streams."
+    "ios": {
+      "cameraUsage": "Stream live video from your camera.",
+      "microphoneUsage": "Capture audio for live streams."
+    }
   }]
 ]
 ```
 
 If neither prop is passed, Info.plist is left untouched.
+
+> **Plugin options are grouped by platform.** Pass an `ios` and/or `android` sub-object for platform-specific options; any key at the top level is treated as common and applied to both platforms (a platform key overrides a common key of the same name). Available options: `ios.cameraUsage`, `ios.microphoneUsage`, `ios.legacyRtmpCompatibility` (see [iOS: Agora & legacy RTMP ingests](#ios-connecting-to-agora-and-other-legacy-rtmp-ingests)), and `android.disableForegroundService` (see [Android: opting out of the foreground service](#android-opting-out-of-the-foreground-service)).
 
 ### iOS — bare React Native (manual Podfile)
 
@@ -299,7 +304,9 @@ Pass the option to the config plugin:
 {
   "plugins": [
     ["react-native-nitro-rtmp-publisher", {
-      "disableForegroundService": true
+      "android": {
+        "disableForegroundService": true
+      }
     }]
   ]
 }
@@ -315,6 +322,64 @@ Pass the option to the config plugin:
 - ❌ The library's compiled `RtmpForegroundService` class is still in the AAR as dead code (~3 KB). Not worth shipping two AAR variants to remove.
 
 The flag is **build-time only.** If you later need background streaming, you have to publish a new build (manifest entries are baked into the binary). There's no JS-runtime "enable FGS" path.
+
+---
+
+## iOS: connecting to Agora and other legacy RTMP ingests
+
+**Symptom (iOS only):** publishing to **Agora's RTLS ingest** (`rtmp://rtls-ingress-*.agoramdn.com/live/…`) takes **~15–17 seconds** to fire `connectionSuccess`, while the *same* app reaches the same event in 2–4 s on YouTube, Twitch, Facebook/Instagram Live, OBS relays, and on Android against the very same Agora URL. Once connected the stream is healthy; it's purely a slow *start*.
+
+**Cause.** Agora's ingest identifies as `fmsVer = FMS/3,0,1,123` — it emulates a 2008-era Adobe Flash Media Server. The iOS engine (HaishinKit) sends the FMLE-compatibility commands `releaseStream` and `FCPublish` and **awaits a reply** before sending `createStream` / `publish`. Legacy FMS-style servers never reply to those two commands, so the client blocks until its internal request timeout (~15 s) elapses, then proceeds. OBS/librtmp and Android (Pedro) fire those commands fire-and-forget and never wait — which is why only iOS is slow, and only against these servers.
+
+**The fix is opt-in and off by default**, because the overwhelming majority of ingests reply normally and don't need it. When enabled, the library patches HaishinKit's `RTMPStream.createStream()` so `releaseStream`/`FCPublish` are sent fire-and-forget (matching OBS), dropping the Agora connect from ~17 s to ~2–3 s. It's harmless against modern servers (they just receive the two commands without the client blocking on a response).
+
+**Enable it only if you publish to Agora RTLS or another legacy FMS/FMLE ingest that's slow to connect on iOS.**
+
+### Expo (managed)
+
+```jsonc
+{
+  "plugins": [
+    ["react-native-nitro-rtmp-publisher", {
+      "ios": {
+        "legacyRtmpCompatibility": true
+      }
+    }]
+  ]
+}
+```
+
+Re-run `expo prebuild` and `pod install` after toggling. The plugin injects a `post_install` hook into `ios/Podfile` that applies the patch on every install. (It runs against the freshly-installed `Pods/` tree, so unlike a podspec `prepare_command` it isn't affected by the CocoaPods download cache and stays per-app.)
+
+### Bare React Native (manual Podfile)
+
+Add this inside the `post_install do |installer|` block of your `ios/Podfile`, then `pod install`:
+
+```ruby
+post_install do |installer|
+  # … your existing react_native_post_install(…) call …
+
+  # Legacy-FMS RTMP fix (Agora RTLS et al): fire releaseStream/FCPublish
+  # fire-and-forget so createStream isn't blocked ~15s on servers that
+  # never reply to them. Idempotent; no-op if upstream renames the lines.
+  rtmp_hk_stream = File.join(__dir__, 'Pods', 'RTMPHaishinKit', 'RTMPHaishinKit', 'Sources', 'RTMP', 'RTMPStream.swift')
+  if File.exist?(rtmp_hk_stream)
+    rtmp_src = File.read(rtmp_hk_stream)
+    {
+      'async let _ = connection?.call("releaseStream", arguments: fcPublishName)' =>
+        'Task { _ = try? await connection?.call("releaseStream", arguments: fcPublishName) }',
+      'async let _ = connection?.call("FCPublish", arguments: fcPublishName)' =>
+        'Task { _ = try? await connection?.call("FCPublish", arguments: fcPublishName) }',
+    }.each do |rtmp_from, rtmp_to|
+      next if rtmp_src.include?(rtmp_to)
+      rtmp_src = rtmp_src.sub(rtmp_from, rtmp_to) if rtmp_src.include?(rtmp_from)
+    end
+    File.write(rtmp_hk_stream, rtmp_src)
+  end
+end
+```
+
+> If you change the patch state, run `pod cache clean RTMPHaishinKit --all && rm -rf ios/Pods/RTMPHaishinKit` before `pod install` so CocoaPods re-lays-down the source the hook runs against.
 
 ---
 
