@@ -192,6 +192,7 @@ const withFgsOptOut = (config, { disableForegroundService } = {}) => {
 const PODFILE_LEGACY_RTMP_PATCH = `  rtmp_hk_stream = File.join(__dir__, 'Pods', 'RTMPHaishinKit', 'RTMPHaishinKit', 'Sources', 'RTMP', 'RTMPStream.swift')
   if File.exist?(rtmp_hk_stream)
     rtmp_src = File.read(rtmp_hk_stream)
+    rtmp_orig = rtmp_src.dup
     {
       'async let _ = connection?.call("releaseStream", arguments: fcPublishName)' =>
         'Task { _ = try? await connection?.call("releaseStream", arguments: fcPublishName) }',
@@ -201,7 +202,14 @@ const PODFILE_LEGACY_RTMP_PATCH = `  rtmp_hk_stream = File.join(__dir__, 'Pods',
       next if rtmp_src.include?(rtmp_to)
       rtmp_src = rtmp_src.sub(rtmp_from, rtmp_to) if rtmp_src.include?(rtmp_from)
     end
-    File.write(rtmp_hk_stream, rtmp_src)
+    # Only write when something actually changed — and make the file writable
+    # first. CocoaPods lays pod sources down read-only on CI (e.g. EAS Build),
+    # so an unconditional File.write fails with EACCES. Skipping the write when
+    # already patched also keeps idempotent re-runs from touching a RO file.
+    if rtmp_src != rtmp_orig
+      File.chmod(0644, rtmp_hk_stream) rescue nil
+      File.write(rtmp_hk_stream, rtmp_src)
+    end
   end`;
 
 const withLegacyRtmpCompatibility = (
