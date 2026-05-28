@@ -10,25 +10,48 @@ import com.pedro.encoder.input.video.CameraHelper
 import com.pedro.encoder.utils.CodecUtil
 
 /**
- * OEMs whose audio_policy config exposes multiple `BUILTIN_MIC` entries
- * (`@:bottom` + `@:back` etc.) even though the phone physically ships a
- * single capsule. On these devices the HAL synthesises the second channel
- * by duplicating mono — doubling AudioRecord throughput and AAC encoder
- * CPU for zero perceived stereo, and on budget chipsets pushing the audio
- * thread past its 21 ms deadline (chunky playback).
+ * OEMs whose ENTIRE lineup is budget single-mic and exposes multiple
+ * `BUILTIN_MIC` entries in `audio_policy` config (HAL synthesises the
+ * second channel by duplicating mono → doubling AudioRecord throughput
+ * and AAC encoder CPU for zero perceived stereo → chunky playback on
+ * budget chipsets that miss the 21 ms encoder deadline).
  *
- * Counting `AudioDeviceInfo` entries doesn't catch these because Android
- * trusts the config XML; we have to fall back to brand string. Add to this
- * set if you find another OEM doing the same thing.
+ * **Restricted to brands where every shipped device has the problem.**
+ * `oppo` / `oneplus` / `redmi` were originally included here but their
+ * lineups span both fake-stereo budget tiers AND real-stereo flagships
+ * (Find X, OnePlus 8+, Redmi Note Pro / K series). Forcing those
+ * flagships to mono would lose real stereo capability — so they're
+ * handled via [KNOWN_SINGLE_MIC_MODELS] on a per-device basis instead.
+ *
+ * Add to this set only if a brand is universally single-mic (no
+ * flagship lineup exists under the brand name).
  */
 private val FAKE_STEREO_BUILTIN_MIC_BRANDS = setOf(
   "realme",
-  "oppo",
-  "oneplus",
-  // Xiaomi/Redmi budget SKUs do the same; mid-range and flagship usually
-  // ship real dual-mic arrays. Coarse-grained: catches more false
-  // positives but the cost (mono instead of fake-stereo) is acceptable.
-  "redmi",
+)
+
+/**
+ * Specific `Build.MODEL` codes (NOT consumer names — Android exposes the
+ * SKU code via `Build.MODEL`, e.g. "BE2013" for OnePlus Nord N100, not
+ * "Nord N100") known to ship a single mic capsule with fake-stereo
+ * synthesis. Used for brands whose lineups span both real-stereo
+ * flagships and fake-stereo budget tiers, where brand-level matching
+ * would force mono on capable devices.
+ *
+ * Matching is case-insensitive exact-match against `Build.MODEL`. Add
+ * new entries as field reports come in. Reference for common ones:
+ * - OnePlus Nord N100 = `BE2013`, N200 = `DE2118`, N300 = `CPH2389`
+ * - Oppo A77 5G = `CPH2477`, Oppo A78 = `CPH2565`
+ * - Redmi 12 = `23053RN02A`, Redmi A1 = `220733SI`
+ *
+ * Empty by default — populate when a real user reports chunky audio on
+ * a device whose brand isn't in [FAKE_STEREO_BUILTIN_MIC_BRANDS].
+ */
+private val KNOWN_SINGLE_MIC_MODELS = setOf<String>(
+  // Seed example: the Realme C75x ("RMX5313") we diagnosed in v0.6.2.
+  // Already covered by the brand=realme check above, listed here only as
+  // a worked example of the format for future entries.
+  // "RMX5313",
 )
 
 /**
@@ -136,23 +159,29 @@ internal fun HybridRtmpPublisherView.resolveEffectiveStereo(requestedStereo: Boo
   if (!requestedStereo) return false
   val brand = Build.BRAND.lowercase()
   val manufacturer = Build.MANUFACTURER.lowercase()
+  val model = Build.MODEL.uppercase()
   val micCount = builtInMicCount()
-  // Brand override comes first — Realme/Oppo/OnePlus/Redmi expose multiple
-  // BUILTIN_MIC entries in their audio_policy XML even though only one
-  // capsule physically exists. The count heuristic alone is fooled by
-  // this; brand string is the only reliable signal. See
-  // [FAKE_STEREO_BUILTIN_MIC_BRANDS] for the rationale.
+  // Brand override: universally single-mic brands (just `realme` today;
+  // see [FAKE_STEREO_BUILTIN_MIC_BRANDS] for why oppo/oneplus/redmi are
+  // NOT in this set even though their budget tier shares the bug).
   val brandForcesMono = brand in FAKE_STEREO_BUILTIN_MIC_BRANDS ||
     manufacturer in FAKE_STEREO_BUILTIN_MIC_BRANDS
-  // Always log the decision inputs so it's observable in logcat without
-  // a debugger attached.
+  // Model override: catches specific budget SKUs from mixed-lineup brands
+  // (Oppo A-series, OnePlus Nord N, Redmi 12, etc.) without forcing mono
+  // on flagship siblings under the same brand.
+  val modelForcesMono = model in KNOWN_SINGLE_MIC_MODELS
   Log.i(
     TAG,
     "resolveEffectiveStereo: requested=true, brand=$brand, manufacturer=$manufacturer, " +
-      "builtInMicCount=${micCount ?: "?"}, brandForcesMono=$brandForcesMono"
+      "model=$model, builtInMicCount=${micCount ?: "?"}, " +
+      "brandForcesMono=$brandForcesMono, modelForcesMono=$modelForcesMono"
   )
   if (brandForcesMono) {
-    Log.i(TAG, "isStereo=true on known fake-stereo OEM ($manufacturer); capturing mono")
+    Log.i(TAG, "isStereo=true on known fake-stereo brand ($manufacturer); capturing mono")
+    return false
+  }
+  if (modelForcesMono) {
+    Log.i(TAG, "isStereo=true on known fake-stereo model ($model); capturing mono")
     return false
   }
   if (micCount != null && micCount >= 2) return true
