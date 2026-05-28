@@ -1,8 +1,35 @@
 package com.margelo.nitro.rtmppublisher
 
+import android.content.Context
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
+import android.os.Build
+import android.util.Log
 import com.pedro.encoder.TimestampMode
 import com.pedro.encoder.input.video.CameraHelper
 import com.pedro.encoder.utils.CodecUtil
+
+/**
+ * OEMs whose audio_policy config exposes multiple `BUILTIN_MIC` entries
+ * (`@:bottom` + `@:back` etc.) even though the phone physically ships a
+ * single capsule. On these devices the HAL synthesises the second channel
+ * by duplicating mono — doubling AudioRecord throughput and AAC encoder
+ * CPU for zero perceived stereo, and on budget chipsets pushing the audio
+ * thread past its 21 ms deadline (chunky playback).
+ *
+ * Counting `AudioDeviceInfo` entries doesn't catch these because Android
+ * trusts the config XML; we have to fall back to brand string. Add to this
+ * set if you find another OEM doing the same thing.
+ */
+private val FAKE_STEREO_BUILTIN_MIC_BRANDS = setOf(
+  "realme",
+  "oppo",
+  "oneplus",
+  // Xiaomi/Redmi budget SKUs do the same; mid-range and flagship usually
+  // ship real dual-mic arrays. Coarse-grained: catches more false
+  // positives but the cost (mono instead of fake-stereo) is acceptable.
+  "redmi",
+)
 
 /**
  * Encoder + GL pipeline configuration. Codec selection, mirror flags, audio
@@ -58,6 +85,83 @@ internal fun HybridRtmpPublisherView.applyMirrorFlags() {
   safe("applyMirrorFlags/stream") {
     camera.glInterface.setIsStreamHorizontalFlip(streamFlip)
   }
+}
+
+/**
+ * How many distinct physical built-in mic capsules the device exposes to
+ * AudioManager — used as the signal of "true stereo capable" vs "single
+ * capsule with fake-stereo synthesis".
+ *
+ * Why count physical entries instead of a single device's channelCount?
+ * Many single-mic phones (Realme C75x, most UNISOC/budget MediaTek phones,
+ * countless Oppo/Xiaomi budget SKUs) ship one capsule but report
+ * `channelCounts = [1, 2]` on their lone BUILTIN_MIC entry, claiming
+ * stereo support. The HAL accepts the stereo request and synthesises the
+ * second channel by duplicating the mono signal — exactly the failure
+ * mode we want to avoid. Counting separately-registered AudioDeviceInfo
+ * entries works around the lie: Pixel / Galaxy / OnePlus 8+ multi-mic
+ * arrays expose 2-3 entries (`@:bottom`, `@:top`, sometimes `@:back`),
+ * single-capsule phones expose exactly 1.
+ *
+ * Returns null if AudioManager is unavailable (extremely rare).
+ */
+internal fun HybridRtmpPublisherView.builtInMicCount(): Int? {
+  val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+    ?: return null
+  return safe("builtInMicCount", default = null) {
+    am.getDevices(AudioManager.GET_DEVICES_INPUTS)
+      .count { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
+  }
+}
+
+/**
+ * Resolves the caller's `isStereo` flag against the hardware reality.
+ *
+ * Forces mono when:
+ *   - Only one built-in mic capsule is exposed (single-capsule phone — all
+ *     budget tier and a chunk of mid-range), OR
+ *   - We can't enumerate (defensive fallback also forces mono since stereo
+ *     on a single-capsule device is a CPU tax with no benefit).
+ *
+ * Cost of getting this wrong (asking for stereo on a single-mic device):
+ *   - 2× AudioRecord PCM bytes per callback
+ *   - ~1.6× AAC software-encoder CPU per frame
+ *   - On low-end UNISOC/MediaTek chips, audio thread misses its 21 ms
+ *     deadline → encoder drops frames → audibly chunky playback
+ *
+ * Legitimate multi-mic devices (Pixel 6+, Galaxy S20+, OnePlus 8+, every
+ * iPhone) expose 2+ BUILTIN_MIC entries and keep stereo as requested.
+ */
+internal fun HybridRtmpPublisherView.resolveEffectiveStereo(requestedStereo: Boolean): Boolean {
+  if (!requestedStereo) return false
+  val brand = Build.BRAND.lowercase()
+  val manufacturer = Build.MANUFACTURER.lowercase()
+  val micCount = builtInMicCount()
+  // Brand override comes first — Realme/Oppo/OnePlus/Redmi expose multiple
+  // BUILTIN_MIC entries in their audio_policy XML even though only one
+  // capsule physically exists. The count heuristic alone is fooled by
+  // this; brand string is the only reliable signal. See
+  // [FAKE_STEREO_BUILTIN_MIC_BRANDS] for the rationale.
+  val brandForcesMono = brand in FAKE_STEREO_BUILTIN_MIC_BRANDS ||
+    manufacturer in FAKE_STEREO_BUILTIN_MIC_BRANDS
+  // Always log the decision inputs so it's observable in logcat without
+  // a debugger attached.
+  Log.i(
+    TAG,
+    "resolveEffectiveStereo: requested=true, brand=$brand, manufacturer=$manufacturer, " +
+      "builtInMicCount=${micCount ?: "?"}, brandForcesMono=$brandForcesMono"
+  )
+  if (brandForcesMono) {
+    Log.i(TAG, "isStereo=true on known fake-stereo OEM ($manufacturer); capturing mono")
+    return false
+  }
+  if (micCount != null && micCount >= 2) return true
+  Log.i(
+    TAG,
+    "isStereo=true requested but device exposes ${micCount ?: "?"} built-in mic(s); " +
+      "capturing mono to avoid fake-stereo synthesis (would double AAC CPU for no benefit)"
+  )
+  return false
 }
 
 internal fun HybridRtmpPublisherView.reapplyAudioConfig() {

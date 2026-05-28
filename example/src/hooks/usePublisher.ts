@@ -7,7 +7,6 @@ import type {
 } from 'react-native-nitro-rtmp-publisher';
 import {
   AUDIO_BITRATE,
-  AUDIO_SAMPLE_RATE,
   AUDIO_STEREO,
   errMsg,
   VIDEO_BITRATE,
@@ -21,11 +20,16 @@ import {
  * Sets up the publisher view once it's first ready, wires connection /
  * bitrate / thermal listeners, prepares the encoder, and starts the preview.
  *
+ * `sampleRate` is the resolved device sample rate (queried via
+ * `getDeviceSampleRate()` in the parent). The parent gates rendering until
+ * the value is known, so by the time this hook's `hybridRef` callback
+ * fires we already have the correct rate to pass to `prepareAudio()`.
+ *
  * Returns a stable `hybridRef` to pass to `<RtmpPublisherView hybridRef>`,
  * a `publisherRef` for imperative calls (start/stop/zoom/etc.), and the
  * derived UI state (`streaming`, `previewing`, `thermal`).
  */
-export function usePublisher(append: (line: string) => void) {
+export function usePublisher(append: (line: string) => void, sampleRate: number) {
   // `streaming` is true only after a successful publish.
   // `connecting` is true while there's an in-flight attempt — covers both
   // the first connect after `startStream` and any native auto-reconnect
@@ -85,12 +89,11 @@ export function usePublisher(append: (line: string) => void) {
             VIDEO_IFRAME_INTERVAL,
             rotation
           );
-          const a = ref.prepareAudio(
-            AUDIO_BITRATE,
-            AUDIO_SAMPLE_RATE,
-            AUDIO_STEREO
+          const a = ref.prepareAudio(AUDIO_BITRATE, sampleRate, AUDIO_STEREO);
+          append(
+            `prepareVideo=${v} prepareAudio=${a} ` +
+              `sampleRate=${sampleRate} rotation=${rotation}`
           );
-          append(`prepareVideo=${v} prepareAudio=${a} rotation=${rotation}`);
 
           ref.startPreview('back', VIDEO_WIDTH, VIDEO_HEIGHT);
           setPreviewing(true);
@@ -114,7 +117,11 @@ export function usePublisher(append: (line: string) => void) {
           append(`init err: ${errMsg(e)}`);
         }
       }),
-    [append]
+    // `sampleRate` is captured in the closure for prepareAudio. In practice
+    // it's stable for the lifetime of this hook (parent gates render until
+    // the probe resolves), but include it in deps to keep React's exhaustive-
+    // deps lint happy and to survive any future code that does swap it.
+    [append, sampleRate]
   );
 
   return {

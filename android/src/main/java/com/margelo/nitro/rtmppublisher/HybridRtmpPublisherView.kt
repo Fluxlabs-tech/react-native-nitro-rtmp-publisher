@@ -556,6 +556,11 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     // applyCodecType() — already done in `prepareVideo` (called first). Calling
     // again is a no-op duplicate.
     val source = audioSource.toMediaRecorderSource()
+    // Silently force mono on single-mic phones even if the caller asked for
+    // stereo. Fake-stereo synthesis in the HAL doubles audio CPU for zero
+    // benefit and is the primary cause of chunky playback on budget UNISOC /
+    // MediaTek chips. See [resolveEffectiveStereo] for full rationale.
+    val effectiveStereo = resolveEffectiveStereo(isStereo)
     // DSP precedence:
     //  1. Explicit `noiseSuppression={true}` — always on (echoCanceler +
     //     noiseSuppressor + AGC via Android's AudioEffect APIs).
@@ -567,10 +572,13 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
       audioSource == AudioSource.MIC ||
       audioSource == AudioSource.VOICECOMMUNICATION
     val ok = safe("prepareAudio", default = false) {
-      camera.prepareAudio(source, b, s, isStereo, keepDsp, keepDsp)
+      camera.prepareAudio(source, b, s, effectiveStereo, keepDsp, keepDsp)
     }
     if (ok) {
-      lastAudioCfg = AudioCfg(b, s, isStereo)
+      // Cache the EFFECTIVE stereo so reapplyAudioConfig / rePrepareEncoders
+      // re-use the resolved value instead of re-running the downgrade check
+      // (and risking divergence if the device's mic list changes mid-session).
+      lastAudioCfg = AudioCfg(b, s, effectiveStereo)
       audioPrepared = true
     } else {
       // Pedro returns false for two reasons: AudioRecord couldn't open the
@@ -580,7 +588,7 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
       // loudly so callers can see why and fix the cause.
       Log.w(TAG, "prepareAudio FAILED — audio will be missing from the stream. " +
         "Check RECORD_AUDIO permission, audioSource='$audioSource', " +
-        "sampleRate=$s, isStereo=$isStereo, and 'MicrophoneManager: create microphone error' / " +
+        "sampleRate=$s, isStereo=$effectiveStereo, and 'MicrophoneManager: create microphone error' / " +
         "'AudioEncoder: Valid encoder not found' in logcat.")
     }
     return ok

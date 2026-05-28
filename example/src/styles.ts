@@ -18,6 +18,15 @@ export const styles = StyleSheet.create({
     left: 16,
     flexDirection: 'row',
   },
+  // Top-right corner. Diagnostic chips that aren't tied to stream state —
+  // sample rate, mic config, etc. Same vertical band as `previewOverlay`
+  // (top: 48) so the two rows align visually.
+  previewOverlayRight: {
+    position: 'absolute',
+    top: 48,
+    right: 16,
+    flexDirection: 'row',
+  },
   badge: {
     color: '#fff',
     backgroundColor: '#444',
@@ -39,7 +48,10 @@ export const styles = StyleSheet.create({
   },
   chipDot: { width: 8, height: 8, borderRadius: 4, marginRight: 6 },
   chipText: { color: '#fff', fontWeight: '600', fontSize: 11, letterSpacing: 0.5 },
-  controls: { padding: 16 },
+  // `paddingBottom` clears Android gesture/button nav and the iOS home
+  // indicator — without this, the secondary controls row (NS / AUD) gets
+  // tucked under the system bar on phones with no safe-area-context.
+  controls: { paddingTop: 16, paddingHorizontal: 16, paddingBottom: 36 },
   label: { color: '#aaa', marginTop: 8, marginBottom: 4 },
   input: {
     backgroundColor: '#222',

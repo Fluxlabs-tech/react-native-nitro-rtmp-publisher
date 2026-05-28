@@ -1,5 +1,5 @@
 import { StatusBar } from 'expo-status-bar';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { KeyboardAvoidingView, Platform, View } from 'react-native';
 import {
   RtmpPublisherView,
@@ -9,7 +9,7 @@ import {
 import { ControlBar } from './src/components/ControlBar';
 import { EventsModal } from './src/components/EventsModal';
 import { PreviewOverlay } from './src/components/PreviewOverlay';
-import { DEFAULT_RTMP_URL, errMsg } from './src/constants';
+import { DEFAULT_RTMP_URL, errMsg, getDeviceSampleRate } from './src/constants';
 import { useEventLog } from './src/hooks/useEventLog';
 import { usePermissions } from './src/hooks/usePermissions';
 import { usePinchZoom } from './src/hooks/usePinchZoom';
@@ -33,9 +33,30 @@ export default function App() {
   // when you're streaming from a genuinely noisy environment and accept the
   // tradeoff: AGC will compress your voice in exchange for killing background.
   const [noiseSuppression, setNoiseSuppression] = useState(false);
+  // Device's native audio capture rate, probed via the AudioManager module
+  // (Android: PROPERTY_OUTPUT_SAMPLE_RATE; iOS: AVAudioSession.sampleRate).
+  // Stays `null` until the native call resolves — we gate the publisher
+  // view's render on this so `prepareAudio` always uses the correct rate
+  // and never the fallback. Picking the wrong rate forces the OS sample-
+  // rate converter, which on budget UNISOC/MediaTek chips muffles 5-10 kHz.
+  const [sampleRate, setSampleRate] = useState<number | null>(null);
 
   const { logs, append, clear } = useEventLog();
   const permissionsReady = usePermissions(append);
+
+  // Probe the device's native sample rate once on mount.
+  useEffect(() => {
+    let cancelled = false;
+    getDeviceSampleRate().then((rate) => {
+      if (cancelled) return;
+      setSampleRate(rate);
+      append(`device sampleRate=${rate}`);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [append]);
+
   const {
     hybridRef,
     publisherRef,
@@ -45,7 +66,7 @@ export default function App() {
     thermal,
     setStreaming,
     setConnecting,
-  } = usePublisher(append);
+  } = usePublisher(append, sampleRate ?? 48_000);
 
   const pinchHandlers = usePinchZoom(publisherRef, ({ zoom, min, max }) => {
     append(`zoom=${zoom.toFixed(2)} (${min.toFixed(2)}..${max.toFixed(2)})`);
@@ -128,7 +149,16 @@ export default function App() {
       <StatusBar style="light" />
 
       <View style={styles.previewBox}>
-        {permissionsReady ? (
+        {/*
+         * Two gates before the publisher mounts:
+         *   1. `permissionsReady` — RECORD_AUDIO / CAMERA granted.
+         *   2. `sampleRate != null` — the native AudioManager probe has
+         *      returned, so `prepareAudio()` runs once with the correct
+         *      device-native rate instead of a fallback. Mounting earlier
+         *      and re-mounting later would tear down/rebuild AudioRecord
+         *      and leak HAL state on UNISOC.
+         */}
+        {permissionsReady && sampleRate != null ? (
           <RtmpPublisherView
             style={styles.preview}
             // Pin both encoders to hardware (Android-critical; iOS no-op).
@@ -182,6 +212,7 @@ export default function App() {
           streaming={streaming}
           previewing={previewing}
           thermal={thermal}
+          sampleRate={sampleRate}
         />
       </View>
 

@@ -440,7 +440,7 @@ Call methods imperatively via `hybridRef`. The full ref type is `RtmpPublisherVi
 | Method | Notes |
 |---|---|
 | `prepareVideo(width, height, fps, bitrate, iFrameInterval, rotation): boolean` | Configure video encoder. Call **before** `startPreview`. Dimensions follow the natural-landscape convention (e.g. `1280, 720`) — the library rotates internally based on `rotation`. |
-| `prepareAudio(bitrate, sampleRate, isStereo): boolean` | Configure audio encoder. Call **before** `startPreview`. |
+| `prepareAudio(bitrate, sampleRate, isStereo): boolean` | Configure audio encoder. Call **before** `startPreview`. On Android, `isStereo=true` is silently downgraded to mono if the device's built-in mic only supports mono — see [Stereo capture](#stereo-capture). |
 | `startPreview(facing, width, height): void` | Open camera, render frames into the view. |
 | `stopPreview(): void` | Release camera. |
 | `startStream(url): void` | Begin RTMP publish. Queues until the GL surface is ready, so calling it immediately after `prepareVideo`/`prepareAudio` is safe. |
@@ -639,6 +639,21 @@ The `noiseSuppression` prop is the on/off switch for aggressive voice processing
 | Phone-call feel | No | Yes |
 
 Toggleable live mid-session via the prop. On iOS the change applies immediately; on Android call `ref.resetAudioEncoder()` after to rebuild the `AudioRecord` pipeline with the new DSP state.
+
+### Stereo capture
+
+`prepareAudio(..., isStereo)` controls AAC channel count. **On Android, the library silently downgrades stereo → mono if the built-in mic only supports a single channel.**
+
+This matters because most budget Android phones (Realme, Oppo, OnePlus Nord, budget Samsung A-series, Xiaomi Redmi, anything on UNISOC or low-end MediaTek) ship a single physical mic capsule. When an app asks for stereo, the audio HAL synthesises a second channel by duplicating the mono signal. That doubling has two downstream costs:
+
+- Doubled `AudioRecord` PCM throughput per callback.
+- ~1.6× AAC software-encoder CPU per frame (joint-stereo is cheaper than 2× independent encoding, but not free).
+
+On chips with weak performance cores (e.g. UNISOC Tiger T612) shared with the camera HAL, this is enough to push the audio thread past its ~21 ms deadline, causing dropped AAC frames and audibly chunky / stuttering playback.
+
+The library queries `AudioDeviceInfo.getChannelCounts()` for `TYPE_BUILTIN_MIC` and overrides `isStereo` to `false` when the hardware only supports mono. The callback logs `isStereo=true requested but built-in mic max channelCount=1; capturing mono` once so you can see it happened. Phones with real dual-mic arrays (Pixel 6+, Galaxy S20+, OnePlus 8+, every iPhone) keep stereo as requested.
+
+No-op on iOS — every iPhone has two mics and the audio session handles channel routing.
 
 ### Thermals
 
