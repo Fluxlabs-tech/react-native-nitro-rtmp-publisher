@@ -557,6 +557,24 @@ ref.setExposure(0)                // EV-compensation step
 | `setOpticalVideoStabilizationEnabled(on): boolean` | Optical / cinematic stabilization, hardware-gated. iOS: `.cinematic` mode. |
 | `isVideoStabilizationEnabled() / isOpticalVideoStabilizationEnabled()` | Current state. |
 
+### Beauty filter
+
+GPU skin-smoothing applied in the GL pipeline, so it affects **both the preview and the encoded stream**. Fixed strength (no intensity parameter).
+
+| Method | Notes |
+|---|---|
+| `setBeautyFilterEnabled(on): void` | Toggle the beauty filter. |
+| `isBeautyFilterEnabled(): boolean` | Current state. |
+| `isBeautyFilterSupported(): boolean` | `true` on Android, `false` on iOS — gate your UI on this. |
+
+```ts
+if (ref.isBeautyFilterSupported()) ref.setBeautyFilterEnabled(true)
+```
+
+**Android only.** On iOS these are safe no-ops and `isBeautyFilterSupported()` returns `false` (HaishinKit ships no built-in beauty filter).
+
+Shader precision is chosen automatically and needs no configuration: budget GPUs (≤ 8 GB RAM) use a cheaper `mediump` build — visually identical, but kinder on memory bandwidth and thermals — and on capable devices the full `highp` filter auto-downgrades to `mediump` under `severe` thermal pressure, restoring on cooldown (see [Thermals](#thermals)).
+
 ### Local recording
 
 Independent of streaming — can record while live, or without ever streaming.
@@ -743,6 +761,7 @@ Same JS API, same behavior — but worth knowing exactly where the platforms dif
 | Wake lock | `UIApplication.isIdleTimerDisabled` | `PARTIAL_WAKE_LOCK` |
 | Mirror | Single `AVCaptureConnection` buffer; UIView transform for asymmetric cases | Separate preview / stream flip flags, re-applied on `switchCamera()` |
 | `noiseSuppression` | Forces `AVAudioSession.Mode.voiceChat` (NS+AEC+AGC bundled, can't separate) | Independent `NoiseSuppressor` + `AcousticEchoCanceler` AudioEffects |
+| Beauty filter | Not supported (`isBeautyFilterSupported() === false`) | RootEncoder `BeautyFilterRender`; auto `highp`/`mediump` by device tier + thermal downgrade |
 
 When in doubt, **the JS API is the contract**. Where a knob doesn't map to one platform, we either translate (audioSource modes) or silently no-op (forceHardwareCodec on iOS).
 
