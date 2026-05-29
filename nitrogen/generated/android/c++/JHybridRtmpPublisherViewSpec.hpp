@@ -128,6 +128,9 @@ namespace margelo::nitro::rtmppublisher {
     bool isVideoStabilizationEnabled() override;
     bool setOpticalVideoStabilizationEnabled(bool enabled) override;
     bool isOpticalVideoStabilizationEnabled() override;
+    void setBeautyFilterEnabled(bool enabled) override;
+    bool isBeautyFilterEnabled() override;
+    bool isBeautyFilterSupported() override;
     bool startRecord(const std::string& path) override;
     void stopRecord() override;
     void pauseRecord() override;

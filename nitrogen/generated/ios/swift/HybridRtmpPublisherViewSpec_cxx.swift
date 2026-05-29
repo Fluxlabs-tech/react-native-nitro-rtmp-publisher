@@ -829,6 +829,41 @@ open class HybridRtmpPublisherViewSpec_cxx {
   }
   
   @inline(__always)
+  public final func setBeautyFilterEnabled(enabled: Bool) -> bridge.Result_void_ {
+    do {
+      try self.__implementation.setBeautyFilterEnabled(enabled: enabled)
+      return bridge.create_Result_void_()
+    } catch (let __error) {
+      let __exceptionPtr = __error.toCpp()
+      return bridge.create_Result_void_(__exceptionPtr)
+    }
+  }
+  
+  @inline(__always)
+  public final func isBeautyFilterEnabled() -> bridge.Result_bool_ {
+    do {
+      let __result = try self.__implementation.isBeautyFilterEnabled()
+      let __resultCpp = __result
+      return bridge.create_Result_bool_(__resultCpp)
+    } catch (let __error) {
+      let __exceptionPtr = __error.toCpp()
+      return bridge.create_Result_bool_(__exceptionPtr)
+    }
+  }
+  
+  @inline(__always)
+  public final func isBeautyFilterSupported() -> bridge.Result_bool_ {
+    do {
+      let __result = try self.__implementation.isBeautyFilterSupported()
+      let __resultCpp = __result
+      return bridge.create_Result_bool_(__resultCpp)
+    } catch (let __error) {
+      let __exceptionPtr = __error.toCpp()
+      return bridge.create_Result_bool_(__exceptionPtr)
+    }
+  }
+  
+  @inline(__always)
   public final func startRecord(path: std.string) -> bridge.Result_bool_ {
     do {
       let __result = try self.__implementation.startRecord(path: String(path))

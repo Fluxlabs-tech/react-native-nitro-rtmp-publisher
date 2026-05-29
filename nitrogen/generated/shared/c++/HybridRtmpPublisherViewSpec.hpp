@@ -150,6 +150,9 @@ namespace margelo::nitro::rtmppublisher {
       virtual bool isVideoStabilizationEnabled() = 0;
       virtual bool setOpticalVideoStabilizationEnabled(bool enabled) = 0;
       virtual bool isOpticalVideoStabilizationEnabled() = 0;
+      virtual void setBeautyFilterEnabled(bool enabled) = 0;
+      virtual bool isBeautyFilterEnabled() = 0;
+      virtual bool isBeautyFilterSupported() = 0;
       virtual bool startRecord(const std::string& path) = 0;
       virtual void stopRecord() = 0;
       virtual void pauseRecord() = 0;

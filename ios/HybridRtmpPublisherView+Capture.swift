@@ -250,6 +250,17 @@ extension HybridRtmpPublisherView {
   func getMinZoom() throws -> Double { return Double(currentDevice?.minAvailableVideoZoomFactor ?? 1) }
   func getMaxZoom() throws -> Double { return Double(currentDevice?.maxAvailableVideoZoomFactor ?? 1) }
 
+  // ─── Beauty filter ─────────────────────────────────────────────────────────
+  // Android-only (RootEncoder's BeautyFilterRender). HaishinKit has no built-in
+  // beauty filter, so these are no-ops on iOS — gate UI with isBeautyFilterSupported().
+
+  func setBeautyFilterEnabled(enabled: Bool) throws {
+    log("setBeautyFilterEnabled(\(enabled)) ignored — not supported on iOS")
+  }
+
+  func isBeautyFilterEnabled() throws -> Bool { return false }
+  func isBeautyFilterSupported() throws -> Bool { return false }
+
   // ─── Exposure ────────────────────────────────────────────────────────────
 
   func setExposure(value: Double) throws {

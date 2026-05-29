@@ -15,11 +15,16 @@ type Props = {
   connecting: boolean;
   logCount: number;
   noiseSuppression: boolean;
+  /** Current beauty-filter on/off state. */
+  beauty: boolean;
+  /** Whether the platform supports the beauty filter (Android only). */
+  beautySupported: boolean;
   onStart: () => void;
   onStop: () => void;
   onSwitch: () => void;
   onOpenLogs: () => void;
   onToggleNoiseSuppression: () => void;
+  onToggleBeauty: () => void;
 };
 
 /**
@@ -33,11 +38,14 @@ export function ControlBar({
   connecting,
   logCount,
   noiseSuppression,
+  beauty,
+  beautySupported,
   onStart,
   onStop,
   onSwitch,
   onOpenLogs,
   onToggleNoiseSuppression,
+  onToggleBeauty,
 }: Props) {
   // Start is enabled only when the publisher is fully idle. Stop stays
   // enabled while connecting so the user can cancel an in-flight attempt
@@ -91,6 +99,19 @@ export function ControlBar({
         >
           <Text style={styles.btnText}>
             NS: {noiseSuppression ? 'ON' : 'OFF'}
+          </Text>
+        </Pressable>
+        <Pressable
+          onPress={onToggleBeauty}
+          disabled={!beautySupported}
+          style={[
+            styles.btn,
+            beauty ? styles.btn : styles.btnAlt,
+            !beautySupported && styles.btnDisabled,
+          ]}
+        >
+          <Text style={styles.btnText}>
+            Beauty: {!beautySupported ? 'N/A' : beauty ? 'ON' : 'OFF'}
           </Text>
         </Pressable>
       </View>

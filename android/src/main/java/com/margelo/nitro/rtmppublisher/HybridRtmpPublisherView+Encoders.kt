@@ -1,5 +1,6 @@
 package com.margelo.nitro.rtmppublisher
 
+import android.app.ActivityManager
 import android.content.Context
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
@@ -71,6 +72,33 @@ internal fun HybridRtmpPublisherView.applyCodecType() {
   // it pick whichever AAC encoder the device actually ships.
   val audioType = CodecUtil.CodecType.FIRST_COMPATIBLE_FOUND
   camera.forceCodecType(videoType, audioType)
+}
+
+/**
+ * Coarse "go easy on the GPU" signal, used to pick the mediump beauty shader
+ * over the stock highp one (see [HybridRtmpPublisherView.applyBeautyFilter]).
+ *
+ * Leans on Android's own low-RAM flag (OEMs set `ro.config.low_ram` on budget
+ * SKUs) plus a total-RAM threshold: **8 GB and below is treated as budget**,
+ * so only 12 GB+ flagships default to highp. RAM is a proxy for GPU tier —
+ * reliable GPU detection needs a live GL context — but it tracks the hardware
+ * well: that band ships the weaker GPUs that run `highp` at half rate and have
+ * the least memory bandwidth to spare while the camera ISP, GL pipeline, and
+ * H.264 encoder all contend for it. The threshold errs generous on purpose:
+ * mediump is visually indistinguishable from highp here, so a false positive
+ * costs nothing, while leaving a budget phone on highp risks frames / heat.
+ */
+internal fun HybridRtmpPublisherView.isLowEndDevice(): Boolean {
+  val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+    ?: return false
+  if (am.isLowRamDevice) return true
+  val info = ActivityManager.MemoryInfo()
+  am.getMemoryInfo(info)
+  // totalMem under-reports marketed RAM (the kernel/firmware reserves a slice),
+  // so round up to recover the marketed figure (3.7 GiB → 4, 7.5 GiB → 8)
+  // before comparing — otherwise a raw-bytes cutoff clips the boundary.
+  val marketedGb = Math.ceil(info.totalMem / (1024.0 * 1024 * 1024)).toInt()
+  return marketedGb <= 8
 }
 
 internal fun HybridRtmpPublisherView.applyMirrorFlags() {

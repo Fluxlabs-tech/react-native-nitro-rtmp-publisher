@@ -526,6 +526,28 @@ namespace margelo::nitro::rtmppublisher {
       auto __value = std::move(__result.value());
       return __value;
     }
+    inline void setBeautyFilterEnabled(bool enabled) override {
+      auto __result = _swiftPart.setBeautyFilterEnabled(std::forward<decltype(enabled)>(enabled));
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+    }
+    inline bool isBeautyFilterEnabled() override {
+      auto __result = _swiftPart.isBeautyFilterEnabled();
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+      auto __value = std::move(__result.value());
+      return __value;
+    }
+    inline bool isBeautyFilterSupported() override {
+      auto __result = _swiftPart.isBeautyFilterSupported();
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+      auto __value = std::move(__result.value());
+      return __value;
+    }
     inline bool startRecord(const std::string& path) override {
       auto __result = _swiftPart.startRecord(path);
       if (__result.hasError()) [[unlikely]] {

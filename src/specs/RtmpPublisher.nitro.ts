@@ -419,6 +419,20 @@ export interface RtmpPublisherViewMethods extends HybridViewMethods {
   setOpticalVideoStabilizationEnabled(enabled: boolean): boolean
   isOpticalVideoStabilizationEnabled(): boolean
 
+  // ─── Beauty filter ───────────────────────────────────────────────────────
+
+  /**
+   * Toggle a GPU skin-smoothing "beauty" filter on the camera feed. It runs in
+   * the shared GL pipeline, so it affects BOTH the local preview and the
+   * encoded stream. Fixed strength (no intensity parameter).
+   *
+   * **Android only.** No-op on iOS — call {@link isBeautyFilterSupported} to
+   * gate UI on platforms where it isn't available.
+   */
+  setBeautyFilterEnabled(enabled: boolean): void
+  isBeautyFilterEnabled(): boolean
+  isBeautyFilterSupported(): boolean
+
   // ─── Local recording ─────────────────────────────────────────────────────
 
   /**

@@ -1,6 +1,7 @@
 package com.margelo.nitro.rtmppublisher
 
 import android.os.Build
+import android.os.PowerManager
 import androidx.core.content.ContextCompat
 
 /**
@@ -60,6 +61,21 @@ internal fun HybridRtmpPublisherView.unregisterThermalListener() {
 internal fun HybridRtmpPublisherView.onThermalStatusChanged(newStatus: Int) {
   val previous = lastThermalStatusInt
   lastThermalStatusInt = newStatus
+
+  // Auto-degrade the beauty filter under thermal pressure: highp → mediump at
+  // SEVERE+, restore at LIGHT/NONE. MODERATE is a hysteresis dead zone so an
+  // oscillation around the boundary doesn't recompile the GL program every
+  // tick. No-op on budget devices (already mediump) and when beauty is off.
+  val wantDowngrade = when {
+    newStatus >= PowerManager.THERMAL_STATUS_SEVERE -> true
+    newStatus <= PowerManager.THERMAL_STATUS_LIGHT -> false
+    else -> beautyThermalDowngrade
+  }
+  if (wantDowngrade != beautyThermalDowngrade) {
+    beautyThermalDowngrade = wantDowngrade
+    if (desiredBeautyFilter) applyBeautyFilter()
+  }
+
   val threshold = thermalThresholdLevel
   // Fire when:
   //  - new state >= threshold (entering / staying in warning zone), OR

@@ -33,6 +33,10 @@ export default function App() {
   // when you're streaming from a genuinely noisy environment and accept the
   // tradeoff: AGC will compress your voice in exchange for killing background.
   const [noiseSuppression, setNoiseSuppression] = useState(false);
+  // Beauty filter (GPU skin-smoothing). Android-only — `beautySupported`
+  // mirrors `isBeautyFilterSupported()` so the button disables itself on iOS.
+  const [beauty, setBeauty] = useState(false);
+  const [beautySupported, setBeautySupported] = useState(false);
   // Device's native audio capture rate, probed via the AudioManager module
   // (Android: PROPERTY_OUTPUT_SAMPLE_RATE; iOS: AVAudioSession.sampleRate).
   // Stays `null` until the native call resolves — we gate the publisher
@@ -119,6 +123,31 @@ export default function App() {
     });
   }, [append, publisherRef]);
 
+  // Beauty filter is applied in the GL pipeline, which only exists once
+  // preview is up — so query support (and reflect support in the UI) once
+  // previewing starts.
+  useEffect(() => {
+    if (!previewing) return;
+    try {
+      setBeautySupported(publisherRef.current?.isBeautyFilterSupported() ?? false);
+    } catch {
+      setBeautySupported(false);
+    }
+  }, [previewing, publisherRef]);
+
+  const onToggleBeauty = useCallback(() => {
+    setBeauty((prev) => {
+      const next = !prev;
+      try {
+        publisherRef.current?.setBeautyFilterEnabled(next);
+        append(`beautyFilter=${next}`);
+      } catch (e: unknown) {
+        append(`beauty err: ${errMsg(e)}`);
+      }
+      return next;
+    });
+  }, [append, publisherRef]);
+
   const onSwitch = useCallback(() => {
     const ref = publisherRef.current;
     if (!ref) return;
@@ -167,7 +196,7 @@ export default function App() {
             videoCodec="h264"
             audioCodec="aac"
             // Letterbox to fit when preview aspect ≠ stream aspect.
-            aspectRatioMode="adjust"
+            aspectRatioMode="fill"
             // Selfie convention: front camera mirrored for both preview AND
             // stream so the streamer and viewer see the same orientation.
             mirrorPreview={isFront}
@@ -223,11 +252,14 @@ export default function App() {
         connecting={connecting}
         logCount={logs.length}
         noiseSuppression={noiseSuppression}
+        beauty={beauty}
+        beautySupported={beautySupported}
         onStart={onStart}
         onStop={onStop}
         onSwitch={onSwitch}
         onOpenLogs={() => setLogsOpen(true)}
         onToggleNoiseSuppression={onToggleNoiseSuppression}
+        onToggleBeauty={onToggleBeauty}
       />
 
       <EventsModal
