@@ -309,10 +309,6 @@ abstract class HybridRtmpPublisherViewSpec: HybridView() {
   
   @DoNotStrip
   @Keep
-  abstract fun isBeautyFilterSupported(): Boolean
-  
-  @DoNotStrip
-  @Keep
   abstract fun startRecord(path: String): Boolean
   
   @DoNotStrip

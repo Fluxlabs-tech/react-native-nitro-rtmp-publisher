@@ -255,16 +255,21 @@ final class BeautyVideoEffect: VideoEffect, @unchecked Sendable {
 
   // MARK: - Per-pixel kernel (CIColorKernel — NO sample()/dependent reads)
   //
-  // Port of beauty_fragment.glsl's per-pixel tail. The 25-tap green blur is now
-  // `blurred.g` (Apple's Gaussian); everything else is the unchanged Android
-  // math. `strength` lerps the final result back toward the original (intensity
-  // dial), applied here so it costs nothing.
+  // Port of beauty_fragment.glsl's per-pixel tail, retuned for the BRIGHT / FAIR
+  // look (matches Android's beauty_whitening_fragment.glsl 1:1). The 25-tap green
+  // blur is now `blurred.g` (Apple's Gaussian); the color tail desaturates (kills
+  // the red), drops the darkening lift, and adds a luma-gated lift toward white.
+  // `strength` lerps the final result back toward the original (intensity dial),
+  // applied here so it costs nothing.
+  //
+  // Look knobs (keep in sync with the Android .glsl): SMOOTH_GAMMA 0.85,
+  // SOFTLIGHT 0.18, SATURATION 0.85, WHITEN 0.16 (gated 0.30..0.88), FINAL_LIFT 0.
   //
   // Safety baked in:
   //  • `pow()` of a negative base is undefined in CIKL (→ NaN → black/garbage):
   //    both bases are floored with max(...,0).
-  //  • final clamp keeps output in [0,1] so the -0.096 lift / saturation matrix
-  //    can't push channels out of range into the encoder.
+  //  • final clamp keeps output in [0,1] so the lift / saturation steps can't
+  //    push channels out of range into the encoder.
   //  • alpha is passed through from the source rather than hard-coded to 1.0, so
   //    the effect is correct if ever fed RGBA.
   private static let source = """
@@ -284,13 +289,14 @@ final class BeautyVideoEffect: VideoEffect, @unchecked Sendable {
       highPass = hardLight(highPass);
       highPass = hardLight(highPass);
 
-      // Luminance-weighted strength: smooth brighter (skin) regions more.
+      // Luminance-weighted strength: smooth/brighten brighter (skin) regions more.
       float luminance = dot(c, vec3(0.299, 0.587, 0.114));
-      float alpha = pow(max(luminance, 0.0), 0.748);
+      float alpha = pow(max(luminance, 0.0), 0.748);   // LUMA_EXP
 
       vec3 smoothColor = c + (c - vec3(highPass)) * alpha * 0.1;
       // max(0) before pow: negative base → NaN in CIKL.
-      smoothColor = clamp(pow(max(smoothColor, 0.0), vec3(0.874)), 0.0, 1.0);
+      // SMOOTH_GAMMA (stock 0.874; lower = brighter).
+      smoothColor = clamp(pow(max(smoothColor, 0.0), vec3(0.85)), 0.0, 1.0);
 
       vec3 screen   = vec3(1.0) - (vec3(1.0) - smoothColor) * (vec3(1.0) - c);
       vec3 lighten  = max(smoothColor, c);
@@ -298,16 +304,21 @@ final class BeautyVideoEffect: VideoEffect, @unchecked Sendable {
 
       vec3 result = mix(c, screen, alpha);
       result = mix(result, lighten, alpha);
-      result = mix(result, softLight, 0.241);
+      result = mix(result, softLight, 0.18);   // SOFTLIGHT (stock 0.241)
 
-      // Saturation matrix written as dot products (avoids mat3 layout ambiguity).
-      vec3 satColor;
-      satColor.r = result.r * 1.1102 + result.g * (-0.0598) + result.b * (-0.061);
-      satColor.g = result.r * (-0.0774) + result.g * 1.0826 + result.b * (-0.1186);
-      satColor.b = result.r * (-0.0228) + result.g * (-0.0228) + result.b * 1.1772;
-      result = mix(result, satColor, 0.241);
+      // De-redden: blend TOWARD luminance (<1 desaturates). The stock shader did
+      // the OPPOSITE here — a saturateMatrix that AMPLIFIED skin's orange/red.
+      float lum2 = dot(result, vec3(0.299, 0.587, 0.114));
+      result = mix(vec3(lum2), result, 0.85);   // SATURATION
 
-      result = result + vec3(-0.096);
+      // Fair glow: a luminance-gated lift toward white — brightens AND further
+      // de-reds the lit face, while the smoothstep gate leaves dark hair / brows
+      // / background untouched.
+      float whiteMask = smoothstep(0.30, 0.88, lum2);   // WHITEN_LO, WHITEN_HI
+      result = mix(result, vec3(1.0), 0.16 * whiteMask);   // WHITEN
+
+      // Overall brightness. The stock shader SUBTRACTED 0.096 here (a DARKEN that
+      // also crushed the blue channel → more red); FINAL_LIFT defaults to 0.0.
 
       // Overall intensity: lerp the full-beauty result back toward the original.
       result = mix(c, result, clamp(strength, 0.0, 1.0));

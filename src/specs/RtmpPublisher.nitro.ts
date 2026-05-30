@@ -427,12 +427,10 @@ export interface RtmpPublisherViewMethods extends HybridViewMethods {
    * intensity parameter).
    *
    * Supported on both platforms — Android uses a RootEncoder GL shader,
-   * iOS a HaishinKit CoreImage `VideoEffect`. {@link isBeautyFilterSupported}
-   * reports availability at runtime.
+   * iOS a HaishinKit CoreImage `VideoEffect`.
    */
   setBeautyFilterEnabled(enabled: boolean): void
   isBeautyFilterEnabled(): boolean
-  isBeautyFilterSupported(): boolean
 
   // ─── Local recording ─────────────────────────────────────────────────────
 

@@ -12,8 +12,6 @@ import android.view.OrientationEventListener
 import android.view.SurfaceHolder
 import android.view.View
 import com.pedro.common.ConnectChecker
-import com.pedro.encoder.input.gl.render.filters.BaseFilterRender
-import com.pedro.encoder.input.gl.render.filters.BeautyFilterRender
 import com.pedro.encoder.input.video.CameraHelper
 import com.pedro.library.base.recording.RecordController
 import com.pedro.library.rtmp.RtmpCamera2
@@ -162,11 +160,12 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
   // Beauty filter. The render lives in the GL pipeline, which is only alive
   // once preview is up — so we cache the desired on/off state and (re)apply it
   // after each startPreview. `beautyFilter` holds the live render instance
-  // while it's attached (null when detached). The concrete type is chosen at
-  // attach time: stock highp [BeautyFilterRender] on capable devices, the
-  // [MediumpBeautyFilterRender] on budget GPUs (see [applyBeautyFilter]).
+  // while it's attached (null when detached). It is always our own
+  // [WhiteningBeautyFilterRender] (fair/bright look, not the stock reddish one);
+  // only its shader PRECISION is chosen at attach time — highp on capable GPUs,
+  // mediump on budget GPUs / under thermal pressure (see [applyBeautyFilter]).
   internal var desiredBeautyFilter = false
-  internal var beautyFilter: BaseFilterRender? = null
+  internal var beautyFilter: WhiteningBeautyFilterRender? = null
   // Set when thermal pressure (SEVERE+) forces a running highp beauty filter
   // down to the cheaper mediump shader; cleared when the device cools back to
   // LIGHT/NONE. Driven from the thermal observer (onThermalStatusChanged).
@@ -991,20 +990,19 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
 
   override fun isBeautyFilterEnabled(): Boolean = desiredBeautyFilter
 
-  override fun isBeautyFilterSupported(): Boolean = true
-
   // Add/remove the GL render to match `desiredBeautyFilter`. Idempotent and
   // safe to call before preview is up (glInterface throws → swallowed by
   // safe(); startPreview re-runs this once the pipeline is live). Tracks the
   // live instance in `beautyFilter` so we never double-add or leak it.
   //
-  // Shader precision is chosen at attach time: budget GPUs (entry Mali /
+  // It's always our own [WhiteningBeautyFilterRender] (fair/bright look); only
+  // its shader PRECISION is chosen at attach time: budget GPUs (entry Mali /
   // PowerVR / old Adreno) get the mediump build — they run highp at half rate
   // and have the least memory bandwidth to spare while encoding — and capable
-  // GPUs get the stock highp filter UNTIL thermal pressure forces a downgrade
-  // (see onThermalStatusChanged). When the target precision changes while the
-  // filter is live, this swaps the render in place. Idempotent: a call where
-  // the attached precision already matches is a no-op.
+  // GPUs get highp UNTIL thermal pressure forces a downgrade (see
+  // onThermalStatusChanged). When the target precision changes while the filter
+  // is live, this swaps the render in place. Idempotent: a call where the
+  // attached precision already matches is a no-op.
   internal fun applyBeautyFilter() {
     safe("applyBeautyFilter") {
       if (!desiredBeautyFilter) {
@@ -1012,20 +1010,19 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
         beautyFilter = null
         return@safe
       }
-      val wantMediump = isLowEndDevice() || beautyThermalDowngrade
+      val wantHighPrecision = !(isLowEndDevice() || beautyThermalDowngrade)
       val current = beautyFilter
-      if (current != null && (current is MediumpBeautyFilterRender) == wantMediump) {
+      if (current != null && current.highPrecision == wantHighPrecision) {
         return@safe // already attached at the right precision
       }
       current?.let { camera.glInterface.removeFilter(it) }
-      val filter: BaseFilterRender =
-        if (wantMediump) MediumpBeautyFilterRender() else BeautyFilterRender()
+      val filter = WhiteningBeautyFilterRender(highPrecision = wantHighPrecision)
       camera.glInterface.setFilter(filter)
       beautyFilter = filter
       Log.i(
         TAG,
         "beauty filter on (" +
-          (if (wantMediump) "mediump" else "highp") +
+          (if (wantHighPrecision) "highp" else "mediump") +
           (if (beautyThermalDowngrade) "/thermal-downgrade" else "") + ")"
       )
     }

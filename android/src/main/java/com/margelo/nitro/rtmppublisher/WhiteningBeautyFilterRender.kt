@@ -9,22 +9,31 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
- * A `mediump` build of RootEncoder's
- * [com.pedro.encoder.input.gl.render.filters.BeautyFilterRender], for budget
- * GPUs (entry Mali / PowerVR / old Adreno) that run `highp` fragment math at
- * half rate and have the least memory bandwidth to spare while streaming.
+ * Skin-smoothing "beauty" filter retuned for a BRIGHT / FAIR look instead of
+ * the warm, reddish cast of RootEncoder's stock
+ * [com.pedro.encoder.input.gl.render.filters.BeautyFilterRender].
  *
- * The GL plumbing is a 1:1 port of the stock filter — same fullscreen-quad
- * vertex layout, same uniforms, same draw call. The ONLY difference is the
- * fragment shader (`beauty_mediump_fragment`), which keeps texture
- * coordinates `highp` (so the 24-tap blur doesn't drift) but runs the color
- * math in `mediump`. The algorithm and look are otherwise identical.
+ * We ship our OWN shader (not the stock filter's) for two reasons: the stock
+ * fragment shader is baked into the encoder AAR and can't be edited, and its
+ * color tail (a saturation matrix + a darkening lift) makes skin read RED. Our
+ * `res/raw/beauty_whitening_fragment.glsl` keeps the stock frequency-separation
+ * smoothing 1:1 but retunes the color tail (less saturation, no darkening, a
+ * luma-gated lift toward white) so faces read fair/bright. The look knobs live
+ * at the top of that .glsl.
  *
- * Picked automatically on low-end devices — see
- * [HybridRtmpPublisherView.applyBeautyFilter]. Capable devices get the stock
- * highp [com.pedro.encoder.input.gl.render.filters.BeautyFilterRender].
+ * The GL plumbing here is a 1:1 port of the stock filter — same fullscreen-quad
+ * vertex layout, same uniforms, same draw call — so this is a drop-in for
+ * [com.pedro.encoder.input.gl.render.filters.BeautyFilterRender].
+ *
+ * ONE shader body, TWO precisions: [highPrecision] selects the
+ * `precision highp|mediump float;` line prepended at load time. Capable GPUs get
+ * highp; budget GPUs (entry Mali / PowerVR / old Adreno, which run highp
+ * fragment math at half rate and have the least bandwidth to spare) and
+ * thermally-throttled devices get mediump. Texture COORDINATES stay highp in
+ * both (declared in the shader) so the 24-tap blur doesn't drift. The precision
+ * is chosen in [HybridRtmpPublisherView.applyBeautyFilter].
  */
-class MediumpBeautyFilterRender : BaseFilterRender() {
+class WhiteningBeautyFilterRender(val highPrecision: Boolean) : BaseFilterRender() {
   // Fullscreen quad: x, y, z, u, v per vertex (stride 20 bytes, uv at offset 3).
   private val squareVertexData = floatArrayOf(
     -1f, -1f, 0f, 0f, 0f,
@@ -53,8 +62,12 @@ class MediumpBeautyFilterRender : BaseFilterRender() {
   }
 
   override fun initGlFilter(context: Context) {
-    val vertexShader = GlUtil.getStringFromRaw(context, R.raw.beauty_mediump_vertex)
-    val fragmentShader = GlUtil.getStringFromRaw(context, R.raw.beauty_mediump_fragment)
+    // One shader body; the default float precision is chosen here and prepended.
+    // Texture coordinates are pinned highp inside the shader regardless (so the
+    // blur doesn't drift on the mediump build) — see the .glsl header.
+    val precision = if (highPrecision) "precision highp float;\n" else "precision mediump float;\n"
+    val vertexShader = GlUtil.getStringFromRaw(context, R.raw.beauty_whitening_vertex)
+    val fragmentShader = precision + GlUtil.getStringFromRaw(context, R.raw.beauty_whitening_fragment)
 
     program = GlUtil.createProgram(vertexShader, fragmentShader)
     aPositionHandle = GLES20.glGetAttribLocation(program, "aPosition")

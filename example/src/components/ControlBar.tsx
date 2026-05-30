@@ -17,8 +17,6 @@ type Props = {
   noiseSuppression: boolean;
   /** Current beauty-filter on/off state. */
   beauty: boolean;
-  /** Whether the platform supports the beauty filter (Android only). */
-  beautySupported: boolean;
   onStart: () => void;
   onStop: () => void;
   onSwitch: () => void;
@@ -39,7 +37,6 @@ export function ControlBar({
   logCount,
   noiseSuppression,
   beauty,
-  beautySupported,
   onStart,
   onStop,
   onSwitch,
@@ -103,16 +100,9 @@ export function ControlBar({
         </Pressable>
         <Pressable
           onPress={onToggleBeauty}
-          disabled={!beautySupported}
-          style={[
-            styles.btn,
-            beauty ? styles.btn : styles.btnAlt,
-            !beautySupported && styles.btnDisabled,
-          ]}
+          style={[styles.btn, beauty ? styles.btn : styles.btnAlt]}
         >
-          <Text style={styles.btnText}>
-            Beauty: {!beautySupported ? 'N/A' : beauty ? 'ON' : 'OFF'}
-          </Text>
+          <Text style={styles.btnText}>Beauty: {beauty ? 'ON' : 'OFF'}</Text>
         </Pressable>
       </View>
     </View>

@@ -91,7 +91,6 @@ namespace margelo::nitro::rtmppublisher {
       prototype.registerHybridMethod("isOpticalVideoStabilizationEnabled", &HybridRtmpPublisherViewSpec::isOpticalVideoStabilizationEnabled);
       prototype.registerHybridMethod("setBeautyFilterEnabled", &HybridRtmpPublisherViewSpec::setBeautyFilterEnabled);
       prototype.registerHybridMethod("isBeautyFilterEnabled", &HybridRtmpPublisherViewSpec::isBeautyFilterEnabled);
-      prototype.registerHybridMethod("isBeautyFilterSupported", &HybridRtmpPublisherViewSpec::isBeautyFilterSupported);
       prototype.registerHybridMethod("startRecord", &HybridRtmpPublisherViewSpec::startRecord);
       prototype.registerHybridMethod("stopRecord", &HybridRtmpPublisherViewSpec::stopRecord);
       prototype.registerHybridMethod("pauseRecord", &HybridRtmpPublisherViewSpec::pauseRecord);

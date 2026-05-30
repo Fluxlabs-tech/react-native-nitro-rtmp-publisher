@@ -559,19 +559,18 @@ ref.setExposure(0)                // EV-compensation step
 
 ### Beauty filter
 
-Skin-smoothing applied per frame, affecting **both the preview and the encoded stream**. Fixed strength (no intensity parameter). Supported on **both platforms** — `isBeautyFilterSupported()` is there for forward-compat and returns `true` on iOS and Android today.
+Skin-smoothing applied per frame, affecting **both the preview and the encoded stream**. Fixed strength (no intensity parameter). Supported on **both platforms** (iOS and Android).
 
 | Method | Notes |
 |---|---|
 | `setBeautyFilterEnabled(on): void` | Toggle the beauty filter. |
 | `isBeautyFilterEnabled(): boolean` | Current state. |
-| `isBeautyFilterSupported(): boolean` | Runtime availability — gate your UI on this. |
 
 ```ts
-if (ref.isBeautyFilterSupported()) ref.setBeautyFilterEnabled(true)
+ref.setBeautyFilterEnabled(true)
 ```
 
-- **Android** — a GPU shader (RootEncoder `BeautyFilterRender`) in the GL pipeline. Precision is auto-selected: budget GPUs (≤ 8 GB RAM) use a cheaper `mediump` build (visually identical, kinder on bandwidth/thermals), and on capable devices `highp` auto-downgrades to `mediump` under `severe` thermal pressure, restoring on cooldown (see [Thermals](#thermals)).
+- **Android** — a custom GPU shader (`WhiteningBeautyFilterRender`) in the GL pipeline, tuned for a bright/fair look rather than the stock reddish tint. Precision is auto-selected: budget GPUs (≤ 8 GB RAM) use a cheaper `mediump` build (same look, kinder on bandwidth/thermals), and on capable devices `highp` auto-downgrades to `mediump` under `severe` thermal pressure, restoring on cooldown (see [Thermals](#thermals)).
 - **iOS** — a CoreImage `VideoEffect` registered on the HaishinKit mixer: **frequency-separation** skin-smoothing (a GPU port of the Android high-pass shader, so it's edge-preserving — smooths skin without blurring eyes, hair, or detail), not a plain Gaussian blur. Equivalent result, but not pixel-identical to Android. Under sustained heat it auto-throttles — lighter smoothing + a smaller blur at `serious`, lighter still at `critical`, restored on cooldown — the iOS analog of Android's `highp`→`mediump` downgrade (see [Thermals](#thermals)).
 
 ### Local recording

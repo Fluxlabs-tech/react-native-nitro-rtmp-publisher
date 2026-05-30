@@ -446,11 +446,6 @@ namespace margelo::nitro::rtmppublisher {
     auto __result = method(_javaPart);
     return static_cast<bool>(__result);
   }
-  bool JHybridRtmpPublisherViewSpec::isBeautyFilterSupported() {
-    static const auto method = _javaPart->javaClassStatic()->getMethod<jboolean()>("isBeautyFilterSupported");
-    auto __result = method(_javaPart);
-    return static_cast<bool>(__result);
-  }
   bool JHybridRtmpPublisherViewSpec::startRecord(const std::string& path) {
     static const auto method = _javaPart->javaClassStatic()->getMethod<jboolean(jni::alias_ref<jni::JString> /* path */)>("startRecord");
     auto __result = method(_javaPart, jni::make_jstring(path));
