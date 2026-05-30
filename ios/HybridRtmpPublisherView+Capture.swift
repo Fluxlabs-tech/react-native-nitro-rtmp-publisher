@@ -443,7 +443,6 @@ extension HybridRtmpPublisherView {
   }
 
   func isBeautyFilterEnabled() throws -> Bool { return cachedBeautyEnabled }
-  func isBeautyFilterSupported() throws -> Bool { return true }
 
   /// Map the current thermal state → a beauty headroom scale and push it to the
   /// effect (mirrors Android's SEVERE highp→mediump downgrade). Like Android, the
