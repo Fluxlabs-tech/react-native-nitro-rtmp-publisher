@@ -128,6 +128,10 @@ extension HybridRtmpPublisherView {
       let new = ProcessInfo.processInfo.thermalState
       let previous = self.lastThermalState
       self.lastThermalState = new
+      // Auto-throttle the beauty filter under thermal pressure (iOS analog of
+      // Android's SEVERE highp→mediump downgrade): serious → lighter + cheaper,
+      // critical → bypass, restored when it cools. No-op when beauty is off.
+      self.applyBeautyThermalScale()
       let threshold = self.thermalThreshold.toProcessInfoState()
       let enteringOrInZone = new.severityRank >= threshold.severityRank
       let justCleared = previous.severityRank >= threshold.severityRank && new.severityRank < threshold.severityRank
@@ -144,13 +148,27 @@ extension HybridRtmpPublisherView {
     }
   }
 
+  /// Register or unregister the thermal observer based on who needs it: a JS
+  /// `onThermalWarning` subscription (with a non-`.none` threshold) OR the beauty
+  /// filter being enabled (so the auto-throttle works even without any JS
+  /// subscription, matching Android where the listener is live while previewing).
+  /// Idempotent — safe to call from either trigger.
+  func syncThermalObserver() {
+    let warningWanted = onThermalWarning != nil && thermalThreshold != .none
+    if cachedBeautyEnabled || warningWanted {
+      registerThermalObserver()
+    } else {
+      unregisterThermalObserver()
+    }
+  }
+
   func getThermalStatus() throws -> ThermalStatus {
     return ProcessInfo.processInfo.thermalState.toNitro()
   }
 
   func setOnThermalWarning(callback: @escaping (ThermalStatus) -> Void) throws {
     onThermalWarning = callback
-    registerThermalObserver()
+    syncThermalObserver()
   }
 
   // ─── No-op API parity stubs ──────────────────────────────────────────────

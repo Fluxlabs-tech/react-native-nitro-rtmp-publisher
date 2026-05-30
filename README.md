@@ -559,21 +559,20 @@ ref.setExposure(0)                // EV-compensation step
 
 ### Beauty filter
 
-GPU skin-smoothing applied in the GL pipeline, so it affects **both the preview and the encoded stream**. Fixed strength (no intensity parameter).
+Skin-smoothing applied per frame, affecting **both the preview and the encoded stream**. Fixed strength (no intensity parameter). Supported on **both platforms** — `isBeautyFilterSupported()` is there for forward-compat and returns `true` on iOS and Android today.
 
 | Method | Notes |
 |---|---|
 | `setBeautyFilterEnabled(on): void` | Toggle the beauty filter. |
 | `isBeautyFilterEnabled(): boolean` | Current state. |
-| `isBeautyFilterSupported(): boolean` | `true` on Android, `false` on iOS — gate your UI on this. |
+| `isBeautyFilterSupported(): boolean` | Runtime availability — gate your UI on this. |
 
 ```ts
 if (ref.isBeautyFilterSupported()) ref.setBeautyFilterEnabled(true)
 ```
 
-**Android only.** On iOS these are safe no-ops and `isBeautyFilterSupported()` returns `false` (HaishinKit ships no built-in beauty filter).
-
-Shader precision is chosen automatically and needs no configuration: budget GPUs (≤ 8 GB RAM) use a cheaper `mediump` build — visually identical, but kinder on memory bandwidth and thermals — and on capable devices the full `highp` filter auto-downgrades to `mediump` under `severe` thermal pressure, restoring on cooldown (see [Thermals](#thermals)).
+- **Android** — a GPU shader (RootEncoder `BeautyFilterRender`) in the GL pipeline. Precision is auto-selected: budget GPUs (≤ 8 GB RAM) use a cheaper `mediump` build (visually identical, kinder on bandwidth/thermals), and on capable devices `highp` auto-downgrades to `mediump` under `severe` thermal pressure, restoring on cooldown (see [Thermals](#thermals)).
+- **iOS** — a CoreImage `VideoEffect` registered on the HaishinKit mixer: **frequency-separation** skin-smoothing (a GPU port of the Android high-pass shader, so it's edge-preserving — smooths skin without blurring eyes, hair, or detail), not a plain Gaussian blur. Equivalent result, but not pixel-identical to Android. Under sustained heat it auto-throttles — lighter smoothing + a smaller blur at `serious`, lighter still at `critical`, restored on cooldown — the iOS analog of Android's `highp`→`mediump` downgrade (see [Thermals](#thermals)).
 
 ### Local recording
 
@@ -691,8 +690,8 @@ Sustained streaming can throttle the SoC. The library hooks the OS thermal API o
 
 ```ts
 // Set the trip level via the `thermalWarningThreshold` prop (default 'severe').
-// The OS listener is only registered when you actually subscribe — zero work
-// otherwise.
+// The OS listener is registered when you subscribe (and, on iOS, also while the
+// beauty filter is on so it can auto-throttle) — zero work otherwise.
 ref.setOnThermalWarning((status) => {
   // 'none' | 'light' | 'moderate' | 'severe' | 'critical' | 'emergency' | 'shutdown'
   if (status === 'severe') ref.setVideoBitrateOnFly(1_000_000)
@@ -709,6 +708,7 @@ The callback fires twice for a typical heat event:
 
 - **Android**: requires API 29 (Android 10). Older devices always report `'none'`.
 - **iOS**: maps `ProcessInfo.thermalState` (`nominal` / `fair` / `serious` / `critical`) onto our 7-level scale.
+- **Beauty-filter auto-throttle**: when the [beauty filter](#beauty-filter) is on, both platforms automatically lighten it under thermal pressure (Android drops `highp`→`mediump`; iOS reduces smoothing intensity + blur radius), restoring on cooldown. This runs independently of `setOnThermalWarning` — it kicks in even if you never subscribe.
 
 #### Testing thermal handling without overheating the device
 
@@ -761,7 +761,7 @@ Same JS API, same behavior — but worth knowing exactly where the platforms dif
 | Wake lock | `UIApplication.isIdleTimerDisabled` | `PARTIAL_WAKE_LOCK` |
 | Mirror | Single `AVCaptureConnection` buffer; UIView transform for asymmetric cases | Separate preview / stream flip flags, re-applied on `switchCamera()` |
 | `noiseSuppression` | Forces `AVAudioSession.Mode.voiceChat` (NS+AEC+AGC bundled, can't separate) | Independent `NoiseSuppressor` + `AcousticEchoCanceler` AudioEffects |
-| Beauty filter | Not supported (`isBeautyFilterSupported() === false`) | RootEncoder `BeautyFilterRender`; auto `highp`/`mediump` by device tier + thermal downgrade |
+| Beauty filter | CoreImage `VideoEffect` (frequency-separation skin-smoothing) on the HaishinKit mixer; auto-throttles intensity + blur under thermal pressure | RootEncoder `BeautyFilterRender`; auto `highp`/`mediump` by device tier + thermal downgrade |
 
 When in doubt, **the JS API is the contract**. Where a knob doesn't map to one platform, we either translate (audioSource modes) or silently no-op (forceHardwareCodec on iOS).
 

@@ -82,6 +82,38 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     return v
   }()
 
+  // Freeze-frame overlay used to cover the ~400ms AVCaptureSession reconfigure
+  // during a camera flip. On flip we render the last composited preview frame
+  // (captured by `previewFrameTap`) into this image view, show it instantly so
+  // the user sees a held frame (never a black flash or the offscreen
+  // "double-render"), then crossfade it out the moment the new camera's first
+  // frame lands (see `showFreezeFrame` / `finalizeMirror`). Added as a SUBVIEW
+  // of the Metal preview so it inherits the same mirror transform; the captured
+  // frame already has orientation + mirror + beauty baked in, so the freeze
+  // matches the live preview pixel-for-pixel.
+  let freezeOverlay: UIImageView = {
+    let iv = UIImageView(frame: .zero)
+    iv.contentMode = .scaleAspectFit
+    iv.backgroundColor = .clear
+    iv.isUserInteractionEnabled = false
+    iv.clipsToBounds = true
+    iv.alpha = 0
+    iv.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+    return iv
+  }()
+
+  // Renders the captured `CIImage` freeze frame to a `CGImage` on flip. Eager
+  // `let` (not `lazy var`) so first-access is thread-safe — the render runs on
+  // `snapshotRenderQueue`, off the main thread. GPU-backed; a single 720×1280
+  // render is a few ms. `CIContext` is safe to use concurrently for rendering.
+  let freezeRenderContext = CIContext(options: [.cacheIntermediates: false])
+
+  // Serial background queue for the per-flip freeze-frame raster (createCGImage
+  // + GPU→CPU readback), so the flip tap never blocks the main run loop. The
+  // resulting UIImage is hopped back to main to show. `.userInteractive` because
+  // it's on the user's flip-tap path and the overlay should appear promptly.
+  let snapshotRenderQueue = DispatchQueue(label: "rtmp.freeze.snapshot", qos: .userInteractive)
+
   var view: UIView { previewView }
 
   // ─── HaishinKit 2.x ──────────────────────────────────────────────────────
@@ -179,6 +211,70 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   var cachedExposureRange: (min: Float, max: Float) = (-8, 8)
   var cachedAutoFocusEnabled = true
   var cachedAudioMuted = false
+  // Beauty filter (iOS): a CoreImage VideoEffect registered on the mixer's
+  // ScreenActor. The mixer (and its screen) persist across publish cycles, so
+  // once registered the effect stays until toggled off — no re-apply needed
+  // (unlike the Android GL path, which re-attaches on every startPreview).
+  let beautyEffect = BeautyVideoEffect()
+  var cachedBeautyEnabled = false
+  // Passive mixer output that keeps the latest composited preview frame so a
+  // camera flip can render a freeze-frame over the seam. See `PreviewFrameTap`
+  // and `showFreezeFrame`.
+  let previewFrameTap = PreviewFrameTap()
+  // Bumped on every camera flip; ties a specific freeze-frame raise to the
+  // attach that should crossfade it out, so overlapping flips (rapid
+  // double-tap) don't reveal the preview while a later flip is still mid-swap
+  // and only the newest flip owns the reveal. Touched ONLY on main — every
+  // mutator (showFreezeFrame / stopPreview / defrostCapture, and the capture in
+  // attachCameraAndMic) runs on the main thread (the JS-thread entry points hop
+  // via onMain / requestCameraAttach first), so the plain UInt64 is race-free.
+  var flipMaskToken: UInt64 = 0
+
+  // ─── Camera-attach coalescing (rapid Flip-button mashing) ────────────────
+  //
+  // `mixer.attachVideo` is a HEAVY actor call: HaishinKit wraps it in an
+  // AVCaptureSession beginConfiguration/commitConfiguration that tears down the
+  // old AVCaptureDeviceInput and constructs a fresh one (spins up the new
+  // camera hardware) — ~0.4-1.0s on-device. MediaMixer is a serial actor, so N
+  // rapid Flip taps would otherwise enqueue N of these back-to-back and freeze
+  // the UI for several seconds before draining.
+  //
+  // We coalesce: only ONE attach runs at a time. While one is in flight, a tap
+  // just updates the intent (`currentFacing` / `currentDevice`) and sets
+  // `cameraAttachPending`. When the in-flight attach finishes, its tail does AT
+  // MOST ONE reconverge attach to the latest intent.
+  //
+  // Result: any burst of N taps collapses into 1 attach (intent unchanged, e.g.
+  // even taps back→…→back) or 2 attaches (1 initial + 1 reconverge, e.g. odd
+  // taps), and always lands on the correct final facing.
+  //
+  // THREADING — these flags are mutated ONLY on the main thread. The entry-point
+  // Nitro methods (switchCamera / switchCameraById / startPreview / stopPreview)
+  // run on the JS thread (the generated bridge calls them with no hop), so they
+  // do NOT touch these flags directly: they route through requestCameraAttach(),
+  // which hops to main via `onMain` before reading/writing them; the attach tail
+  // and finalizeMirror also run on main. So `flipMaskToken` / `mirrorGeneration`
+  // and these two Bools are all single-threaded → a plain Bool/UInt64 is genuinely
+  // race-free. (The INTENT vars currentFacing/currentDevice are still set on the
+  // JS thread, but the attach reads them on main after a dispatch barrier and the
+  // reconverge re-checks them, so reading the freshest intent is correct.) Reset
+  // in stopPreview / onDropView (both via onMain) so a view that drops mid-attach
+  // can't leave the guard stuck.
+  var cameraAttachInFlight = false
+  var cameraAttachPending = false
+
+  // Monotonic generation for mirror writes. Bumped (on main) at the entry of
+  // EVERY path that asserts mirror — attachCameraAndMic / switchCameraById /
+  // defrostCapture (which seed mirror inside the attach block) and
+  // applyMirrorFlags (the prop-didSet path). Each spawned Task captures the
+  // generation it was born under and only commits its mirror write if it's
+  // still the latest. This makes mirror last-writer-wins DETERMINISTIC:
+  // whichever flip is newest owns the final value, so a heavy in-flight
+  // attach from an OLD flip can't clobber a NEWER flip's mirror when its tail
+  // finally lands. The winning writer re-reads `mirrorStream` live at commit
+  // time, so the committed value is always the freshest prop — regardless of
+  // whether the JS prop arrived before or after the attach completed.
+  var mirrorGeneration: UInt64 = 0
 
   // True between an explicit `startStream` and `stopStream` / drop. Gates
   // auto-reconnect so we don't retry against a torn-down camera/surface.
@@ -313,6 +409,11 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     didSet {
       guard aspectRatioMode != oldValue else { return }
       previewView.videoGravity = aspectRatioMode.avLayerGravity
+      // If a freeze overlay is currently shown (gravity changed mid-flip), keep
+      // its fit in sync with the live preview so they letterbox identically.
+      if freezeOverlay.alpha > 0 {
+        freezeOverlay.contentMode = aspectRatioMode.avLayerGravity.imageContentMode
+      }
     }
   }
 
@@ -334,15 +435,10 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     didSet {
       guard thermalWarningThreshold != oldValue else { return }
       thermalThreshold = thermalWarningThreshold
-      if thermalWarningThreshold == .none {
-        unregisterThermalObserver()
-      } else if onThermalWarning != nil {
-        // User toggled .none → non-.none and they DO have a callback set
-        // (no point spinning up the observer otherwise). registerThermal
-        // is idempotent so this is safe even if the observer was already
-        // running.
-        registerThermalObserver()
-      }
+      // Register/unregister based on BOTH the warning subscription AND beauty:
+      // even at threshold `.none` (warnings off) we keep the observer alive
+      // while beauty is on so its thermal auto-throttle still works. Idempotent.
+      syncThermalObserver()
     }
   }
 
@@ -385,9 +481,15 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     self.stream = RTMPStream(connection: connection)
     super.init()
 
+    // Freeze-frame overlay sits on top of the Metal preview. As a subview it
+    // inherits previewView's mirror transform, matching the live feed.
+    previewView.addSubview(freezeOverlay)
+
     Task { [stream] in
       await mixer.addOutput(previewView)
       await mixer.addOutput(stream)
+      // Passive tap that keeps the latest composited frame for flip freezing.
+      await mixer.addOutput(previewFrameTap)
     }
     subscribeToConnectionStatus()
     refreshOrientationCacheOnMain()
@@ -446,6 +548,21 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     lastPreview = nil
     pendingStreamKey = nil
     userRotationOverride = nil
+    // Release the camera-attach coalescing guard so a drop mid-attach can't
+    // leave it stuck (a remounted view starting from a fresh instance anyway,
+    // but defensive and idempotent).
+    // Release the coalescing guard + freeze overlay on main (the thread they're
+    // touched on), mirroring stopPreview, so a drop mid-attach can't leave the
+    // guard stuck or strand a frozen frame.
+    onMain { [weak self] in
+      guard let self else { return }
+      self.cameraAttachInFlight = false
+      self.cameraAttachPending = false
+      self.flipMaskToken &+= 1
+      self.freezeOverlay.alpha = 0
+      self.freezeOverlay.image = nil
+    }
+    previewFrameTap.clear()
     reconnectTask?.cancel()
     reconnectTask = nil
     reconnectScheduled = false

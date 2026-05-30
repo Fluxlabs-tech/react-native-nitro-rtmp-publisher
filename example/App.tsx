@@ -1,5 +1,5 @@
 import { StatusBar } from 'expo-status-bar';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { KeyboardAvoidingView, Platform, View } from 'react-native';
 import {
   RtmpPublisherView,
@@ -148,9 +148,20 @@ export default function App() {
     });
   }, [append, publisherRef]);
 
+  // Last time a flip was actually dispatched. The native side already
+  // coalesces rapid flips (an in-flight camera attach absorbs extra taps and
+  // reconverges to the latest facing once it finishes), so the freeze is gone
+  // even with the button mashed. This ~250ms throttle is a pure UX nicety: it
+  // drops ultra-rapid double-fires so the LOCAL `facing` state (which drives the
+  // mirror props) stays in lock-step with the native intent — we skip BOTH the
+  // native call and the local toggle together so they never desync.
+  const lastSwitchAtRef = useRef(0);
   const onSwitch = useCallback(() => {
     const ref = publisherRef.current;
     if (!ref) return;
+    const now = Date.now();
+    if (now - lastSwitchAtRef.current < 250) return;
+    lastSwitchAtRef.current = now;
     try {
       ref.switchCamera();
       // Update derived state so the mirror props flip to match the new camera.

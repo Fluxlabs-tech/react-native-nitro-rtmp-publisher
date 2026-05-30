@@ -26,6 +26,19 @@ extension AspectRatioMode {
   }
 }
 
+extension AVLayerVideoGravity {
+  /// `UIImageView` content mode that letterboxes/fills identically to how the
+  /// Metal preview renders this gravity — so the flip freeze-frame overlay
+  /// lines up with the live feed underneath it.
+  var imageContentMode: UIView.ContentMode {
+    switch self {
+    case .resizeAspectFill: return .scaleAspectFill
+    case .resize:           return .scaleToFill
+    default:                return .scaleAspectFit  // .resizeAspect
+    }
+  }
+}
+
 // MARK: - Thermal state
 
 extension ProcessInfo.ThermalState {
