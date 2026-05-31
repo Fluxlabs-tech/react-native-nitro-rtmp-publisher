@@ -111,6 +111,8 @@ extension HybridRtmpPublisherView {
       self.freezeOverlay.image = nil
     }
     disableOrientationObserver()
+    // Stop the spectral denoise pipeline if it was running (NS on).
+    denoisePipeline.stop()
     // If recording was active, finalize it before tearing down.
     if let rec = recorder {
       Task { try? await rec.stopRecording() }
@@ -675,7 +677,6 @@ extension HybridRtmpPublisherView {
 
     let mirror = mirrorStream
     let stabilization = currentStabilizationMode
-    let mic = AVCaptureDevice.default(for: .audio)
     // Bump + capture the mirror generation on the calling (main) thread BEFORE
     // spawning the attach Task. The post-attach re-assert below only commits if
     // this is still the latest generation, so a NEWER flip wins deterministically.
@@ -696,14 +697,14 @@ extension HybridRtmpPublisherView {
           unit.isVideoMirrored = mirror
           unit.preferredVideoStabilizationMode = stabilization
         }
-        if let mic {
-          try? await self.mixer.attachAudio(mic)
-        }
         // MediaMixer's async streams that feed outputs only start draining
         // after startRunning() — without it the preview stays black even
         // though capture is "attached." Safe to call repeatedly (guarded
         // by `isRunning` internally).
         await self.mixer.startRunning()
+        // Attach audio AFTER startRunning: NS off → mixer mic; NS on → our
+        // spectral denoise pipeline feeding mixer.append.
+        await self.applyAudioCaptureForCurrentMode()
         self.pinVideoOrientation()
         // Lock frame rate AFTER attach completes. The earlier (pre-fix)
         // sync call fired before attachVideo had a chance to commit the
@@ -812,7 +813,6 @@ extension HybridRtmpPublisherView {
   /// is already running causes a brief one-frame stutter, not a freeze.
   func defrostCapture() {
     guard let camera = currentDevice else { return }
-    let mic = AVCaptureDevice.default(for: .audio)
 
     // Apply the UIView side of the mirror flag IMMEDIATELY on main, so the
     // preview's CGAffineTransform is right before the first new frame from
@@ -848,8 +848,11 @@ extension HybridRtmpPublisherView {
           unit.isVideoMirrored = mirror
           unit.preferredVideoStabilizationMode = stabilization
         }
-        if let mic { try? await self.mixer.attachAudio(mic) }
         await self.mixer.startRunning()
+        // Re-attach audio for the current mode. When noiseSuppression is on this
+        // restarts the denoise pipeline (the AVAudioEngine is dead after a
+        // background/interruption); when off it re-attaches the mixer mic.
+        await self.applyAudioCaptureForCurrentMode()
         self.pinVideoOrientation()
         // Re-lock frame rate. iOS re-commits the device's `activeFormat`
         // during `attachVideo` and resets `activeVideoMin/MaxFrameDuration`
@@ -881,24 +884,48 @@ extension HybridRtmpPublisherView {
     }
   }
 
+  /// Attach the right audio source for the current `noiseSuppression` state.
+  /// Call AFTER `mixer.startRunning()` so the mixer is live for `append`.
+  ///
+  /// NS ON → own capture: ensure the mixer isn't also on the mic, then (re)start
+  /// the denoise pipeline (a fresh engine each time covers resume/interruption).
+  /// If the engine can't start we fall back to the built-in mic so audio is never
+  /// lost. NS OFF → HaishinKit's mic, pipeline stopped.
+  func applyAudioCaptureForCurrentMode() async {
+    let mic = AVCaptureDevice.default(for: .audio)
+    if noiseSuppression {
+      try? await mixer.attachAudio(nil)
+      denoisePipeline.stop()
+      do {
+        try denoisePipeline.start(mixer: mixer)
+      } catch {
+        log("denoise pipeline start failed: \(error) — falling back to built-in mic")
+        if let mic { try? await mixer.attachAudio(mic) }
+      }
+    } else {
+      denoisePipeline.stop()
+      if let mic { try? await mixer.attachAudio(mic) }
+    }
+  }
+
   func configureAudioSession() {
     let session = AVAudioSession.sharedInstance()
     do {
+      // `noiseSuppression` no longer forces `.voiceChat` — on iOS it now runs the
+      // custom spectral denoiser (parity with Android), so the session mode just
+      // follows `audioSource` and we capture raw-ish audio for the denoiser to
+      // clean (no double processing / AGC).
       let mode: AVAudioSession.Mode
-      if noiseSuppression {
+      switch audioSource {
+      case .mic:
+        mode = .default
+      case .voicecommunication:
         mode = .voiceChat
-      } else {
-        switch audioSource {
-        case .mic:
-          mode = .default
-        case .voicecommunication:
-          mode = .voiceChat
-        case .camcorder:
-          mode = .videoRecording
-        case .voicerecognition,
-             .unprocessed:
-          mode = .measurement
-        }
+      case .camcorder:
+        mode = .videoRecording
+      case .voicerecognition,
+           .unprocessed:
+        mode = .measurement
       }
 
       var options: AVAudioSession.CategoryOptions = []

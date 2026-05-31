@@ -156,25 +156,26 @@ export interface RtmpPublisherViewProps extends HybridViewProps {
 
   /**
    * Suppress steady background noise — fans, air-conditioners, appliance hum,
-   * traffic rumble, broadband hiss — so it doesn't bleed into the stream.
+   * traffic rumble, broadband hiss — without the "phone-call" voice compression.
    * Useful for talk streams in noisy environments (offices, cafes, rooms with
    * a fan or AC droning in the background).
    *
-   * - **Android**: a custom **spectral denoiser** running on the captured PCM
-   *   — a decision-directed (Ephraim–Malah) Wiener filter with adaptive
-   *   noise-floor tracking, installed via RootEncoder's `setCustomAudioEffect`
-   *   tap. It targets the *stationary* noise floor specifically, so steady fan
-   *   / AC hum is removed while transient and tonal content (voice, music,
-   *   ambience) passes through largely untouched — and it does **not** engage
-   *   the OS `NoiseSuppressor` / `AcousticEchoCanceler`, which are tuned for
-   *   phone-call speech and barely dent a steady fan. Applies live (no
-   *   re-prepare), so it can be toggled mid-stream.
-   * - **iOS**: forces `AVAudioSession.Mode.voiceChat`, which enables Apple's
-   *   built-in Voice Processing IO unit (NS + AEC + AGC). Takes precedence
-   *   over the `audioSource` mode mapping when `true`.
+   * - **Android**: a custom **spectral denoiser** (decision-directed Wiener
+   *   filter with adaptive noise-floor tracking) on the captured PCM, installed
+   *   via RootEncoder's `setCustomAudioEffect`. Targets the *stationary* noise
+   *   floor, so steady fan / AC hum is removed while voice **and music** stay
+   *   largely intact. Applies live (no re-prepare).
+   * - **iOS**: Apple's **Voice Processing** (the FaceTime/Siri-grade NS + echo
+   *   canceller) on an owned `AVAudioEngine` capture, with **AGC disabled** so
+   *   the voice keeps its natural level (no leveling/compression). HaishinKit
+   *   exposes no audio-effect hook, so the library owns capture while this is
+   *   `true` and feeds the mixer via `append`; reverts to HaishinKit's own mic
+   *   capture when `false`. Note Apple's processor is *voice-isolation*, so it
+   *   also suppresses non-voice background (incl. music), unlike Android.
    *
-   * Leave `false` for vlogs / music / wide-mic streams where you want the raw,
-   * unprocessed room tone.
+   * Neither platform applies the AGC/compression of a phone-call processor, so
+   * it's safe to leave on for talk streams. Leave `false` for music / wide-mic
+   * streams where you want the raw, unprocessed room tone.
    * @default false
    */
   noiseSuppression: boolean
