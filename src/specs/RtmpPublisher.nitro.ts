@@ -155,21 +155,26 @@ export interface RtmpPublisherViewProps extends HybridViewProps {
   audioSource: AudioSource
 
   /**
-   * Enable on-device noise suppression + echo cancellation + AGC for the
-   * audio input. Useful for talk streams in noisy environments (cafes, busy
-   * streets, public transit) — at the cost of broadband fidelity (music,
-   * applause, ambient sound will be squashed).
+   * Suppress steady background noise — fans, air-conditioners, appliance hum,
+   * traffic rumble, broadband hiss — so it doesn't bleed into the stream.
+   * Useful for talk streams in noisy environments (offices, cafes, rooms with
+   * a fan or AC droning in the background).
    *
-   * - **Android**: applies `NoiseSuppressor` + `AcousticEchoCanceler` to the
-   *   AudioRecord session via RootEncoder's `prepareAudio(..., echoCanceler,
-   *   noiseSuppressor)` flags. Overlays on top of whatever `audioSource`
-   *   you've picked.
+   * - **Android**: a custom **spectral denoiser** running on the captured PCM
+   *   — a decision-directed (Ephraim–Malah) Wiener filter with adaptive
+   *   noise-floor tracking, installed via RootEncoder's `setCustomAudioEffect`
+   *   tap. It targets the *stationary* noise floor specifically, so steady fan
+   *   / AC hum is removed while transient and tonal content (voice, music,
+   *   ambience) passes through largely untouched — and it does **not** engage
+   *   the OS `NoiseSuppressor` / `AcousticEchoCanceler`, which are tuned for
+   *   phone-call speech and barely dent a steady fan. Applies live (no
+   *   re-prepare), so it can be toggled mid-stream.
    * - **iOS**: forces `AVAudioSession.Mode.voiceChat`, which enables Apple's
    *   built-in Voice Processing IO unit (NS + AEC + AGC). Takes precedence
    *   over the `audioSource` mode mapping when `true`.
    *
-   * Leave `false` for vlogs / music / wide-mic streams where you want raw
-   * ambience.
+   * Leave `false` for vlogs / music / wide-mic streams where you want the raw,
+   * unprocessed room tone.
    * @default false
    */
   noiseSuppression: boolean

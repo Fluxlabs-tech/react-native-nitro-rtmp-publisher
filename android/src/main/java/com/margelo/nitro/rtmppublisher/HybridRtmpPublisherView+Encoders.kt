@@ -7,6 +7,7 @@ import android.media.AudioManager
 import android.os.Build
 import android.util.Log
 import com.pedro.encoder.TimestampMode
+import com.pedro.encoder.input.audio.NoAudioEffect
 import com.pedro.encoder.input.video.CameraHelper
 import com.pedro.encoder.utils.CodecUtil
 
@@ -224,13 +225,49 @@ internal fun HybridRtmpPublisherView.resolveEffectiveStereo(requestedStereo: Boo
 internal fun HybridRtmpPublisherView.reapplyAudioConfig() {
   val a = lastAudioCfg ?: return
   val source = audioSource.toMediaRecorderSource()
-  val keepDsp = noiseSuppression ||
-    audioSource == AudioSource.MIC ||
+  val keepDsp = audioSource == AudioSource.MIC ||
     audioSource == AudioSource.VOICECOMMUNICATION
   val ok = safe("reapplyAudio", default = false) {
     camera.prepareAudio(source, a.bitrate, a.sampleRate, a.isStereo, keepDsp, keepDsp)
   }
   audioPrepared = ok
+  // prepareAudio rebuilds the MicrophoneManager, which drops any previously
+  // installed custom effect — so re-install (or clear) the spectral denoiser.
+  applyNoiseSuppressor()
+}
+
+/**
+ * Install / clear the spectral noise suppressor ([SpectralNoiseSuppressor]) on
+ * RootEncoder's mic tap — the Android mechanism behind the [noiseSuppression]
+ * prop.
+ *
+ * Note this is NOT the OS `NoiseSuppressor` / `AcousticEchoCanceler`: those are
+ * the `keepDsp` flags passed to `prepareAudio`, which are now driven purely by
+ * the [audioSource] mode (MIC / VOICE_COMMUNICATION engage phone-call DSP).
+ * `noiseSuppression` deliberately bypasses them because they barely touch a
+ * steady fan — it runs this custom spectral denoiser instead.
+ *
+ * The effect is sample-rate- and channel-count-specific, so it is rebuilt from
+ * [lastAudioCfg] whenever audio is (re)prepared. When audio hasn't been
+ * prepared yet there is no MicrophoneManager to attach to — the prop value is
+ * just remembered and applied at the next [HybridRtmpPublisherView.prepareAudio].
+ *
+ * Live-swappable: `setCustomAudioEffect` only swaps a field read by the mic
+ * thread, so toggling mid-stream is safe (a fresh instance re-learns the noise
+ * floor over its short bootstrap window).
+ */
+internal fun HybridRtmpPublisherView.applyNoiseSuppressor() {
+  val a = lastAudioCfg ?: return
+  if (noiseSuppression) {
+    val channels = if (a.isStereo) 2 else 1
+    safe("applyNoiseSuppressor/on") {
+      camera.setCustomAudioEffect(SpectralNoiseSuppressor(a.sampleRate, channels))
+    }
+  } else {
+    safe("applyNoiseSuppressor/off") {
+      camera.setCustomAudioEffect(NoAudioEffect())
+    }
+  }
 }
 
 // Re-prepare the encoders that Pedro released in stopStream. Skips work if
@@ -251,13 +288,16 @@ internal fun HybridRtmpPublisherView.rePrepareEncodersIfNeeded() {
     val a = lastAudioCfg
     if (a != null) {
       val source = audioSource.toMediaRecorderSource()
-      val keepDsp = noiseSuppression ||
-        audioSource == AudioSource.MIC ||
+      val keepDsp = audioSource == AudioSource.MIC ||
         audioSource == AudioSource.VOICECOMMUNICATION
       val ok = safe("rePrepareAudio", default = false) {
         camera.prepareAudio(source, a.bitrate, a.sampleRate, a.isStereo, keepDsp, keepDsp)
       }
-      if (ok) audioPrepared = true
+      if (ok) {
+        audioPrepared = true
+        // The fresh MicrophoneManager has no effect attached yet — re-install.
+        applyNoiseSuppressor()
+      }
     }
   }
 }

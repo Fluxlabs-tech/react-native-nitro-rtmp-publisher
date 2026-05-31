@@ -106,20 +106,14 @@ export default function App() {
   const onToggleNoiseSuppression = useCallback(() => {
     setNoiseSuppression((prev) => {
       const next = !prev;
+      // Applies live on both platforms — no resetAudioEncoder() needed. Android
+      // swaps the custom spectral-denoiser effect in the prop setter; iOS
+      // re-runs AVAudioSession.setCategory in its didSet. So flipping the prop
+      // is enough, even mid-stream.
       append(`noiseSuppression=${next}`);
-      // On Android the new NS flag only takes effect on a fresh prepareAudio,
-      // so rebuild the audio encoder once the prop has propagated. iOS already
-      // applies live in the prop's didSet, so this is harmless there.
-      setTimeout(() => {
-        try {
-          publisherRef.current?.resetAudioEncoder();
-        } catch (e: unknown) {
-          append(`resetAudioEncoder err: ${errMsg(e)}`);
-        }
-      }, 0);
       return next;
     });
-  }, [append, publisherRef]);
+  }, [append]);
 
   const onToggleBeauty = useCallback(() => {
     setBeauty((prev) => {

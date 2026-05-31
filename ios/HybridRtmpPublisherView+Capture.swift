@@ -911,14 +911,13 @@ extension HybridRtmpPublisherView {
       }
       try session.setCategory(.playAndRecord, mode: mode, options: options)
 
-      if let inputs = session.availableInputs,
-         let mic = inputs.first(where: { $0.portType == .builtInMic }),
-         let source = mic.preferredDataSource ?? mic.dataSources?.first,
-         let patterns = source.supportedPolarPatterns,
-         patterns.contains(.cardioid) {
-        try? source.setPreferredPolarPattern(.cardioid)
-        try? mic.setPreferredDataSource(source)
-      }
+      // Leave the built-in mic at iOS's default polar pattern. We used to force
+      // `.cardioid` (directional) to reject background, but on selfie/streaming
+      // setups the bottom mic's on-axis direction points away from the speaker's
+      // mouth, so cardioid audibly LOWERED the captured voice. iOS's default
+      // (omnidirectional / system-chosen) gives a fuller, louder voice — and
+      // when `noiseSuppression` is on, voiceChat's processing still handles the
+      // extra ambience, so we keep clean audio without the level loss.
 
       try session.setActive(true)
     } catch {
