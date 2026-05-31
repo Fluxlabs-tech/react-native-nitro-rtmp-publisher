@@ -451,17 +451,16 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
       if (audioPrepared) reapplyAudioConfig()
     }
 
+  // On Android, noiseSuppression runs a custom spectral denoiser
+  // ([SpectralNoiseSuppressor]) on the captured PCM — NOT the OS NS/AEC.
+  // Because that effect is just a field read by the mic thread, it can be
+  // swapped live via setCustomAudioEffect with no re-prepare, so this applies
+  // immediately even mid-stream.
   override var noiseSuppression: Boolean = false
     set(value) {
       if (field == value) return
-      if (camera.isStreaming) {
-        Log.w(TAG, "noiseSuppression change ignored while streaming")
-        return
-      }
       field = value
-      // Same rationale as audioSource: re-prepare so the new DSP state is
-      // applied immediately instead of silently waiting for the next prepareAudio.
-      if (audioPrepared) reapplyAudioConfig()
+      applyNoiseSuppressor()
     }
 
   override var autoRotateStream: Boolean = true
@@ -575,15 +574,14 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     // benefit and is the primary cause of chunky playback on budget UNISOC /
     // MediaTek chips. See [resolveEffectiveStereo] for full rationale.
     val effectiveStereo = resolveEffectiveStereo(isStereo)
-    // DSP precedence:
-    //  1. Explicit `noiseSuppression={true}` — always on (echoCanceler +
-    //     noiseSuppressor + AGC via Android's AudioEffect APIs).
-    //  2. Otherwise, MIC / VOICE_COMMUNICATION sources implicitly engage DSP
-    //     because those sources are tuned for phone-call-style processing.
-    //  3. CAMCORDER / VOICE_RECOGNITION / UNPROCESSED keep DSP off so the
+    // OS NoiseSuppressor / AEC (`keepDsp`) is driven purely by the audioSource
+    // mode now — NOT by `noiseSuppression` (which runs the custom spectral
+    // denoiser instead; see [applyNoiseSuppressor]):
+    //  1. MIC / VOICE_COMMUNICATION sources implicitly engage DSP because those
+    //     sources are tuned for phone-call-style processing.
+    //  2. CAMCORDER / VOICE_RECOGNITION / UNPROCESSED keep DSP off so the
     //     broadband signal survives.
-    val keepDsp = noiseSuppression ||
-      audioSource == AudioSource.MIC ||
+    val keepDsp = audioSource == AudioSource.MIC ||
       audioSource == AudioSource.VOICECOMMUNICATION
     val ok = safe("prepareAudio", default = false) {
       camera.prepareAudio(source, b, s, effectiveStereo, keepDsp, keepDsp)
@@ -594,6 +592,11 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
       // (and risking divergence if the device's mic list changes mid-session).
       lastAudioCfg = AudioCfg(b, s, effectiveStereo)
       audioPrepared = true
+      // Install the spectral noise suppressor (when noiseSuppression is on) now
+      // that the MicrophoneManager exists and we know the sample rate / channel
+      // count. This is the Android noiseSuppression mechanism — separate from
+      // the OS keepDsp flags above.
+      applyNoiseSuppressor()
     } else {
       // Pedro returns false for two reasons: AudioRecord couldn't open the
       // source (almost always RECORD_AUDIO not granted yet, or the source isn't
