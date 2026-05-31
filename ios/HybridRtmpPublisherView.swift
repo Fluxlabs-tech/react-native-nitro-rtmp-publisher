@@ -120,6 +120,13 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
 
   let mixer = MediaMixer()
 
+  /// iOS `noiseSuppression` path. When NS is ON we own audio capture through this
+  /// pipeline (AVAudioEngine with Apple's Voice Processing — NS/AEC, AGC disabled
+  /// — feeding `mixer.append`) instead of `mixer.attachAudio(mic)`. When OFF it's
+  /// never started and the mixer captures the mic directly. See
+  /// `applyAudioCaptureForCurrentMode()`.
+  let denoisePipeline = AudioDenoisePipeline()
+
   /// Connection and stream are *both* recreated on every publish cycle.
   /// HaishinKit's `RTMPConnection` keeps every `RTMPStream` we register in
   /// a private `streams` array and has no public `removeStream(_:)` — only
@@ -448,6 +455,11 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     didSet {
       guard noiseSuppression != oldValue else { return }
       configureAudioSession()
+      // Swap the audio capture path live if we're already previewing (NS on →
+      // spectral denoise pipeline, NS off → mixer mic). If not previewing, the
+      // next attachCameraAndMic picks the right path.
+      guard cachedIsOnPreview else { return }
+      Task { [weak self] in await self?.applyAudioCaptureForCurrentMode() }
     }
   }
 
@@ -548,6 +560,8 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     lastPreview = nil
     pendingStreamKey = nil
     userRotationOverride = nil
+    // Tear down the spectral denoise pipeline (stops the AVAudioEngine + tap).
+    denoisePipeline.stop()
     // Release the camera-attach coalescing guard so a drop mid-attach can't
     // leave it stuck (a remounted view starting from a fresh instance anyway,
     // but defensive and idempotent).
