@@ -18,7 +18,7 @@
       "infoPlist": {
         "NSCameraUsageDescription": "Allow $(PRODUCT_NAME) to use the camera for live streaming.",
         "NSMicrophoneUsageDescription": "Allow $(PRODUCT_NAME) to use the microphone for live streaming.",
-        "UIBackgroundModes": ["audio", "voip"]
+        "UIBackgroundModes": ["audio"]
       }
     },
     "android": {
@@ -44,12 +44,11 @@
       [
         "react-native-nitro-rtmp-publisher",
         {
+          "enablePictureInPicture": true,
           "ios": {
             "legacyRtmpCompatibility": true
           },
-          "android": {
-            "enablePictureInPicture": true
-          }
+          "android": {}
         }
       ]
     ]
