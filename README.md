@@ -127,7 +127,7 @@ If you'd rather the plugin set the camera / mic strings (handy when this library
 
 If neither prop is passed, Info.plist is left untouched.
 
-> **Plugin options are grouped by platform.** Pass an `ios` and/or `android` sub-object for platform-specific options; any key at the top level is treated as common and applied to both platforms (a platform key overrides a common key of the same name). Available options: `ios.cameraUsage`, `ios.microphoneUsage`, `ios.legacyRtmpCompatibility` (see [iOS: Agora & legacy RTMP servers](#ios-streaming-to-agora-or-other-servers-with-a-legacy-rtmp-architecture)), and `android.disableForegroundService` (see [Android: opting out of the foreground service](#android-opting-out-of-the-foreground-service)).
+> **Plugin options are grouped by platform.** Pass an `ios` and/or `android` sub-object for platform-specific options; any key at the top level is treated as common and applied to both platforms (a platform key overrides a common key of the same name). Available options: `ios.cameraUsage`, `ios.microphoneUsage`, `ios.legacyRtmpCompatibility` (see [iOS: Agora & legacy RTMP servers](#ios-streaming-to-agora-or-other-servers-with-a-legacy-rtmp-architecture)), `enablePictureInPicture` (common — arms system Picture-in-Picture on **iOS and Android** in one key: adds the `voip`+`audio` `UIBackgroundModes` on iOS and the activity manifest flags on Android; see [Picture-in-Picture](#picture-in-picture)), and `android.disableForegroundService` (see [Android: opting out of the foreground service](#android-opting-out-of-the-foreground-service)).
 
 ### iOS — bare React Native (manual Podfile)
 
