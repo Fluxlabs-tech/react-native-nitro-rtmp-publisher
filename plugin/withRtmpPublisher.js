@@ -18,8 +18,12 @@
 //      already set these via `expo.ios.infoPlist` in app.json. If neither
 //      prop is set we leave Info.plist alone.
 //
-// Android needs no plugin work — autolinking + the AndroidManifest entries
-// in the library handle everything.
+// Android — autolinking + the library's own AndroidManifest entries handle
+// permissions and the foreground service automatically. The one optional
+// piece is system Picture-in-Picture: set `enablePictureInPicture: true`
+// (android prop) and the plugin adds `android:supportsPictureInPicture="true"`
+// plus the required `android:configChanges` to the host launcher activity at
+// prebuild time (Expo has no first-class app.json field for these).
 //
 // Usage in app.json / app.config.js:
 //
@@ -44,7 +48,8 @@
 //         "legacyRtmpCompatibility": true   // legacy-FMS RTMP connect fix
 //       },
 //       "android": {
-//         "disableForegroundService": true  // opt out of the FG service
+//         "disableForegroundService": true, // opt out of the FG service
+//         "enablePictureInPicture": true    // add system PIP to the activity
 //       }
 //     }]
 //   ]
@@ -68,6 +73,8 @@
 //
 
 const {
+  AndroidConfig,
+  withAndroidManifest,
   withDangerousMod,
   withGradleProperties,
   withInfoPlist,
@@ -175,6 +182,46 @@ const withFgsOptOut = (config, { disableForegroundService } = {}) => {
   });
 };
 
+// configChanges the system fires when entering/leaving PIP. The host activity
+// must declare it absorbs these, otherwise Android RECREATES the activity on
+// the transition (camera restarts, RN remounts). Merged into — never replacing
+// — whatever Expo already put on the activity.
+const PIP_CONFIG_CHANGES = [
+  'keyboard',
+  'keyboardHidden',
+  'orientation',
+  'screenLayout',
+  'screenSize',
+  'smallestScreenSize',
+  'uiMode',
+];
+
+// Opt-in (Android): add system Picture-in-Picture support to the host launcher
+// activity. Sets `android:supportsPictureInPicture="true"` and merges the PIP
+// configChanges. Without this, the `pictureInPictureEnabled` prop / methods
+// can't take effect (the OS rejects PIP for an activity that doesn't declare
+// support) and the activity gets recreated on the transition. Idempotent.
+const withAndroidPictureInPicture = (config, { enablePictureInPicture } = {}) => {
+  if (!enablePictureInPicture) {
+    return config;
+  }
+  return withAndroidManifest(config, (config) => {
+    const activity = AndroidConfig.Manifest.getMainActivityOrThrow(
+      config.modResults
+    );
+    activity.$ = activity.$ || {};
+    activity.$['android:supportsPictureInPicture'] = 'true';
+    const existing = (activity.$['android:configChanges'] || '')
+      .split('|')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    activity.$['android:configChanges'] = Array.from(
+      new Set([...existing, ...PIP_CONFIG_CHANGES])
+    ).join('|');
+    return config;
+  });
+};
+
 // Opt-in iOS fix for legacy Flash-Media-Server-style RTMP ingests (e.g.
 // Agora RTLS). Injects a post_install hook into ios/Podfile that rewrites
 // HaishinKit RTMPStream.createStream() so the FMLE releaseStream/FCPublish
@@ -271,6 +318,7 @@ const withRtmpPublisher = (config, props = {}) => {
   config = withPodfilePatch(config);
   config = withPermissions(config, iosProps);
   config = withFgsOptOut(config, androidProps);
+  config = withAndroidPictureInPicture(config, androidProps);
   config = withLegacyRtmpCompatibility(config, iosProps);
   return config;
 };
