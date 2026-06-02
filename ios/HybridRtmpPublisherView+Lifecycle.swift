@@ -23,33 +23,73 @@ extension HybridRtmpPublisherView {
 
   @objc func appDidEnterBackground() {
     isInBackground = true
-    // Cancel any in-flight reconnect — iOS is about to suspend networking
-    // and the next retry would just hit `requestTimedOut`. We'll fire a
-    // fresh reconnect on foreground if the user still wants to stream.
+    // LIVE PIP tier (iPhone iOS 18+ with the `voip` background mode, M1+ iPad):
+    // the camera keeps capturing in the PIP window and the RTMP stream stays up,
+    // so the proactive teardown below would wrongly kill a still-live stream.
+    // PIP can start a beat AFTER backgrounding, so when this device granted
+    // multitasking camera access we DEFER: if PIP is active shortly after, keep
+    // the stream alive; otherwise (a real background — camera IS suspended) run
+    // the teardown so foreground-reconnect works.
+    if pictureInPictureEnabled, multitaskingCameraAccessActive {
+      // Cancellable so `pip.onChange(true)` can defuse it the instant PIP
+      // actually starts — otherwise a PIP that begins LATER than 0.6s would be
+      // torn down here as if it were a real background (killing a still-live
+      // stream). The `isInBackground` + `!pip.isActive` guard stays as a
+      // belt-and-suspenders fallback. See audit #3.
+      pendingBackgroundTeardown?.cancel()
+      let work = DispatchWorkItem { [weak self] in
+        guard let self else { return }
+        self.pendingBackgroundTeardown = nil
+        guard self.isInBackground, !self.pip.isActive else { return }
+        self.performBackgroundStreamTeardown(reason: "app entered background")
+      }
+      pendingBackgroundTeardown = work
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
+      return
+    }
+    performBackgroundStreamTeardown(reason: "app entered background")
+  }
+
+  /// The proactive RTMP teardown done when iOS suspends us in the background.
+  ///
+  /// We *must* flip `cachedIsStreaming` here rather than waiting for the natural
+  /// `connectClosed`: (1) iOS doesn't notice the dead socket for ~10-15s (TCP
+  /// keepalive), too late to drive the JS UI; (2) `appWillEnterForeground` gates
+  /// its immediate reconnect on `!cachedIsStreaming`, so without this the
+  /// foreground reconnect never fires. Split out so the live-PIP path can decide
+  /// whether/when to run it.
+  func performBackgroundStreamTeardown(reason: String) {
+    // Record that we actually tore down, so `appWillEnterForeground` knows to
+    // resurrect capture/stream (vs. a live-PIP return where nothing was torn down).
+    didBackgroundTeardown = true
+    // Cancel any in-flight reconnect — iOS is about to suspend networking and
+    // the next retry would just hit `requestTimedOut`.
     reconnectTask?.cancel()
     reconnectTask = nil
     reconnectScheduled = false
-    // The RTMP socket is dead the moment iOS suspends us — flip cached
-    // state to match. Two reasons we *must* set this here rather than
-    // waiting for the natural `connectClosed` event:
-    //  1. iOS doesn't notice the socket is dead until ~10-15s after
-    //     foreground (TCP keepalive), so `connectClosed` arrives much
-    //     too late to drive the JS UI.
-    //  2. `appWillEnterForeground` gates its immediate reconnect on
-    //     `!cachedIsStreaming`. Without this clear, the foreground
-    //     reconnect never fires and we end up waiting for the late
-    //     `connectClosed` → `tryAutoReconnect` path instead.
     cachedIsStreaming = false
-    // Stop ticking — the timer is a `DispatchSourceTimer` on `.main`,
-    // which means main-queue pause-on-background, then a flurry of
-    // catch-up ticks on resume that report stale `lastMeasuredBps` from
-    // the dead session.
+    // Stop ticking — the `DispatchSourceTimer` on `.main` pauses on background
+    // then fires a flurry of catch-up ticks on resume with stale `lastMeasuredBps`.
     stopBitrateTimer()
-    emitConnectionEvent(.disconnect, "app entered background")
+    emitConnectionEvent(.disconnect, reason)
   }
 
   @objc func appWillEnterForeground() {
     isInBackground = false
+    // Defuse any still-pending live-tier background teardown (e.g. a quick
+    // background→foreground bounce shorter than the 0.6s defer). The work item's
+    // own guard would also no-op it, but cancelling drops the dangling ref. #3.
+    pendingBackgroundTeardown?.cancel()
+    pendingBackgroundTeardown = nil
+    // Resume the PIP display layer's decoder (cheap + harmless on every tier).
+    onMain { [weak self] in self?.pip.flushForResume() }
+    // Only resurrect capture/stream if backgrounding actually tore them down.
+    // On a LIVE PIP return the camera + RTMP stream stayed alive (no teardown
+    // ran), so re-attaching the camera here would force a needless ~400ms
+    // reconfigure — the visible jitter when coming back from PIP.
+    let needsResume = didBackgroundTeardown
+    didBackgroundTeardown = false
+    guard needsResume else { return }
     defrostCapture()
     // If the user was streaming when we backgrounded, the RTMP socket is
     // dead by now. Kick off one reconnect attempt — `scheduleReconnect`
@@ -82,6 +122,7 @@ extension HybridRtmpPublisherView {
 
   @objc func sessionInterruptionEnded(_ notification: Notification) {
     defrostCapture()
+    onMain { [weak self] in self?.pip.flushForResume() }
   }
 
   // ─── Orientation observer ────────────────────────────────────────────────

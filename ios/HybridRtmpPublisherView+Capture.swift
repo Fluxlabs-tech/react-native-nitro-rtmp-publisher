@@ -711,6 +711,10 @@ extension HybridRtmpPublisherView {
         // active format, so on first mount iOS would silently pick the
         // closest supported duration to ours and our setting was lost.
         self.applyCameraFpsLock()
+        // Live-tier PIP: enable multitasking camera access so the camera keeps
+        // running in the PIP window (no-op unless PIP is armed AND the device
+        // supports it — iPhone iOS 18+ with `voip`, M1+ iPad).
+        self.applyMultitaskingCameraAccess()
         // Finalize mirror as a SINGLE ordered write. `devices[0]` is now
         // populated (attach completed on this same Task), so this can't hit
         // configuration(video:)'s deviceNotFound path. We re-read the prop
@@ -860,6 +864,7 @@ extension HybridRtmpPublisherView {
         // foreground cycle silently drops us back to the format's native
         // frame rate — feels different from what JS asked for.
         self.applyCameraFpsLock()
+        self.applyMultitaskingCameraAccess()
       } catch {
         self.log("defrostCapture failed: \(error)")
       }

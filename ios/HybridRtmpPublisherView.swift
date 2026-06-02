@@ -174,6 +174,47 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   var onBitrateChange: ((Double) -> Void)?
   var onRecordStatusChange: ((RecordStatus) -> Void)?
   var onThermalWarning: ((ThermalStatus) -> Void)?
+  var onPictureInPictureChange: ((Bool) -> Void)?
+
+  // ─── Picture-in-Picture (see +PictureInPicture.swift) ────────────────────
+  // System PIP via an AVSampleBufferDisplayLayer (HaishinKit's PiPHKView) fed
+  // by the mixer + AVPictureInPictureController. `pip` is created on main (the
+  // view is constructed on main by Fabric).
+  let pip = PictureInPictureController()
+  // True once the PIP controller + display view are set up (the feature is
+  // armed). Touched only on main.
+  var pipArmed = false
+  // True iff this device SUPPORTS multitasking camera access — the LIVE PIP tier
+  // (iPhone iOS 18+ with the `voip` background mode, M1+ iPad). PIP is armed ONLY
+  // when this is true; on the frozen-frame tier we disable PIP entirely (a frozen
+  // window + a paused stream is a worse experience than no PIP). Resolved from the
+  // capture session after the camera attaches.
+  //
+  // Lock-guarded (audit #5): the resolver + prop setter write it on main, but
+  // `enterPictureInPicture()` reads it on the JS thread. Mirroring the file's
+  // lock discipline (publishLock / PipSupportBox) makes the cross-thread read
+  // safe while keeping the synchronous "return false on the frozen tier"
+  // semantics of `enterPictureInPicture()`.
+  private let multitaskingSupportLock = NSLock()
+  private var _multitaskingCameraAccessSupported = false
+  var multitaskingCameraAccessSupported: Bool {
+    get { multitaskingSupportLock.lock(); defer { multitaskingSupportLock.unlock() }; return _multitaskingCameraAccessSupported }
+    set { multitaskingSupportLock.lock(); _multitaskingCameraAccessSupported = newValue; multitaskingSupportLock.unlock() }
+  }
+  // True iff multitasking camera access is currently ENABLED on the session.
+  // Gates the background handler so a still-live PIP stream isn't torn down.
+  // Read/written only on main, so a plain Bool is race-free here.
+  var multitaskingCameraAccessActive = false
+  // Serializes the PIP display-view's mixer add/remove (both async actor hops)
+  // so a rapid arm→disarm toggle can't let the unordered removeOutput land
+  // before the addOutput and leave the view registered as a mixer output forever
+  // (decoding every frame off-screen). Each op awaits the previous Task's value,
+  // so the last-issued op always wins. Assigned/read only on main. See audit #2.
+  var pipOutputTask: Task<Void, Never>?
+  // Cancellable handle for the 0.6s deferred live-tier background teardown.
+  // `pip.onChange(true)` cancels it, so a PIP that starts later than 0.6s can't
+  // be torn down as if it were a real background. Touched only on main. Audit #3.
+  var pendingBackgroundTeardown: DispatchWorkItem?
 
   // ─── Cached state — Nitro JSI getters are synchronous, but HK 2.x is
   //     async, so we mirror the actor state into local properties. ──────
@@ -316,6 +357,13 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   // were streaming before the app went away.
   var isInBackground = false
 
+  // True iff backgrounding actually tore down capture/stream (frozen tier or a
+  // real background). On a LIVE PIP return the camera + stream stayed alive and
+  // this stays false, so `appWillEnterForeground` skips the (jittery) camera
+  // re-attach + reconnect. Set in `performBackgroundStreamTeardown`, cleared on
+  // the next foreground.
+  var didBackgroundTeardown = false
+
   // RTMP URL is split into "rtmp://host/app" (connect) + "streamKey" (publish).
   var currentRtmpConnectUrl: String?
 
@@ -416,6 +464,11 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     didSet {
       guard aspectRatioMode != oldValue else { return }
       previewView.videoGravity = aspectRatioMode.avLayerGravity
+      // Keep the PIP window's gravity in step too (otherwise it's set once at
+      // arm time), so changing aspect mode after PIP is armed doesn't leave the
+      // floating window letterboxed/cropped differently from the inline preview.
+      // didSet runs on main; `pipArmed` / `pip` are main-only. See audit #8.
+      if pipArmed { pip.displayView.videoGravity = aspectRatioMode.avLayerGravity }
       // If a freeze overlay is currently shown (gravity changed mid-flip), keep
       // its fit in sync with the live preview so they letterbox identically.
       if freezeOverlay.alpha > 0 {
@@ -487,9 +540,28 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   var foregroundServiceText: String = ""
   var foregroundServiceIcon: String = ""
 
-  // Android-only: system Picture-in-Picture. No-op on iOS (camera/RTMP PIP is
-  // out of scope here). Stored so the shared Nitro spec compiles.
-  var pictureInPictureEnabled: Bool = false
+  // System Picture-in-Picture toggle (parity with Android's auto-enter). On iOS
+  // this arms the AVPictureInPictureController and sets
+  // `canStartPictureInPictureAutomaticallyFromInline` so the OS auto-enters PIP
+  // on background. See +PictureInPicture.swift for the per-device behavior.
+  var pictureInPictureEnabled: Bool = false {
+    didSet {
+      guard pictureInPictureEnabled != oldValue else { return }
+      onMain { [weak self] in
+        guard let self else { return }
+        if self.pictureInPictureEnabled {
+          // Don't arm directly — check live-tier support against the session
+          // first; `applyMultitaskingCameraAccess` then syncs (arms iff
+          // supported). On the frozen-frame tier PIP stays disabled. Re-checked
+          // from each camera attach, so this resolves once preview is running.
+          self.applyMultitaskingCameraAccess()
+        } else {
+          self.multitaskingCameraAccessSupported = false
+          self.disarmPictureInPicture()
+        }
+      }
+    }
+  }
 
   // ─── Init / lifecycle ────────────────────────────────────────────────────
 
@@ -500,6 +572,21 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     // Freeze-frame overlay sits on top of the Metal preview. As a subview it
     // inherits previewView's mirror transform, matching the live feed.
     previewView.addSubview(freezeOverlay)
+
+    // Forward PIP enter/exit to JS (AVKit fires the delegate on main; the emit
+    // helper re-marshals deterministically).
+    pip.onChange = { [weak self] inPip in
+      guard let self else { return }
+      // A real PIP start defuses any pending background teardown (the 0.6s
+      // live-tier defer) so a late start can't tear down a still-live stream.
+      // AVKit fires this on main — the same thread the work item is scheduled
+      // and cancelled on. See audit #3.
+      if inPip {
+        self.pendingBackgroundTeardown?.cancel()
+        self.pendingBackgroundTeardown = nil
+      }
+      self.emitPictureInPictureChange(inPip)
+    }
 
     Task { [stream] in
       await mixer.addOutput(previewView)
@@ -579,6 +666,8 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
       self.flipMaskToken &+= 1
       self.freezeOverlay.alpha = 0
       self.freezeOverlay.image = nil
+      // Tear down PIP (controller + display-view mixer output + subview).
+      self.disarmPictureInPicture()
     }
     previewFrameTap.clear()
     reconnectTask?.cancel()
@@ -637,6 +726,7 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     onBitrateChange = nil
     onRecordStatusChange = nil
     onThermalWarning = nil
+    onPictureInPictureChange = nil
   }
 
   // ─── publishInFlight locking ─────────────────────────────────────────────
