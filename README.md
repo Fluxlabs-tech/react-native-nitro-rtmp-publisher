@@ -796,16 +796,30 @@ iOS PIP is built on `AVPictureInPictureController` + an `AVSampleBufferDisplayLa
 PIP is offered **only on the live tier** — devices where iOS keeps the camera running during multitasking. By design it is **disabled** elsewhere: iOS suspends the camera the moment the app backgrounds (entering PIP *is* backgrounding), so a non-live device could only show a **frozen frame with a paused stream** — a worse experience than no PIP. The library detects this at runtime (`AVCaptureSession.isMultitaskingCameraAccessSupported`) and arms PIP only where it's live.
 
 - **Disabled (no-op):** iPhone **< iOS 18**, any iPhone that doesn't declare the `voip` background mode, and **pre-M1 iPads**. `pictureInPictureEnabled` does nothing and `enterPictureInPicture()` returns `false`. (Android PIP is unaffected.)
-- **Enabled (live):** **iPhone iOS 18+** with `voip` in `UIBackgroundModes`, and **M1+ iPads** — the camera stays live and the RTMP stream keeps publishing in the floating window. Opt in by adding `voip`:
+- **Enabled (live):** **iPhone iOS 18+** with `voip` in `UIBackgroundModes`, and **M1+ iPads** — the camera stays live and the RTMP stream keeps publishing in the floating window. Opt in by adding the `voip` background mode:
 
   ```json
   // app.json → expo.ios.infoPlist
   "UIBackgroundModes": ["audio", "voip"]
   ```
 
+  > **Expo:** rather than editing `infoPlist` by hand, enable the plugin option — it merges `voip` + `audio` into `UIBackgroundModes` at prebuild time (parity with the Android option, and any modes you already declare are preserved):
+  >
+  > ```json
+  > {
+  >   "expo": {
+  >     "plugins": [
+  >       ["react-native-nitro-rtmp-publisher", { "ios": { "enablePictureInPicture": true } }]
+  >     ]
+  >   }
+  > }
+  > ```
+  >
+  > Set `enablePictureInPicture` under both `ios` and `android` (or as a common top-level key) to arm PIP on both platforms at once.
+
   The library then enables `AVCaptureSession.isMultitaskingCameraAccessEnabled` automatically where supported — no entitlement needed on iOS 18+.
 
-  > ⚠️ **App Store note:** `voip` is intended for VoIP / video-conferencing apps; declaring it on a one-way broadcaster carries some **Guideline 2.5.4** review scrutiny. If you don't add `voip`, iOS PIP simply stays disabled — no review risk, and Android PIP still works everywhere.
+  > ⚠️ **App Store note:** `voip` is intended for VoIP / video-conferencing apps; declaring it on a one-way broadcaster carries some **Guideline 2.5.4** review scrutiny. If you don't add `voip` (manually or via the plugin option), iOS PIP simply stays disabled — no review risk, and Android PIP still works everywhere.
 
 > **Keep the keyboard off the streaming screen.** A focused `TextInput` under a `KeyboardAvoidingView` (`behavior="height"`) can mis-size the preview while in PIP (it sizes from screen metrics, not the small PIP window). Edit text such as the RTMP URL in a separate modal so its keyboard lives in its own window — see [`example/src/components/UrlModal.tsx`](./example/src/components/UrlModal.tsx) and [example/App.tsx](./example/App.tsx).
 

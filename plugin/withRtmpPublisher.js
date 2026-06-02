@@ -18,6 +18,15 @@
 //      already set these via `expo.ios.infoPlist` in app.json. If neither
 //      prop is set we leave Info.plist alone.
 //
+//   3. iOS — optional live-tier Picture-in-Picture. Set `enablePictureInPicture:
+//      true` (ios prop) and the plugin merges the `voip` (and `audio`)
+//      UIBackgroundModes into Info.plist so the camera + RTMP stream stay LIVE
+//      in the PIP floating window (iPhone iOS 18+ / M1+ iPad). Opt-in by design:
+//      `voip` carries App Store Guideline 2.5.4 scrutiny for a one-way
+//      broadcaster, and without it iOS PIP simply stays disabled (the frozen
+//      tier is disabled by design). Mirrors the Android `enablePictureInPicture`
+//      option below — set it on both (or as a common top-level key) for parity.
+//
 // Android — autolinking + the library's own AndroidManifest entries handle
 // permissions and the foreground service automatically. The one optional
 // piece is system Picture-in-Picture: set `enablePictureInPicture: true`
@@ -45,6 +54,7 @@
 //       "ios": {
 //         "cameraUsage": "Stream live video from your camera.",
 //         "microphoneUsage": "Capture audio for live streams.",
+//         "enablePictureInPicture": true,   // add voip+audio bg modes (live PIP)
 //         "legacyRtmpCompatibility": true   // legacy-FMS RTMP connect fix
 //       },
 //       "android": {
@@ -150,6 +160,36 @@ const withPermissions = (config, { cameraUsage, microphoneUsage } = {}) => {
     if (microphoneUsage) {
       config.modResults.NSMicrophoneUsageDescription = microphoneUsage;
     }
+    return config;
+  });
+};
+
+// Opt-in (iOS): enable the live-tier Picture-in-Picture background modes. iOS
+// keeps the camera + RTMP stream live in the PIP floating window only when the
+// app declares the `voip` UIBackgroundMode (iPhone iOS 18+ / M1+ iPad); `audio`
+// is the base mode background streaming already needs, so we ensure both. The
+// library then flips `AVCaptureSession.isMultitaskingCameraAccessEnabled` at
+// runtime where supported. Mirrors the Android `enablePictureInPicture` option.
+//
+// Merges into whatever UIBackgroundModes the app already declares (e.g. via
+// `expo.ios.infoPlist`) — never replaces — and is idempotent across prebuilds.
+//
+// ⚠️ Strictly opt-in: `voip` is intended for VoIP / video-conferencing apps and
+// carries App Store Guideline 2.5.4 scrutiny for a one-way broadcaster. Omit the
+// flag and iOS PIP stays disabled (no review risk); Android PIP is unaffected.
+const IOS_PIP_BACKGROUND_MODES = ['audio', 'voip'];
+
+const withIosPictureInPicture = (config, { enablePictureInPicture } = {}) => {
+  if (!enablePictureInPicture) {
+    return config;
+  }
+  return withInfoPlist(config, (config) => {
+    const existing = Array.isArray(config.modResults.UIBackgroundModes)
+      ? config.modResults.UIBackgroundModes
+      : [];
+    config.modResults.UIBackgroundModes = Array.from(
+      new Set([...existing, ...IOS_PIP_BACKGROUND_MODES])
+    );
     return config;
   });
 };
@@ -317,6 +357,7 @@ const withRtmpPublisher = (config, props = {}) => {
 
   config = withPodfilePatch(config);
   config = withPermissions(config, iosProps);
+  config = withIosPictureInPicture(config, iosProps);
   config = withFgsOptOut(config, androidProps);
   config = withAndroidPictureInPicture(config, androidProps);
   config = withLegacyRtmpCompatibility(config, iosProps);
