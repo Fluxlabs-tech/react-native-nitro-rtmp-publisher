@@ -100,22 +100,42 @@ if [[ -d "$ASSETS_DIR" ]]; then
   rsync -a "$ASSETS_DIR/" "$APP_PATH/assets/"
 fi
 
-echo "▸ 4/4  Install + launch via ios-deploy"
-if ! command -v ios-deploy >/dev/null 2>&1; then
-  echo "✗ ios-deploy not installed. Run: npm i -g ios-deploy"
-  exit 1
-fi
-set +e
-ios-deploy --id "$UDID" --bundle "$APP_PATH" --justlaunch --debug 2>&1 \
-  | grep -vE "^\(lldb\) +command|^\(lldb\) +script|^\(lldb\) +target|^\(lldb\) +process|^\(lldb\) +connect$|^\(lldb\) +run$" \
-  | tail -20 \
-  || true
-IOS_DEPLOY_EXIT=${PIPESTATUS[0]}
-set -e
+echo "▸ 4/4  Install + launch on $UDID"
+# Prefer Apple's `devicectl` (Xcode 15+): it installs + launches reliably on
+# iOS 17+ devices, where `ios-deploy` (unmaintained) hangs or fails with
+# AMDeviceSecureInstallApplication errors (e.g. 0xe800002e). Fall back to
+# `ios-deploy` if devicectl is unavailable OR fails (e.g. older iOS ≤16 devices
+# that devicectl doesn't fully support).
+install_via_ios_deploy() {
+  command -v ios-deploy >/dev/null 2>&1 || { echo "   ios-deploy not installed"; return 1; }
+  echo "   via ios-deploy"
+  local log; log="$(mktemp)"
+  set +e
+  ios-deploy --id "$UDID" --bundle "$APP_PATH" --justlaunch --debug 2>&1 | tee "$log" \
+    | grep -vE "^\(lldb\) +command|^\(lldb\) +script|^\(lldb\) +target|^\(lldb\) +process|^\(lldb\) +connect$|^\(lldb\) +run$" \
+    | tail -20
+  set -e
+  # ios-deploy's exit code is unreliable (non-zero even after a successful
+  # install+launch via --debug/safequit; zero even on a partial failure). Trust
+  # the install-complete marker in its output instead.
+  if grep -qE "Installed package|InstallComplete" "$log"; then
+    rm -f "$log"; return 0
+  fi
+  rm -f "$log"; return 1
+}
 
-if [[ "$IOS_DEPLOY_EXIT" -ne 0 ]]; then
-  echo "✗ ios-deploy exited with code $IOS_DEPLOY_EXIT"
-  exit "$IOS_DEPLOY_EXIT"
+INSTALLED=0
+if xcrun devicectl --version >/dev/null 2>&1; then
+  echo "   via devicectl"
+  if xcrun devicectl device install app --device "$UDID" "$APP_PATH" \
+     && xcrun devicectl device process launch --device "$UDID" "$BUNDLE_ID"; then
+    INSTALLED=1
+  else
+    echo "   devicectl failed — falling back to ios-deploy"
+  fi
+fi
+if [[ "$INSTALLED" -ne 1 ]]; then
+  install_via_ios_deploy || { echo "✗ install failed (devicectl + ios-deploy both failed)"; exit 1; }
 fi
 
 echo "✓ Done. App launched on $UDID."
