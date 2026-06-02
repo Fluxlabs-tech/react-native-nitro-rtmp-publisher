@@ -100,6 +100,8 @@ namespace margelo::nitro::rtmppublisher {
       virtual void setForegroundServiceText(const std::string& foregroundServiceText) = 0;
       virtual std::string getForegroundServiceIcon() = 0;
       virtual void setForegroundServiceIcon(const std::string& foregroundServiceIcon) = 0;
+      virtual bool getPictureInPictureEnabled() = 0;
+      virtual void setPictureInPictureEnabled(bool pictureInPictureEnabled) = 0;
 
     public:
       // Methods
@@ -165,6 +167,9 @@ namespace margelo::nitro::rtmppublisher {
       virtual void setForceFpsLimit(bool enabled) = 0;
       virtual void forceIncrementalTs(bool enabled) = 0;
       virtual void setStreamDelay(double delayMs) = 0;
+      virtual bool enterPictureInPicture() = 0;
+      virtual bool isInPictureInPicture() = 0;
+      virtual void setOnPictureInPictureChange(const std::function<void(bool /* isInPip */)>& callback) = 0;
 
     protected:
       // Hybrid Setup

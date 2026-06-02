@@ -2,8 +2,17 @@ import { StyleSheet } from 'react-native';
 
 export const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000' },
-  previewBox: { width: '100%', flex: 1, backgroundColor: '#111' },
   preview: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 },
+  // Controls float over the bottom of the (full-window) preview instead of
+  // sitting below it in a flex column. Showing/hiding them — e.g. on the PIP
+  // transition — then never resizes the preview, so there's no jitter.
+  controlsOverlay: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+  },
   pinchLayer: {
     position: 'absolute',
     top: 0,
@@ -92,6 +101,17 @@ export const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 12,
     paddingBottom: 24,
+  },
+  // Bottom sheet for the URL editor. Its TextInput (and therefore the keyboard)
+  // lives in the Modal's own window, so it can never resize the main preview /
+  // PIP layout the way an inline input under KeyboardAvoidingView did.
+  urlSheet: {
+    backgroundColor: 'rgba(20,20,20,0.98)',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 28,
   },
   modalHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
   modalTitle: { flex: 1, color: '#fff', fontSize: 16, fontWeight: '700' },

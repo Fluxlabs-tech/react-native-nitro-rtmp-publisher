@@ -18,6 +18,7 @@
     "foregroundServiceTitle": true,
     "foregroundServiceText": true,
     "foregroundServiceIcon": true,
+    "pictureInPictureEnabled": true,
     "hybridRef": true
   }
 }

@@ -109,6 +109,12 @@ abstract class HybridRtmpPublisherViewSpec: HybridView() {
   @set:DoNotStrip
   @set:Keep
   abstract var foregroundServiceIcon: String
+  
+  @get:DoNotStrip
+  @get:Keep
+  @set:DoNotStrip
+  @set:Keep
+  abstract var pictureInPictureEnabled: Boolean
 
   // Methods
   @DoNotStrip
@@ -378,6 +384,23 @@ abstract class HybridRtmpPublisherViewSpec: HybridView() {
   @DoNotStrip
   @Keep
   abstract fun setStreamDelay(delayMs: Double): Unit
+  
+  @DoNotStrip
+  @Keep
+  abstract fun enterPictureInPicture(): Boolean
+  
+  @DoNotStrip
+  @Keep
+  abstract fun isInPictureInPicture(): Boolean
+  
+  abstract fun setOnPictureInPictureChange(callback: (isInPip: Boolean) -> Unit): Unit
+  
+  @DoNotStrip
+  @Keep
+  private fun setOnPictureInPictureChange_cxx(callback: Func_void_bool): Unit {
+    val __result = setOnPictureInPictureChange(callback)
+    return __result
+  }
 
   // Default implementation of `HybridObject.toString()`
   override fun toString(): String {

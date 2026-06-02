@@ -31,6 +31,16 @@ extension HybridRtmpPublisherView {
   // `setOnThermalWarning` lives in `+Lifecycle.swift` since it also
   // wires up the thermal observer as a side effect.
 
+  // MARK: - Picture-in-Picture (Android only — no-ops on iOS)
+
+  func enterPictureInPicture() throws -> Bool { return false }
+
+  func isInPictureInPicture() throws -> Bool { return false }
+
+  func setOnPictureInPictureChange(callback: @escaping (Bool) -> Void) throws {
+    // No-op: system PIP for camera/RTMP is not implemented on iOS.
+  }
+
   // MARK: - Main-thread hop helpers
 
   /// Fire-and-forget hop to main thread. UIKit + NotificationCenter

@@ -66,6 +66,7 @@ Live streaming from a phone is two hard problems entangled — owning the camera
   - [Noise suppression](#noise-suppression)
   - [Thermals](#thermals)
   - [Events](#events)
+  - [Picture-in-Picture (Android)](#picture-in-picture-android)
 - [Platform parity](#platform-parity)
 - [Performance notes](#performance-notes)
 - [Architecture](#architecture)
@@ -426,6 +427,7 @@ All props are required (set them once in JSX; runtime mutations are honored wher
 | `foregroundServiceTitle` | `string`                           | `''`        | **Android-only.** If non-empty, a foreground service auto-starts on `startStream` and auto-stops on `stopStream`. Silently ignored on iOS (uses `UIBackgroundModes` from `Info.plist` instead). Setter is live: mid-stream changes refresh the running notification. |
 | `foregroundServiceText`  | `string`                           | `''`        | Notification text shown alongside `foregroundServiceTitle`. Live setter — change mid-stream for "Streaming · 12:34"-style timers. |
 | `foregroundServiceIcon`  | `string`                           | `''`        | **Android-only.** Drawable resource name (bare, no package or extension, e.g. `'ic_notification'`) used as the FG-service notification small icon. Resolved at runtime against the host app's `res/drawable*` then `res/mipmap*`. Falls back to a generic system icon when empty or unresolvable. Live setter — mid-stream changes refresh the notification. No-op on iOS. |
+| `pictureInPictureEnabled` | `boolean`                          | `false`     | **Android-only.** Arm system Picture-in-Picture. Registers a PIP observer on the host Activity and, on **Android 12+ (API 31)**, auto-enters the floating window on Home/Recents with no `MainActivity` changes. The window uses the device aspect ratio; the camera preview and any active RTMP stream keep running across the transition. Requires `supportsPictureInPicture` + `configChanges` in the manifest. No-op on iOS. See [Picture-in-Picture](#picture-in-picture-android). |
 
 > **Mirror semantics — read this once.** The two mirror props are **fully independent**: `mirrorPreview` only touches the local preview, `mirrorStream` only touches the encoded stream. On the **front camera** both props use the "viewer's perspective" convention — `true` means *show the camera output as someone facing you would see it* (raise left, see right). `false` flips to the selfie-mirror view. On the **back camera** they apply as literal horizontal flips. The platforms are aligned: the same JSX produces the same visual on iOS and Android. See [example/App.tsx](./example/App.tsx) for the canonical setup (`mirrorPreview={isFront} mirrorStream={isFront}` gives matching publisher and subscriber views on both ends).
 
@@ -743,6 +745,43 @@ ref.setOnRecordStatusChange((status) => { ... })
 
 ---
 
+## Picture-in-Picture (Android)
+
+System Picture-in-Picture — the OS floating window. **Android-only**; the methods are no-ops (and `pictureInPictureEnabled` is ignored) on iOS. The camera preview keeps rendering inside the floating window and an active RTMP stream keeps publishing across the enter/exit transition.
+
+| Method | Notes |
+|---|---|
+| `enterPictureInPicture(): boolean` | Request PIP now (API 26+). Returns `false` if there's no host Activity, the API is unsupported, PIP is disabled for the app in the system settings, or it's already in PIP. Use it for a manual button and on Android 8–11 (where auto-enter isn't available). |
+| `isInPictureInPicture(): boolean` | `true` while the host Activity is in the PIP window. |
+| `setOnPictureInPictureChange(cb: (isInPip: boolean) => void): void` | Fires `true` on enter, `false` on exit (delivered on the JS thread). Use it to hide overlays/controls while in PIP. |
+
+Set the **`pictureInPictureEnabled`** prop to arm the feature. On **Android 12+ (API 31)** the OS then auto-enters PIP when the user presses Home/Recents — **no `MainActivity` override needed** (the library observes the Activity via `addOnPictureInPictureModeChangedListener`). On **Android 8–11**, call `enterPictureInPicture()` yourself (from a button, or the host's `onUserLeaveHint`). The floating window uses the **device's screen aspect ratio**.
+
+**Manifest** — the host activity must declare PIP support and absorb the configuration changes PIP fires (otherwise Android recreates the Activity and the camera restarts):
+
+```xml
+<activity
+  android:name=".MainActivity"
+  android:supportsPictureInPicture="true"
+  android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|smallestScreenSize|uiMode" />
+```
+
+> **Expo:** `expo prebuild` regenerates `AndroidManifest.xml`, so apply these via a config plugin (or an edit that survives prebuild) — they are not first-class `app.json` fields.
+
+> **Keep the keyboard off the streaming screen.** A focused `TextInput` under a `KeyboardAvoidingView` (`behavior="height"`) can mis-size the preview while in PIP (it sizes from screen metrics, not the small PIP window). Edit text such as the RTMP URL in a separate modal so its keyboard lives in its own window — see [`example/src/components/UrlModal.tsx`](./example/src/components/UrlModal.tsx) and [example/App.tsx](./example/App.tsx).
+
+```ts
+<RtmpPublisherView ... pictureInPictureEnabled={true} hybridRef={hybridRef} />
+
+// hide your overlays while the floating window is showing
+ref.setOnPictureInPictureChange((inPip) => setControlsVisible(!inPip))
+
+// optional manual trigger (also the Android 8–11 path)
+ref.enterPictureInPicture()
+```
+
+---
+
 ## Platform parity
 
 Same JS API, same behavior — but worth knowing exactly where the platforms differ under the hood:
@@ -763,6 +802,7 @@ Same JS API, same behavior — but worth knowing exactly where the platforms dif
 | Mirror | Single `AVCaptureConnection` buffer; UIView transform for asymmetric cases | Separate preview / stream flip flags, re-applied on `switchCamera()` |
 | `noiseSuppression` | Apple Voice Processing (NS+AEC, **AGC disabled**) on an owned `AVAudioEngine` capture → `mixer.append` (HaishinKit has no audio-effect hook); voice-isolation, so it also cuts music | Custom spectral denoiser (decision-directed Wiener + noise-floor tracking) on the RootEncoder mic PCM tap; keeps music |
 | Beauty filter | CoreImage `VideoEffect` (frequency-separation skin-smoothing) on the HaishinKit mixer; auto-throttles intensity + blur under thermal pressure | RootEncoder `BeautyFilterRender`; auto `highp`/`mediump` by device tier + thermal downgrade |
+| Picture-in-Picture | Not implemented — `pictureInPictureEnabled` / methods are no-ops | System PIP: device-aspect `PictureInPictureParams` + `addOnPictureInPictureModeChangedListener`, `setAutoEnterEnabled` on API 31+; preview + RTMP stream survive the transition |
 
 When in doubt, **the JS API is the contract**. Where a knob doesn't map to one platform, we either translate (audioSource modes) or silently no-op (forceHardwareCodec on iOS).
 

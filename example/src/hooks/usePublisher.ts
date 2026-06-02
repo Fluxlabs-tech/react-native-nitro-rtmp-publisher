@@ -40,6 +40,9 @@ export function usePublisher(append: (line: string) => void, sampleRate: number)
   const [connecting, setConnecting] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const [thermal, setThermal] = useState<ThermalStatus>('none');
+  // True while the app is in the Android PIP floating window — used to hide
+  // overlays/controls (they're meaningless in the tiny window).
+  const [pipActive, setPipActive] = useState(false);
   const publisherRef = useRef<RtmpPublisherViewMethods | null>(null);
   const initOnceRef = useRef(false);
 
@@ -113,6 +116,15 @@ export function usePublisher(append: (line: string) => void, sampleRate: number)
             append(`thermal=${status}`);
             setThermal(status);
           });
+
+          // PIP enter/exit — hide overlays in the floating window. Android-only
+          // (no-op on iOS). The `pictureInPictureEnabled` prop arms auto-enter
+          // on Home/Recents (API 31+); the "PIP" button calls
+          // enterPictureInPicture() for the manual path / Android 8–11.
+          ref.setOnPictureInPictureChange((isInPip: boolean) => {
+            append(`pip=${isInPip}`);
+            setPipActive(isInPip);
+          });
         } catch (e: unknown) {
           append(`init err: ${errMsg(e)}`);
         }
@@ -131,6 +143,7 @@ export function usePublisher(append: (line: string) => void, sampleRate: number)
     connecting,
     previewing,
     thermal,
+    pipActive,
     setStreaming,
     setConnecting,
   };

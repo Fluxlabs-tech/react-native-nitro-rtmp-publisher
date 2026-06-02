@@ -233,6 +233,33 @@ export interface RtmpPublisherViewProps extends HybridViewProps {
    * @default ''
    */
   foregroundServiceIcon: string
+
+  /**
+   * **Android only.** Arm system Picture-in-Picture for the host Activity.
+   *
+   * When `true`, the library registers a PIP lifecycle observer on the host
+   * Activity and — on Android 12+ (API 31) — calls `setAutoEnterEnabled(true)`
+   * so the OS automatically shrinks the app into a floating PIP window when the
+   * user presses Home / Recents, with **no host `MainActivity` changes
+   * required**. The PIP window aspect ratio is kept portrait (matching the
+   * configured stream resolution) and refreshed as the stream is (re)configured.
+   *
+   * The camera preview keeps rendering inside the floating window, and an
+   * in-progress RTMP stream keeps publishing across the PIP enter/exit
+   * transition.
+   *
+   * On Android 8–11 (API 26–30) auto-enter on Home is not available — call
+   * {@link RtmpPublisherViewMethods.enterPictureInPicture} from a button (or
+   * from the host's `onUserLeaveHint`) instead. The imperative method works on
+   * all API 26+.
+   *
+   * Requires `android:supportsPictureInPicture="true"` and the appropriate
+   * `android:configChanges` on the host activity in `AndroidManifest.xml`.
+   *
+   * No-op on iOS.
+   * @default false
+   */
+  pictureInPictureEnabled: boolean
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -517,6 +544,39 @@ export interface RtmpPublisherViewMethods extends HybridViewMethods {
    * Most streams don't need this; check before adjusting.
    */
   setStreamDelay(delayMs: number): void
+
+  // ─── Picture-in-Picture (Android) ────────────────────────────────────────
+
+  /**
+   * **Android only.** Ask the system to enter Picture-in-Picture mode now.
+   *
+   * Works on API 26+ regardless of the {@link RtmpPublisherViewProps.pictureInPictureEnabled}
+   * prop (use this for a manual "PIP" button, and on Android 8–11 where
+   * auto-enter is unavailable). The floating window uses a portrait aspect
+   * ratio matching the configured stream.
+   *
+   * Returns `false` if PIP could not be requested — no host Activity, API < 26,
+   * PIP disabled for the app in system settings, or already in PIP.
+   *
+   * No-op on iOS (returns `false`).
+   */
+  enterPictureInPicture(): boolean
+
+  /**
+   * **Android only.** `true` while the host Activity is in Picture-in-Picture
+   * mode. Always `false` on iOS. Subscribe to {@link setOnPictureInPictureChange}
+   * for transitions.
+   */
+  isInPictureInPicture(): boolean
+
+  /**
+   * **Android only.** Subscribe to PIP enter/exit transitions — fires with
+   * `true` when the app enters the floating window and `false` when it returns
+   * to full screen. Use it to hide overlays/controls while in PIP.
+   *
+   * The callback is delivered on the JS thread. No-op on iOS.
+   */
+  setOnPictureInPictureChange(callback: (isInPip: boolean) => void): void
 
 }
 

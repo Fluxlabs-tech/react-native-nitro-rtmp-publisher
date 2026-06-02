@@ -274,6 +274,17 @@ open class HybridRtmpPublisherViewSpec_cxx {
       self.__implementation.foregroundServiceIcon = String(newValue)
     }
   }
+  
+  public final var pictureInPictureEnabled: Bool {
+    @inline(__always)
+    get {
+      return self.__implementation.pictureInPictureEnabled
+    }
+    @inline(__always)
+    set {
+      self.__implementation.pictureInPictureEnabled = newValue
+    }
+  }
 
   // Methods
   @inline(__always)
@@ -1010,6 +1021,46 @@ open class HybridRtmpPublisherViewSpec_cxx {
   public final func setStreamDelay(delayMs: Double) -> bridge.Result_void_ {
     do {
       try self.__implementation.setStreamDelay(delayMs: delayMs)
+      return bridge.create_Result_void_()
+    } catch (let __error) {
+      let __exceptionPtr = __error.toCpp()
+      return bridge.create_Result_void_(__exceptionPtr)
+    }
+  }
+  
+  @inline(__always)
+  public final func enterPictureInPicture() -> bridge.Result_bool_ {
+    do {
+      let __result = try self.__implementation.enterPictureInPicture()
+      let __resultCpp = __result
+      return bridge.create_Result_bool_(__resultCpp)
+    } catch (let __error) {
+      let __exceptionPtr = __error.toCpp()
+      return bridge.create_Result_bool_(__exceptionPtr)
+    }
+  }
+  
+  @inline(__always)
+  public final func isInPictureInPicture() -> bridge.Result_bool_ {
+    do {
+      let __result = try self.__implementation.isInPictureInPicture()
+      let __resultCpp = __result
+      return bridge.create_Result_bool_(__resultCpp)
+    } catch (let __error) {
+      let __exceptionPtr = __error.toCpp()
+      return bridge.create_Result_bool_(__exceptionPtr)
+    }
+  }
+  
+  @inline(__always)
+  public final func setOnPictureInPictureChange(callback: bridge.Func_void_bool) -> bridge.Result_void_ {
+    do {
+      try self.__implementation.setOnPictureInPictureChange(callback: { () -> (Bool) -> Void in
+        let __wrappedFunction = bridge.wrap_Func_void_bool(callback)
+        return { (__isInPip: Bool) -> Void in
+          __wrappedFunction.call(__isInPip)
+        }
+      }())
       return bridge.create_Result_void_()
     } catch (let __error) {
       let __exceptionPtr = __error.toCpp()

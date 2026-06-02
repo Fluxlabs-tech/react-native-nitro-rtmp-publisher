@@ -46,6 +46,14 @@ namespace margelo::nitro::rtmppublisher::bridge::swift {
     };
   }
   
+  // pragma MARK: std::function<void(bool /* isInPip */)>
+  Func_void_bool create_Func_void_bool(void* NON_NULL swiftClosureWrapper) noexcept {
+    auto swiftClosure = NitroRtmpPublisher::Func_void_bool::fromUnsafe(swiftClosureWrapper);
+    return [swiftClosure = std::move(swiftClosure)](bool isInPip) mutable -> void {
+      swiftClosure.call(isInPip);
+    };
+  }
+  
   // pragma MARK: std::shared_ptr<HybridRtmpPublisherViewSpec>
   std::shared_ptr<HybridRtmpPublisherViewSpec> create_std__shared_ptr_HybridRtmpPublisherViewSpec_(void* NON_NULL swiftUnsafePointer) noexcept {
     NitroRtmpPublisher::HybridRtmpPublisherViewSpec_cxx swiftPart = NitroRtmpPublisher::HybridRtmpPublisherViewSpec_cxx::fromUnsafe(swiftUnsafePointer);

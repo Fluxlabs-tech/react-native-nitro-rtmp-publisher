@@ -149,6 +149,11 @@ using namespace margelo::nitro::rtmppublisher::views;
     swiftPart.setForegroundServiceIcon(newViewProps.foregroundServiceIcon.value);
     newViewProps.foregroundServiceIcon.isDirty = false;
   }
+  // pictureInPictureEnabled: boolean
+  if (newViewProps.pictureInPictureEnabled.isDirty) {
+    swiftPart.setPictureInPictureEnabled(newViewProps.pictureInPictureEnabled.value);
+    newViewProps.pictureInPictureEnabled.isDirty = false;
+  }
 
   swiftPart.afterUpdate();
 
