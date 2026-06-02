@@ -183,6 +183,12 @@ namespace margelo::nitro::rtmppublisher {
     inline void setForegroundServiceIcon(const std::string& foregroundServiceIcon) noexcept override {
       _swiftPart.setForegroundServiceIcon(foregroundServiceIcon);
     }
+    inline bool getPictureInPictureEnabled() noexcept override {
+      return _swiftPart.getPictureInPictureEnabled();
+    }
+    inline void setPictureInPictureEnabled(bool pictureInPictureEnabled) noexcept override {
+      _swiftPart.setPictureInPictureEnabled(std::forward<decltype(pictureInPictureEnabled)>(pictureInPictureEnabled));
+    }
 
   public:
     // Methods
@@ -620,6 +626,28 @@ namespace margelo::nitro::rtmppublisher {
     }
     inline void setStreamDelay(double delayMs) override {
       auto __result = _swiftPart.setStreamDelay(std::forward<decltype(delayMs)>(delayMs));
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+    }
+    inline bool enterPictureInPicture() override {
+      auto __result = _swiftPart.enterPictureInPicture();
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+      auto __value = std::move(__result.value());
+      return __value;
+    }
+    inline bool isInPictureInPicture() override {
+      auto __result = _swiftPart.isInPictureInPicture();
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+      auto __value = std::move(__result.value());
+      return __value;
+    }
+    inline void setOnPictureInPictureChange(const std::function<void(bool /* isInPip */)>& callback) override {
+      auto __result = _swiftPart.setOnPictureInPictureChange(callback);
       if (__result.hasError()) [[unlikely]] {
         std::rethrow_exception(__result.error());
       }

@@ -42,6 +42,8 @@ namespace margelo::nitro::rtmppublisher {
       prototype.registerHybridSetter("foregroundServiceText", &HybridRtmpPublisherViewSpec::setForegroundServiceText);
       prototype.registerHybridGetter("foregroundServiceIcon", &HybridRtmpPublisherViewSpec::getForegroundServiceIcon);
       prototype.registerHybridSetter("foregroundServiceIcon", &HybridRtmpPublisherViewSpec::setForegroundServiceIcon);
+      prototype.registerHybridGetter("pictureInPictureEnabled", &HybridRtmpPublisherViewSpec::getPictureInPictureEnabled);
+      prototype.registerHybridSetter("pictureInPictureEnabled", &HybridRtmpPublisherViewSpec::setPictureInPictureEnabled);
       prototype.registerHybridMethod("prepareVideo", &HybridRtmpPublisherViewSpec::prepareVideo);
       prototype.registerHybridMethod("prepareAudio", &HybridRtmpPublisherViewSpec::prepareAudio);
       prototype.registerHybridMethod("startPreview", &HybridRtmpPublisherViewSpec::startPreview);
@@ -104,6 +106,9 @@ namespace margelo::nitro::rtmppublisher {
       prototype.registerHybridMethod("setForceFpsLimit", &HybridRtmpPublisherViewSpec::setForceFpsLimit);
       prototype.registerHybridMethod("forceIncrementalTs", &HybridRtmpPublisherViewSpec::forceIncrementalTs);
       prototype.registerHybridMethod("setStreamDelay", &HybridRtmpPublisherViewSpec::setStreamDelay);
+      prototype.registerHybridMethod("enterPictureInPicture", &HybridRtmpPublisherViewSpec::enterPictureInPicture);
+      prototype.registerHybridMethod("isInPictureInPicture", &HybridRtmpPublisherViewSpec::isInPictureInPicture);
+      prototype.registerHybridMethod("setOnPictureInPictureChange", &HybridRtmpPublisherViewSpec::setOnPictureInPictureChange);
     });
   }
 

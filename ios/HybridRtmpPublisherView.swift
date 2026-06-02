@@ -487,6 +487,10 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   var foregroundServiceText: String = ""
   var foregroundServiceIcon: String = ""
 
+  // Android-only: system Picture-in-Picture. No-op on iOS (camera/RTMP PIP is
+  // out of scope here). Stored so the shared Nitro spec compiles.
+  var pictureInPictureEnabled: Bool = false
+
   // ─── Init / lifecycle ────────────────────────────────────────────────────
 
   override init() {

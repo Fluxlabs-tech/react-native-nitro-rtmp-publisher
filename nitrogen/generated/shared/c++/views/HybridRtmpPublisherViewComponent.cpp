@@ -166,6 +166,16 @@ namespace margelo::nitro::rtmppublisher::views {
         throw std::runtime_error(std::string("RtmpPublisherView.foregroundServiceIcon: ") + exc.what());
       }
     }()),
+    pictureInPictureEnabled([&]() -> CachedProp<bool> {
+      try {
+        const react::RawValue* rawValue = rawProps.at("pictureInPictureEnabled", nullptr, nullptr);
+        if (rawValue == nullptr) return sourceProps.pictureInPictureEnabled;
+        const auto& [runtime, value] = (std::pair<jsi::Runtime*, jsi::Value>)*rawValue;
+        return CachedProp<bool>::fromRawValue(*runtime, value, sourceProps.pictureInPictureEnabled);
+      } catch (const std::exception& exc) {
+        throw std::runtime_error(std::string("RtmpPublisherView.pictureInPictureEnabled: ") + exc.what());
+      }
+    }()),
     hybridRef([&]() -> CachedProp<std::optional<std::function<void(const std::shared_ptr<HybridRtmpPublisherViewSpec>& /* ref */)>>> {
       try {
         const react::RawValue* rawValue = rawProps.at("hybridRef", nullptr, nullptr);
@@ -193,6 +203,7 @@ namespace margelo::nitro::rtmppublisher::views {
       case hashString("foregroundServiceTitle"): return true;
       case hashString("foregroundServiceText"): return true;
       case hashString("foregroundServiceIcon"): return true;
+      case hashString("pictureInPictureEnabled"): return true;
       case hashString("hybridRef"): return true;
       default: return false;
     }

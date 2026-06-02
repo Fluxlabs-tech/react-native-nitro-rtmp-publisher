@@ -1,6 +1,6 @@
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { KeyboardAvoidingView, Platform, View } from 'react-native';
+import { AppState, View } from 'react-native';
 import {
   RtmpPublisherView,
   type CameraFacing,
@@ -9,6 +9,7 @@ import {
 import { ControlBar } from './src/components/ControlBar';
 import { EventsModal } from './src/components/EventsModal';
 import { PreviewOverlay } from './src/components/PreviewOverlay';
+import { UrlModal } from './src/components/UrlModal';
 import { DEFAULT_RTMP_URL, errMsg, getDeviceSampleRate } from './src/constants';
 import { useEventLog } from './src/hooks/useEventLog';
 import { usePermissions } from './src/hooks/usePermissions';
@@ -19,6 +20,10 @@ import { styles } from './src/styles';
 export default function App() {
   const [url, setUrl] = useState(DEFAULT_RTMP_URL);
   const [logsOpen, setLogsOpen] = useState(false);
+  // URL is edited in a separate modal (not an inline field) so its keyboard
+  // lives in the modal's own window and can never resize the main preview /
+  // PIP layout.
+  const [urlModalOpen, setUrlModalOpen] = useState(false);
   // Tracks the camera the user is currently shooting with. Used to mirror
   // both preview AND stream on the front camera (selfie convention) and
   // leave the back camera un-mirrored.
@@ -42,9 +47,23 @@ export default function App() {
   // and never the fallback. Picking the wrong rate forces the OS sample-
   // rate converter, which on budget UNISOC/MediaTek chips muffles 5-10 kHz.
   const [sampleRate, setSampleRate] = useState<number | null>(null);
+  // True only while the app is in the foreground. Pressing Home flips this to
+  // false *before* the PIP shrink animation starts, so we can hide the controls
+  // ahead of the transition — otherwise they'd be visible (scaled down) during
+  // the shrink and then vanish, which reads as a jitter. `pipActive` (which only
+  // becomes true *after* the transition) still governs the exit so controls
+  // re-appear cleanly once we're back full-screen.
+  const [appActive, setAppActive] = useState(true);
 
   const { logs, append, clear } = useEventLog();
   const permissionsReady = usePermissions(append);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (s) =>
+      setAppActive(s === 'active')
+    );
+    return () => sub.remove();
+  }, []);
 
   // Probe the device's native sample rate once on mount.
   useEffect(() => {
@@ -66,6 +85,7 @@ export default function App() {
     connecting,
     previewing,
     thermal,
+    pipActive,
     setStreaming,
     setConnecting,
   } = usePublisher(append, sampleRate ?? 48_000);
@@ -135,6 +155,15 @@ export default function App() {
   // drops ultra-rapid double-fires so the LOCAL `facing` state (which drives the
   // mirror props) stays in lock-step with the native intent — we skip BOTH the
   // native call and the local toggle together so they never desync.
+  const onEnterPip = useCallback(() => {
+    try {
+      const ok = publisherRef.current?.enterPictureInPicture();
+      append(`enterPictureInPicture()=${ok}`);
+    } catch (e: unknown) {
+      append(`pip err: ${errMsg(e)}`);
+    }
+  }, [append, publisherRef]);
+
   const lastSwitchAtRef = useRef(0);
   const onSwitch = useCallback(() => {
     const ref = publisherRef.current;
@@ -154,31 +183,34 @@ export default function App() {
     }
   }, [append, publisherRef]);
 
+  // Show overlays/controls only when full-screen AND foregrounded. Hiding on
+  // background (Home press) pre-empts the PIP shrink so they don't flash; the
+  // pipActive gate keeps them hidden through the exit grow until we settle.
+  const showControls = !pipActive && appActive;
+
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      // iOS: `padding` adds bottom padding equal to the keyboard height, which
-      // shrinks the preview area and slides the controls (including the URL
-      // input) above the keyboard.
-      // Android: `height` resizes the root view as the keyboard opens. The
-      // platform's own `windowSoftInputMode=adjustResize` (set by Expo by
-      // default) gives the same effect, so `undefined` is fine — using
-      // `'height'` here is a safety net.
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-    >
+    // Plain container — no KeyboardAvoidingView. The streaming screen has no
+    // text input (the RTMP URL is edited in UrlModal), so the keyboard never
+    // appears here and therefore can never resize the preview / PIP layout.
+    <View style={styles.container}>
       <StatusBar style="light" />
 
-      <View style={styles.previewBox}>
-        {/*
-         * Two gates before the publisher mounts:
-         *   1. `permissionsReady` — RECORD_AUDIO / CAMERA granted.
-         *   2. `sampleRate != null` — the native AudioManager probe has
-         *      returned, so `prepareAudio()` runs once with the correct
-         *      device-native rate instead of a fallback. Mounting earlier
-         *      and re-mounting later would tear down/rebuild AudioRecord
-         *      and leak HAL state on UNISOC.
-         */}
-        {permissionsReady && sampleRate != null ? (
+      {/*
+       * Camera preview — an absolute, full-window layer. It is intentionally
+       * NOT in a flex column above the controls: keeping it independent means
+       * showing/hiding the controls (e.g. on the PIP enter/exit transition)
+       * never resizes or moves the preview, which otherwise caused a one-frame
+       * jitter as the PIP window settled.
+       *
+       * Two gates before the publisher mounts:
+       *   1. `permissionsReady` — RECORD_AUDIO / CAMERA granted.
+       *   2. `sampleRate != null` — the native AudioManager probe has
+       *      returned, so `prepareAudio()` runs once with the correct
+       *      device-native rate instead of a fallback. Mounting earlier
+       *      and re-mounting later would tear down/rebuild AudioRecord
+       *      and leak HAL state on UNISOC.
+       */}
+      {permissionsReady && sampleRate != null ? (
           <RtmpPublisherView
             style={styles.preview}
             // Pin both encoders to hardware (Android-critical; iOS no-op).
@@ -219,37 +251,60 @@ export default function App() {
             foregroundServiceTitle="Live stream"
             foregroundServiceText="Broadcasting"
             foregroundServiceIcon=""
+            // Android-only: arm system PIP. Auto-enters the floating window on
+            // Home/Recents (API 31+) and keeps the window portrait; the "PIP"
+            // button below also triggers it manually (and on Android 8–11).
+            pictureInPictureEnabled={true}
             hybridRef={hybridRef}
           />
         ) : (
           <View style={styles.preview} />
         )}
 
-        {/* Transparent overlay that captures two-finger pinch → setZoom. */}
-        <View style={styles.pinchLayer} {...pinchHandlers} pointerEvents="box-only" />
+      {/* Transparent pinch-to-zoom layer over the full-window preview. */}
+      <View style={styles.pinchLayer} {...pinchHandlers} pointerEvents="box-only" />
 
+      {/* Overlays + controls are hidden in PIP and absolutely positioned, so
+          mounting/unmounting them never moves the preview underneath (no PIP
+          transition jitter). */}
+      {showControls && (
         <PreviewOverlay
           streaming={streaming}
           previewing={previewing}
           thermal={thermal}
           sampleRate={sampleRate}
         />
-      </View>
+      )}
 
-      <ControlBar
+      {showControls && (
+        <View style={styles.controlsOverlay}>
+          <ControlBar
+            url={url}
+            onEditUrl={() => setUrlModalOpen(true)}
+            streaming={streaming}
+            connecting={connecting}
+            logCount={logs.length}
+            noiseSuppression={noiseSuppression}
+            beauty={beauty}
+            onStart={onStart}
+            onStop={onStop}
+            onSwitch={onSwitch}
+            onOpenLogs={() => setLogsOpen(true)}
+            onToggleNoiseSuppression={onToggleNoiseSuppression}
+            onToggleBeauty={onToggleBeauty}
+            onEnterPip={onEnterPip}
+          />
+        </View>
+      )}
+
+      <UrlModal
+        visible={urlModalOpen}
         url={url}
-        onUrlChange={setUrl}
-        streaming={streaming}
-        connecting={connecting}
-        logCount={logs.length}
-        noiseSuppression={noiseSuppression}
-        beauty={beauty}
-        onStart={onStart}
-        onStop={onStop}
-        onSwitch={onSwitch}
-        onOpenLogs={() => setLogsOpen(true)}
-        onToggleNoiseSuppression={onToggleNoiseSuppression}
-        onToggleBeauty={onToggleBeauty}
+        onSave={(next) => {
+          setUrl(next);
+          setUrlModalOpen(false);
+        }}
+        onClose={() => setUrlModalOpen(false)}
       />
 
       <EventsModal
@@ -258,6 +313,6 @@ export default function App() {
         onClose={() => setLogsOpen(false)}
         onClear={clear}
       />
-    </KeyboardAvoidingView>
+    </View>
   );
 }

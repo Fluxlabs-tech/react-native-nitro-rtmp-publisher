@@ -20,6 +20,7 @@
 #include "JFunc_void_double.hpp"
 #include "JFunc_void_RecordStatus.hpp"
 #include "JFunc_void_ThermalStatus.hpp"
+#include "JFunc_void_bool.hpp"
 #include "views/JHybridRtmpPublisherViewStateUpdater.hpp"
 #include <NitroModules/DefaultConstructableObject.hpp>
 
@@ -50,6 +51,7 @@ void registerAllNatives() {
   margelo::nitro::rtmppublisher::JFunc_void_double_cxx::registerNatives();
   margelo::nitro::rtmppublisher::JFunc_void_RecordStatus_cxx::registerNatives();
   margelo::nitro::rtmppublisher::JFunc_void_ThermalStatus_cxx::registerNatives();
+  margelo::nitro::rtmppublisher::JFunc_void_bool_cxx::registerNatives();
   margelo::nitro::rtmppublisher::views::JHybridRtmpPublisherViewStateUpdater::registerNatives();
 
   // Register Nitro Hybrid Objects

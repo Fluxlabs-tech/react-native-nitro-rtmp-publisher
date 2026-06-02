@@ -1,9 +1,10 @@
-import { Pressable, Text, TextInput, View } from 'react-native';
+import { Pressable, Text, View } from 'react-native';
 import { styles } from '../styles';
 
 type Props = {
   url: string;
-  onUrlChange: (next: string) => void;
+  /** Open the URL editor (a separate modal — no inline keyboard on this screen). */
+  onEditUrl: () => void;
   streaming: boolean;
   /**
    * True while a connect / reconnect attempt is in flight (after Start tap,
@@ -23,6 +24,8 @@ type Props = {
   onOpenLogs: () => void;
   onToggleNoiseSuppression: () => void;
   onToggleBeauty: () => void;
+  /** Enter Android Picture-in-Picture (no-op on iOS). */
+  onEnterPip: () => void;
 };
 
 /**
@@ -31,7 +34,7 @@ type Props = {
  */
 export function ControlBar({
   url,
-  onUrlChange,
+  onEditUrl,
   streaming,
   connecting,
   logCount,
@@ -43,6 +46,7 @@ export function ControlBar({
   onOpenLogs,
   onToggleNoiseSuppression,
   onToggleBeauty,
+  onEnterPip,
 }: Props) {
   // Start is enabled only when the publisher is fully idle. Stop stays
   // enabled while connecting so the user can cancel an in-flight attempt
@@ -53,15 +57,13 @@ export function ControlBar({
   return (
     <View style={styles.controls}>
       <Text style={styles.label}>RTMP URL</Text>
-      <TextInput
-        value={url}
-        onChangeText={onUrlChange}
-        autoCapitalize="none"
-        autoCorrect={false}
-        style={styles.input}
-        placeholder="rtmp://host:1935/app/stream"
-        placeholderTextColor="#666"
-      />
+      {/* No inline TextInput on the streaming screen — editing opens a modal so
+          the keyboard can never resize the preview (PIP-safe). */}
+      <Pressable onPress={onEditUrl} style={styles.input}>
+        <Text numberOfLines={1} style={{ color: url ? '#fff' : '#666' }}>
+          {url || 'rtmp://host:1935/app/stream'}
+        </Text>
+      </Pressable>
 
       <View style={styles.row}>
         <Pressable
@@ -103,6 +105,9 @@ export function ControlBar({
           style={[styles.btn, beauty ? styles.btn : styles.btnAlt]}
         >
           <Text style={styles.btnText}>Beauty: {beauty ? 'ON' : 'OFF'}</Text>
+        </Pressable>
+        <Pressable onPress={onEnterPip} style={[styles.btn, styles.btnAlt]}>
+          <Text style={styles.btnText}>PIP</Text>
         </Pressable>
       </View>
     </View>

@@ -24,6 +24,7 @@ public protocol HybridRtmpPublisherViewSpec_protocol: HybridObject, HybridView {
   var foregroundServiceTitle: String { get set }
   var foregroundServiceText: String { get set }
   var foregroundServiceIcon: String { get set }
+  var pictureInPictureEnabled: Bool { get set }
 
   // Methods
   func prepareVideo(width: Double, height: Double, fps: Double, bitrate: Double, iFrameInterval: Double, rotation: Double) throws -> Bool
@@ -88,6 +89,9 @@ public protocol HybridRtmpPublisherViewSpec_protocol: HybridObject, HybridView {
   func setForceFpsLimit(enabled: Bool) throws -> Void
   func forceIncrementalTs(enabled: Bool) throws -> Void
   func setStreamDelay(delayMs: Double) throws -> Void
+  func enterPictureInPicture() throws -> Bool
+  func isInPictureInPicture() throws -> Bool
+  func setOnPictureInPictureChange(callback: @escaping (_ isInPip: Bool) -> Void) throws -> Void
 }
 
 public extension HybridRtmpPublisherViewSpec_protocol {

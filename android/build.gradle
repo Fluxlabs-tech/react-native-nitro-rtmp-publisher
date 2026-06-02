@@ -147,6 +147,12 @@ dependencies {
   implementation "com.facebook.react:react-native:+"
   implementation project(":react-native-nitro-modules")
 
+  // androidx.activity for ComponentActivity.addOnPictureInPictureModeChangedListener
+  // (system PIP observation). appcompat pulls it in transitively at runtime but
+  // only as `implementation`, so it's not on our compile classpath — declare it
+  // directly. Gradle resolves up to the app's (newer) version.
+  implementation "androidx.activity:activity:1.8.0"
+
   // RootEncoder (https://github.com/pedroSG94/RootEncoder)
   implementation "com.github.pedroSG94.RootEncoder:library:2.6.1"
 }

@@ -1,6 +1,7 @@
 package com.margelo.nitro.rtmppublisher
 
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.content.Context
 import android.os.Build
 import android.os.Handler
@@ -11,6 +12,8 @@ import android.util.Log
 import android.view.OrientationEventListener
 import android.view.SurfaceHolder
 import android.view.View
+import androidx.core.app.PictureInPictureModeChangedInfo
+import androidx.core.util.Consumer
 import com.pedro.common.ConnectChecker
 import com.pedro.encoder.input.video.CameraHelper
 import com.pedro.library.base.recording.RecordController
@@ -269,6 +272,31 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
 
   internal val camera: RtmpCamera2 = RtmpCamera2(openGlView, connectChecker)
 
+  // ─── Picture-in-Picture ───────────────────────────────────────────────────
+  // System PIP is a per-Activity concept, so the library observes the host
+  // Activity (resolved + cached in `hostActivity`) rather than owning it. The
+  // observer (`pipModeListener`) is registered lazily — only when PIP is armed
+  // via the `pictureInPictureEnabled` prop or a `setOnPictureInPictureChange`
+  // subscription — mirroring the thermal-listener pattern. All the logic lives
+  // in [HybridRtmpPublisherView+Pip.kt].
+  @Volatile internal var isInPip = false
+  @Volatile internal var hostActivity: Activity? = null
+  // Guards the check-then-register/unregister of `pipModeListener` so a near-
+  // simultaneous prop-set (UI thread) and `setOnPictureInPictureChange` (JS
+  // thread) at mount can't both pass the check and double-add the listener
+  // (which would double-fire the JS callback and leak one listener on drop).
+  // Mirrors the thermal-listener pattern (`thermalLock`).
+  internal val pipLock = Any()
+  @Volatile internal var pipListenerRegistered = false
+  @Volatile internal var onPictureInPictureChange: ((Boolean) -> Unit)? = null
+  // Stable reference so add/remove pair up. androidx's listener works on all API
+  // levels (never fires below 24); the platform PIP calls themselves are gated
+  // 24/26+ at their call sites. See [onPipModeChanged].
+  internal val pipModeListener =
+    Consumer<PictureInPictureModeChangedInfo> { info ->
+      onPipModeChanged(info.isInPictureInPictureMode)
+    }
+
   // Held as a field so onDropView can remove it. Surface-lifecycle callbacks
   // firing on a dropped view would touch a half-released camera and is exactly
   // the kind of "subtle crash 5s after navigation" we want to avoid.
@@ -515,6 +543,19 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     )
   }
 
+  // Arms system PIP: registers the host-Activity PIP observer and (API 31+)
+  // flips setAutoEnterEnabled so Home/Recents shrinks into the floating window
+  // with no host code. See [HybridRtmpPublisherView+Pip.kt].
+  override var pictureInPictureEnabled: Boolean = false
+    set(value) {
+      if (field == value) return
+      field = value
+      if (value) registerPipListener() else unregisterPipListener()
+      // Refresh params either way: arming installs autoEnter + portrait aspect;
+      // disarming clears autoEnter (API 31+). No-op below API 26 / no Activity.
+      refreshPipParams()
+    }
+
   // ─── Lifecycle ──────────────────────────────────────────────────────────
 
   override fun prepareVideo(
@@ -551,6 +592,8 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     if (ok) {
       lastVideoCfg = VideoCfg(w, h, f, b, i, r)
       videoPrepared = true
+      // Keep the PIP window aspect ratio tracking the (now-known) stream dims.
+      if (pictureInPictureEnabled) refreshPipParams()
     }
     return ok
   }
@@ -722,6 +765,8 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
       // Apply stream-mode tuning to the fresh streamClient state.
       applyStreamMode()
       camera.startStream(url)
+      // Stream is live with final dims — refresh the portrait PIP aspect ratio.
+      if (pictureInPictureEnabled) refreshPipParams()
     }
   }
 
@@ -1166,6 +1211,20 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     registerThermalListener()
   }
 
+  // ─── Picture-in-Picture ───────────────────────────────────────────────────
+  // Thin overrides — the real work lives in [HybridRtmpPublisherView+Pip.kt].
+
+  override fun enterPictureInPicture(): Boolean = requestPictureInPicture()
+
+  override fun isInPictureInPicture(): Boolean = isInPip
+
+  override fun setOnPictureInPictureChange(callback: (isInPip: Boolean) -> Unit) {
+    onPictureInPictureChange = callback
+    // Lazy-register the observer now that there's a subscriber, even if the
+    // `pictureInPictureEnabled` prop was never set (manual-button-only apps).
+    registerPipListener()
+  }
+
   // ─── Cleanup ────────────────────────────────────────────────────────────
 
   override fun onDropView() {
@@ -1195,6 +1254,8 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     releaseWakeLock()
     setKeepScreenOn(false)
     unregisterThermalListener()
+    unregisterPipListener()
+    hostActivity = null
     disableOrientationListener()
     maybeStopForegroundService()
     if (holdsActiveSlot) {
@@ -1209,5 +1270,6 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     onBitrateChange = null
     onRecordStatusChange = null
     onThermalWarning = null
+    onPictureInPictureChange = null
   }
 }

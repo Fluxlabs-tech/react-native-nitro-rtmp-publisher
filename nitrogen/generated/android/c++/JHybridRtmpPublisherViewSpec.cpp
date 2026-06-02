@@ -52,6 +52,7 @@ namespace margelo::nitro::rtmppublisher { enum class RtmpConnectionEvent; }
 #include "JFunc_void_double.hpp"
 #include "JFunc_void_RecordStatus.hpp"
 #include "JFunc_void_ThermalStatus.hpp"
+#include "JFunc_void_bool.hpp"
 
 namespace margelo::nitro::rtmppublisher {
 
@@ -208,6 +209,15 @@ namespace margelo::nitro::rtmppublisher {
   void JHybridRtmpPublisherViewSpec::setForegroundServiceIcon(const std::string& foregroundServiceIcon) {
     static const auto method = _javaPart->javaClassStatic()->getMethod<void(jni::alias_ref<jni::JString> /* foregroundServiceIcon */)>("setForegroundServiceIcon");
     method(_javaPart, jni::make_jstring(foregroundServiceIcon));
+  }
+  bool JHybridRtmpPublisherViewSpec::getPictureInPictureEnabled() {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<jboolean()>("getPictureInPictureEnabled");
+    auto __result = method(_javaPart);
+    return static_cast<bool>(__result);
+  }
+  void JHybridRtmpPublisherViewSpec::setPictureInPictureEnabled(bool pictureInPictureEnabled) {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<void(jboolean /* pictureInPictureEnabled */)>("setPictureInPictureEnabled");
+    method(_javaPart, pictureInPictureEnabled);
   }
 
   // Methods
@@ -500,6 +510,20 @@ namespace margelo::nitro::rtmppublisher {
   void JHybridRtmpPublisherViewSpec::setStreamDelay(double delayMs) {
     static const auto method = _javaPart->javaClassStatic()->getMethod<void(double /* delayMs */)>("setStreamDelay");
     method(_javaPart, delayMs);
+  }
+  bool JHybridRtmpPublisherViewSpec::enterPictureInPicture() {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<jboolean()>("enterPictureInPicture");
+    auto __result = method(_javaPart);
+    return static_cast<bool>(__result);
+  }
+  bool JHybridRtmpPublisherViewSpec::isInPictureInPicture() {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<jboolean()>("isInPictureInPicture");
+    auto __result = method(_javaPart);
+    return static_cast<bool>(__result);
+  }
+  void JHybridRtmpPublisherViewSpec::setOnPictureInPictureChange(const std::function<void(bool /* isInPip */)>& callback) {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<void(jni::alias_ref<JFunc_void_bool::javaobject> /* callback */)>("setOnPictureInPictureChange_cxx");
+    method(_javaPart, JFunc_void_bool_cxx::fromCpp(callback));
   }
 
 } // namespace margelo::nitro::rtmppublisher

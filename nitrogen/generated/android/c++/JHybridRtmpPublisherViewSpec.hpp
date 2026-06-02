@@ -78,6 +78,8 @@ namespace margelo::nitro::rtmppublisher {
     void setForegroundServiceText(const std::string& foregroundServiceText) override;
     std::string getForegroundServiceIcon() override;
     void setForegroundServiceIcon(const std::string& foregroundServiceIcon) override;
+    bool getPictureInPictureEnabled() override;
+    void setPictureInPictureEnabled(bool pictureInPictureEnabled) override;
 
   public:
     // Methods
@@ -143,6 +145,9 @@ namespace margelo::nitro::rtmppublisher {
     void setForceFpsLimit(bool enabled) override;
     void forceIncrementalTs(bool enabled) override;
     void setStreamDelay(double delayMs) override;
+    bool enterPictureInPicture() override;
+    bool isInPictureInPicture() override;
+    void setOnPictureInPictureChange(const std::function<void(bool /* isInPip */)>& callback) override;
 
   private:
     jni::global_ref<JHybridRtmpPublisherViewSpec::JavaPart> _javaPart;
