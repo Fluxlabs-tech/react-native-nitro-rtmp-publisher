@@ -46,6 +46,9 @@
         {
           "ios": {
             "legacyRtmpCompatibility": true
+          },
+          "android": {
+            "enablePictureInPicture": true
           }
         }
       ]

@@ -766,7 +766,19 @@ Set the **`pictureInPictureEnabled`** prop to arm the feature. On **Android 12+ 
   android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|smallestScreenSize|uiMode" />
 ```
 
-> **Expo:** `expo prebuild` regenerates `AndroidManifest.xml`, so apply these via a config plugin (or an edit that survives prebuild) — they are not first-class `app.json` fields.
+> **Expo:** there's no first-class `app.json` field for `supportsPictureInPicture` / `configChanges`, and a plain `expo prebuild` would drop a hand-edited manifest — so the library's config plugin does it for you. Enable it once:
+>
+> ```json
+> {
+>   "expo": {
+>     "plugins": [
+>       ["react-native-nitro-rtmp-publisher", { "android": { "enablePictureInPicture": true } }]
+>     ]
+>   }
+> }
+> ```
+>
+> The next `expo prebuild` adds `supportsPictureInPicture="true"` and merges the required `configChanges` into your launcher activity (existing entries are preserved). Bare RN apps edit the manifest directly as shown above.
 
 > **Keep the keyboard off the streaming screen.** A focused `TextInput` under a `KeyboardAvoidingView` (`behavior="height"`) can mis-size the preview while in PIP (it sizes from screen metrics, not the small PIP window). Edit text such as the RTMP URL in a separate modal so its keyboard lives in its own window — see [`example/src/components/UrlModal.tsx`](./example/src/components/UrlModal.tsx) and [example/App.tsx](./example/App.tsx).
 
