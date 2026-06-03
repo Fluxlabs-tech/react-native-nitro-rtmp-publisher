@@ -781,13 +781,15 @@ Set **`pictureInPictureEnabled`** to arm **auto-enter on background** (Android A
 > {
 >   "expo": {
 >     "plugins": [
->       ["react-native-nitro-rtmp-publisher", { "android": { "enablePictureInPicture": true } }]
+>       ["react-native-nitro-rtmp-publisher", { "enablePictureInPicture": true }]
 >     ]
 >   }
 > }
 > ```
 >
 > The next `expo prebuild` adds `supportsPictureInPicture="true"` and merges the required `configChanges` into your launcher activity (existing entries are preserved). Bare RN apps edit the manifest directly as shown above.
+>
+> `enablePictureInPicture` is a **common** key — the same flag also arms iOS PIP (see [iOS setup](#ios-setup)). For Android only, scope it: `{ "android": { "enablePictureInPicture": true } }`.
 
 ### iOS setup
 
@@ -809,13 +811,13 @@ PIP is offered **only on the live tier** — devices where iOS keeps the camera 
   > {
   >   "expo": {
   >     "plugins": [
-  >       ["react-native-nitro-rtmp-publisher", { "ios": { "enablePictureInPicture": true } }]
+  >       ["react-native-nitro-rtmp-publisher", { "enablePictureInPicture": true }]
   >     ]
   >   }
   > }
   > ```
   >
-  > Set `enablePictureInPicture` under both `ios` and `android` (or as a common top-level key) to arm PIP on both platforms at once.
+  > This is the same **common** `enablePictureInPicture` key shown in [Android setup](#android-setup) — one flag arms PIP on **both** platforms. For iOS only, scope it: `{ "ios": { "enablePictureInPicture": true } }`.
 
   The library then enables `AVCaptureSession.isMultitaskingCameraAccessEnabled` automatically where supported — no entitlement needed on iOS 18+.
 
