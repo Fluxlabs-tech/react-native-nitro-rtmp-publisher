@@ -1,6 +1,8 @@
+import { NavigationContainer } from '@react-navigation/native';
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AppState, View } from 'react-native';
+import { AppState, Text, TouchableOpacity, View } from 'react-native';
 import {
   RtmpPublisherView,
   type CameraFacing,
@@ -17,7 +19,11 @@ import { usePinchZoom } from './src/hooks/usePinchZoom';
 import { usePublisher } from './src/hooks/usePublisher';
 import { styles } from './src/styles';
 
-export default function App() {
+function StreamScreen({
+  navigation,
+}: {
+  navigation: { navigate: (screen: string) => void };
+}) {
   const [url, setUrl] = useState(DEFAULT_RTMP_URL);
   const [logsOpen, setLogsOpen] = useState(false);
   // URL is edited in a separate modal (not an inline field) so its keyboard
@@ -276,6 +282,26 @@ export default function App() {
         />
       )}
 
+      {/* Navigate to a second (publisher-free) screen. Used to verify PIP is
+          scoped to THIS screen: once on Screen 2, pressing Home must NOT enter
+          Picture-in-Picture. */}
+      {showControls && (
+        <TouchableOpacity
+          style={{
+            position: 'absolute',
+            top: 56,
+            right: 16,
+            backgroundColor: 'rgba(0,0,0,0.55)',
+            paddingHorizontal: 14,
+            paddingVertical: 9,
+            borderRadius: 18,
+          }}
+          onPress={() => navigation.navigate('Second')}
+        >
+          <Text style={{ color: '#fff', fontWeight: '600' }}>Screen 2 →</Text>
+        </TouchableOpacity>
+      )}
+
       {showControls && (
         <View style={styles.controlsOverlay}>
           <ControlBar
@@ -314,5 +340,70 @@ export default function App() {
         onClear={clear}
       />
     </View>
+  );
+}
+
+// A plain, publisher-free screen. The streaming screen stays MOUNTED while we're
+// here (native-stack keeps it in the tree), so this is exactly the case that
+// must NOT auto-enter PIP: with the stream screen off-screen, pressing Home here
+// should do nothing PIP-related. If the app shrinks into a floating window, PIP
+// is leaking app-wide (the bug we're chasing).
+function SecondScreen({
+  navigation,
+}: {
+  navigation: { goBack: () => void };
+}) {
+  return (
+    <View
+      style={{
+        flex: 1,
+        backgroundColor: '#101114',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 28,
+      }}
+    >
+      <StatusBar style="light" />
+      <Text style={{ color: '#fff', fontSize: 20, fontWeight: '700', marginBottom: 14 }}>
+        Second screen
+      </Text>
+      <Text
+        style={{
+          color: '#9aa0a6',
+          fontSize: 15,
+          textAlign: 'center',
+          lineHeight: 22,
+          marginBottom: 28,
+        }}
+      >
+        No publisher here. Press <Text style={{ color: '#fff' }}>Home</Text> now:
+        the app should stay normal (NO Picture-in-Picture window). If it shrinks
+        into a floating PIP window, PIP is leaking to non-stream screens.
+      </Text>
+      <TouchableOpacity
+        onPress={() => navigation.goBack()}
+        style={{
+          paddingHorizontal: 20,
+          paddingVertical: 13,
+          backgroundColor: '#0a84ff',
+          borderRadius: 12,
+        }}
+      >
+        <Text style={{ color: '#fff', fontWeight: '600' }}>← Back to stream</Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+const Stack = createNativeStackNavigator();
+
+export default function App() {
+  return (
+    <NavigationContainer>
+      <Stack.Navigator screenOptions={{ headerShown: false }}>
+        <Stack.Screen name="Stream" component={StreamScreen} />
+        <Stack.Screen name="Second" component={SecondScreen} />
+      </Stack.Navigator>
+    </NavigationContainer>
   );
 }
