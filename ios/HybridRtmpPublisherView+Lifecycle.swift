@@ -125,6 +125,34 @@ extension HybridRtmpPublisherView {
     onMain { [weak self] in self?.pip.flushForResume() }
   }
 
+  /// Audio-session interruption (phone call, Siri, alarm, another app grabbing
+  /// the audio device) — SEPARATE from the AVCaptureSession interruptions above.
+  /// iOS deactivates the audio session and stops our capture: the AVAudioEngine
+  /// (noiseSuppression path) is stopped and the mic detached, while video keeps
+  /// flowing on the capture session. So without restoring here, the stream comes
+  /// back with video but permanently silent audio (the reported "audio muted
+  /// after a call"). On `.ended` we reactivate the session and rebuild audio for
+  /// the current mode (serialized via `scheduleAudioRestart`).
+  @objc func handleAudioSessionInterruption(_ notification: Notification) {
+    guard
+      let info = notification.userInfo,
+      let raw = info[AVAudioSessionInterruptionTypeKey] as? UInt,
+      let type = AVAudioSession.InterruptionType(rawValue: raw)
+    else { return }
+    switch type {
+    case .began:
+      // iOS has already deactivated the session + stopped our engine; we fully
+      // rebuild on `.ended`, so there's nothing to do here.
+      break
+    case .ended:
+      // Only restore if we're actually capturing (preview / stream active).
+      guard cachedIsOnPreview else { return }
+      scheduleAudioRestart()
+    @unknown default:
+      break
+    }
+  }
+
   // ─── Orientation observer ────────────────────────────────────────────────
 
   func enableOrientationObserver() {
