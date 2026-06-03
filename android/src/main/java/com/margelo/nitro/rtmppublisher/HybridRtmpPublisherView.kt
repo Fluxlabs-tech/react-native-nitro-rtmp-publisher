@@ -297,6 +297,23 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
       onPipModeChanged(info.isInPictureInPictureMode)
     }
 
+  // Scopes PIP auto-enter to while the stream view is the on-screen content.
+  // `setAutoEnterEnabled` is an Activity-GLOBAL flag, so without this it would
+  // stay armed after the user navigates away and EVERY screen would enter PIP on
+  // background (the reported bug). react-native-screens detaches inactive
+  // screens, so leaving the stream screen detaches this view → we clear
+  // autoEnter; returning re-arms it (when `pictureInPictureEnabled`). The manual
+  // `enterPictureInPicture()` path is unaffected. Registered in `init`, removed
+  // in `onDropView`.
+  internal val pipAttachListener = object : View.OnAttachStateChangeListener {
+    override fun onViewAttachedToWindow(v: View) {
+      if (pictureInPictureEnabled) refreshPipParams()
+    }
+    override fun onViewDetachedFromWindow(v: View) {
+      if (pictureInPictureEnabled) disarmPipAutoEnter()
+    }
+  }
+
   // Held as a field so onDropView can remove it. Surface-lifecycle callbacks
   // firing on a dropped view would touch a half-released camera and is exactly
   // the kind of "subtle crash 5s after navigation" we want to avoid.
@@ -399,6 +416,8 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
 
   init {
     openGlView.holder.addCallback(surfaceCallback)
+    // Scope PIP auto-enter to this view's on-screen lifetime (see pipAttachListener).
+    openGlView.addOnAttachStateChangeListener(pipAttachListener)
   }
 
   override val view: View
@@ -1254,6 +1273,12 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     releaseWakeLock()
     setKeepScreenOn(false)
     unregisterThermalListener()
+    // Clear the Activity-global auto-enter flag so PIP doesn't follow the user to
+    // the next screen, and drop the attach observer.
+    if (pictureInPictureEnabled) safe("onDropView/disarmPipAutoEnter") { disarmPipAutoEnter() }
+    safe("onDropView/removePipAttachListener") {
+      openGlView.removeOnAttachStateChangeListener(pipAttachListener)
+    }
     unregisterPipListener()
     hostActivity = null
     disableOrientationListener()

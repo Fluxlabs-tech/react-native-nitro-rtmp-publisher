@@ -71,7 +71,14 @@ internal fun HybridRtmpPublisherView.activityInPipCompat(): Boolean {
 // ─── Params ─────────────────────────────────────────────────────────────────
 
 @RequiresApi(Build.VERSION_CODES.O)
-internal fun HybridRtmpPublisherView.buildPipParams(): PictureInPictureParams {
+internal fun HybridRtmpPublisherView.buildPipParams(
+  // Auto-enter (API 31+) is an ACTIVITY-GLOBAL flag, so it must be scoped to
+  // when this view is actually on screen — otherwise, in a single-Activity RN
+  // app, EVERY screen would auto-enter PIP on background once the stream screen
+  // had armed it. The default reflects "PIP enabled AND this view attached to
+  // the window"; callers pass `false` explicitly to disarm on detach / drop.
+  autoEnter: Boolean = pictureInPictureEnabled && openGlView.isAttachedToWindow
+): PictureInPictureParams {
   val builder = PictureInPictureParams.Builder()
   // Match the PIP window to the phone's screen aspect ratio so the floating
   // window is a scaled-down version of the on-screen preview. The preview view
@@ -89,8 +96,8 @@ internal fun HybridRtmpPublisherView.buildPipParams(): PictureInPictureParams {
     builder.setSourceRectHint(rect)
   }
   if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-    // Auto-enter on Home/Recents (only while armed) + smoother video resize.
-    builder.setAutoEnterEnabled(pictureInPictureEnabled)
+    // Auto-enter on Home/Recents (only while armed AND on screen) + smoother resize.
+    builder.setAutoEnterEnabled(autoEnter)
     builder.setSeamlessResizeEnabled(true)
   }
   return builder.build()
@@ -115,6 +122,20 @@ internal fun HybridRtmpPublisherView.refreshPipParams() {
   postToMain {
     safe("refreshPipParams") {
       resolveActivity()?.setPictureInPictureParams(buildPipParams())
+    }
+  }
+}
+
+// Force the Activity-global auto-enter flag OFF without touching the prop. Used
+// the instant the stream view leaves the screen (window detach / onDropView) so
+// PIP stays scoped to the stream screen and doesn't follow the user to the next
+// one. Re-arming on return goes back through `refreshPipParams` (which gates on
+// attachment). No-op below API 26 / when no Activity resolves.
+internal fun HybridRtmpPublisherView.disarmPipAutoEnter() {
+  if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+  postToMain {
+    safe("disarmPipAutoEnter") {
+      resolveActivity()?.setPictureInPictureParams(buildPipParams(autoEnter = false))
     }
   }
 }
