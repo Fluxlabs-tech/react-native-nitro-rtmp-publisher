@@ -235,28 +235,32 @@ export interface RtmpPublisherViewProps extends HybridViewProps {
   foregroundServiceIcon: string
 
   /**
-   * **Android only.** Arm system Picture-in-Picture for the host Activity.
+   * Arm system Picture-in-Picture — the OS floating window with the camera
+   * preview inside. When `true`, the app auto-enters PIP on background; the
+   * preview keeps rendering in the window and, where the platform keeps the
+   * camera live, the in-progress RTMP stream keeps publishing across the
+   * enter/exit transition. The window aspect ratio is kept portrait (matching
+   * the configured stream).
    *
-   * When `true`, the library registers a PIP lifecycle observer on the host
+   * **Android** (every device): registers a PIP lifecycle observer on the host
    * Activity and — on Android 12+ (API 31) — calls `setAutoEnterEnabled(true)`
-   * so the OS automatically shrinks the app into a floating PIP window when the
-   * user presses Home / Recents, with **no host `MainActivity` changes
-   * required**. The PIP window aspect ratio is kept portrait (matching the
-   * configured stream resolution) and refreshed as the stream is (re)configured.
+   * so the OS shrinks the app into PIP on Home / Recents with **no host
+   * `MainActivity` changes required**. On Android 8–11 (API 26–30) auto-enter on
+   * Home isn't available — call {@link RtmpPublisherViewMethods.enterPictureInPicture}
+   * from a button (or the host's `onUserLeaveHint`) instead. Requires
+   * `android:supportsPictureInPicture="true"` + the appropriate
+   * `android:configChanges` on the activity (the Expo config plugin's
+   * `enablePictureInPicture` option writes these for you).
    *
-   * The camera preview keeps rendering inside the floating window, and an
-   * in-progress RTMP stream keeps publishing across the PIP enter/exit
-   * transition.
+   * **iOS** — live PIP only on the tier where iOS keeps the camera running
+   * during multitasking: **iPhone iOS 18+** (the host declares the `voip`
+   * `UIBackgroundMode`) and **M1+ iPads**, where the camera stays live and the
+   * stream keeps publishing. Everywhere else (older iOS, pre-M1 iPad, or no
+   * `voip` mode) it is a **no-op** by design — iOS suspends the camera on
+   * background, so a non-live device could only show a frozen frame with a
+   * paused stream. Auto-enter uses `canStartPictureInPictureAutomaticallyFromInline`;
+   * the Expo plugin's `enablePictureInPicture` option adds the `voip` mode.
    *
-   * On Android 8–11 (API 26–30) auto-enter on Home is not available — call
-   * {@link RtmpPublisherViewMethods.enterPictureInPicture} from a button (or
-   * from the host's `onUserLeaveHint`) instead. The imperative method works on
-   * all API 26+.
-   *
-   * Requires `android:supportsPictureInPicture="true"` and the appropriate
-   * `android:configChanges` on the host activity in `AndroidManifest.xml`.
-   *
-   * No-op on iOS.
    * @default false
    */
   pictureInPictureEnabled: boolean
@@ -545,36 +549,38 @@ export interface RtmpPublisherViewMethods extends HybridViewMethods {
    */
   setStreamDelay(delayMs: number): void
 
-  // ─── Picture-in-Picture (Android) ────────────────────────────────────────
+  // ─── Picture-in-Picture ──────────────────────────────────────────────────
 
   /**
-   * **Android only.** Ask the system to enter Picture-in-Picture mode now.
+   * Ask the system to enter Picture-in-Picture mode now — use this for a manual
+   * "PIP" button. The floating window uses a portrait aspect ratio matching the
+   * configured stream.
    *
-   * Works on API 26+ regardless of the {@link RtmpPublisherViewProps.pictureInPictureEnabled}
-   * prop (use this for a manual "PIP" button, and on Android 8–11 where
-   * auto-enter is unavailable). The floating window uses a portrait aspect
-   * ratio matching the configured stream.
+   * **Android:** works on API 26+ regardless of the
+   * {@link RtmpPublisherViewProps.pictureInPictureEnabled} prop (also the path
+   * for Android 8–11, where auto-enter isn't available). Returns `false` if PIP
+   * couldn't be requested — no host Activity, API < 26, PIP disabled for the app
+   * in system settings, or already in PIP.
    *
-   * Returns `false` if PIP could not be requested — no host Activity, API < 26,
-   * PIP disabled for the app in system settings, or already in PIP.
-   *
-   * No-op on iOS (returns `false`).
+   * **iOS:** starts live PIP on the supported tier (iPhone iOS 18+ with the
+   * `voip` background mode / M1+ iPad). The start may be deferred until the
+   * window is ready and still return `true`. Returns `false` on devices where
+   * PIP isn't offered (older iOS, pre-M1 iPad, or no `voip` mode).
    */
   enterPictureInPicture(): boolean
 
   /**
-   * **Android only.** `true` while the host Activity is in Picture-in-Picture
-   * mode. Always `false` on iOS. Subscribe to {@link setOnPictureInPictureChange}
-   * for transitions.
+   * `true` while in the Picture-in-Picture window. Works on **both platforms**
+   * (on iOS, only the live tier ever enters PIP). Subscribe to
+   * {@link setOnPictureInPictureChange} for enter/exit transitions.
    */
   isInPictureInPicture(): boolean
 
   /**
-   * **Android only.** Subscribe to PIP enter/exit transitions — fires with
-   * `true` when the app enters the floating window and `false` when it returns
-   * to full screen. Use it to hide overlays/controls while in PIP.
-   *
-   * The callback is delivered on the JS thread. No-op on iOS.
+   * Subscribe to PIP enter/exit transitions — fires `true` when the app enters
+   * the floating window and `false` when it returns to full screen. Use it to
+   * hide overlays/controls while in PIP. The callback is delivered on the JS
+   * thread. Works on **both platforms** (on iOS it fires for the live tier).
    */
   setOnPictureInPictureChange(callback: (isInPip: boolean) => void): void
 
