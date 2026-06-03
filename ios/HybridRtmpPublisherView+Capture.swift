@@ -853,10 +853,11 @@ extension HybridRtmpPublisherView {
           unit.preferredVideoStabilizationMode = stabilization
         }
         await self.mixer.startRunning()
-        // Re-attach audio for the current mode. When noiseSuppression is on this
-        // restarts the denoise pipeline (the AVAudioEngine is dead after a
-        // background/interruption); when off it re-attaches the mixer mic.
-        await self.applyAudioCaptureForCurrentMode()
+        // Re-attach audio for the current mode (serialized + reactivates the
+        // session). When noiseSuppression is on this restarts the denoise
+        // pipeline (the AVAudioEngine is dead after a background/interruption);
+        // when off it re-attaches the mixer mic.
+        self.scheduleAudioRestart()
         self.pinVideoOrientation()
         // Re-lock frame rate. iOS re-commits the device's `activeFormat`
         // during `attachVideo` and resets `activeVideoMin/MaxFrameDuration`
@@ -910,6 +911,24 @@ extension HybridRtmpPublisherView {
     } else {
       denoisePipeline.stop()
       if let mic { try? await mixer.attachAudio(mic) }
+    }
+  }
+
+  /// Serialized audio recovery: reactivate the (possibly interruption-deactivated)
+  /// `.playAndRecord` session, then rebuild audio capture for the current mode.
+  /// Chained on the previous restart so overlapping triggers — a call-end audio
+  /// interruption and the capture-session defrost both firing — can't run two
+  /// engine / `attachAudio` rebuilds at once.
+  func scheduleAudioRestart() {
+    let prev = audioRestartTask
+    audioRestartTask = Task { [weak self] in
+      await prev?.value
+      if Task.isCancelled { return }
+      guard let self else { return }
+      // The session is deactivated after an interruption; reactivate it before
+      // (re)starting capture, otherwise the engine / attachAudio silently fails.
+      self.configureAudioSession()
+      await self.applyAudioCaptureForCurrentMode()
     }
   }
 

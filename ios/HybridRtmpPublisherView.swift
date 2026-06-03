@@ -127,6 +127,12 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   /// `applyAudioCaptureForCurrentMode()`.
   let denoisePipeline = AudioDenoisePipeline()
 
+  /// Serializes audio (re)starts so the AVAudioSession-interruption recovery
+  /// (`handleAudioSessionInterruption`) and the AVCaptureSession defrost path
+  /// (`defrostCapture`) can't fire two concurrent denoise-engine / `attachAudio`
+  /// rebuilds against the same mixer. Each restart chains on the previous one.
+  var audioRestartTask: Task<Void, Never>?
+
   /// Connection and stream are *both* recreated on every publish cycle.
   /// HaishinKit's `RTMPConnection` keeps every `RTMPStream` we register in
   /// a private `streams` array and has no public `removeStream(_:)` — only
@@ -608,6 +614,12 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
                    name: AVCaptureSession.wasInterruptedNotification, object: nil)
     nc.addObserver(self, selector: #selector(sessionInterruptionEnded(_:)),
                    name: AVCaptureSession.interruptionEndedNotification, object: nil)
+    // A phone call / Siri / alarm / another app interrupts the AUDIO session —
+    // separate from the AVCaptureSession video interruptions above. Without
+    // handling its `.ended`, the stream resumes with video but permanently MUTED
+    // audio. See `handleAudioSessionInterruption`.
+    nc.addObserver(self, selector: #selector(handleAudioSessionInterruption(_:)),
+                   name: AVAudioSession.interruptionNotification, object: nil)
   }
 
   deinit {
@@ -651,7 +663,10 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     lastPreview = nil
     pendingStreamKey = nil
     userRotationOverride = nil
-    // Tear down the spectral denoise pipeline (stops the AVAudioEngine + tap).
+    // Cancel any in-flight audio restart so it can't re-attach audio after the
+    // teardown below, then tear down the spectral denoise pipeline.
+    audioRestartTask?.cancel()
+    audioRestartTask = nil
     denoisePipeline.stop()
     // Release the camera-attach coalescing guard so a drop mid-attach can't
     // leave it stuck (a remounted view starting from a fresh instance anyway,
