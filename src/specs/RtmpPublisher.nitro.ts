@@ -334,13 +334,18 @@ export interface RtmpPublisherViewMethods extends HybridViewMethods {
 
   /**
    * Configure the built-in auto-reconnect. When `maxAttempts > 0`, the library
-   * automatically calls `reTry(backoffMs, ...)` on `connectionFailed` and
-   * `disconnect` while the user-requested stream is still considered active
-   * (i.e. `stopStream` has not been called and the surface is still alive).
+   * automatically calls `reTry(...)` on `connectionFailed` and `disconnect`
+   * while the user-requested stream is still considered active (i.e. `stopStream`
+   * has not been called and the surface is still alive).
    *
-   * Each retry consumes one attempt from the budget. Emits a `reconnecting`
-   * event right before the underlying retry fires. Pass `maxAttempts = 0` to
-   * disable.
+   * Each retry consumes one attempt from the budget and uses an escalating
+   * backoff (`backoffMs · 2^attempt`, clamped) so a dead/rate-limiting server
+   * isn't hammered. Emits a `reconnecting` event right before the underlying
+   * retry fires.
+   *
+   * @default Auto-reconnect defaults to **5 attempts / 2000ms** on both
+   * platforms even if you never call this — a transient mid-stream network blip
+   * recovers out of the box. Pass `maxAttempts = 0` to opt out explicitly.
    */
   setAutoReconnect(maxAttempts: number, backoffMs: number): void
 

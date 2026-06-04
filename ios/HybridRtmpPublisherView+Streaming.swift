@@ -104,6 +104,7 @@ extension HybridRtmpPublisherView {
   func stopStream() throws {
     let wasStreaming = cachedIsStreaming || isPublishingInFlight()
     shouldBeStreaming = false
+    interruptionNeedsRecovery = false
     pendingStreamKey = nil
     currentRtmpConnectUrl = nil
     reconnectTask?.cancel()
@@ -273,14 +274,23 @@ extension HybridRtmpPublisherView {
       return true
     }
     retriesRemaining -= 1
+    // `.reconnecting` is emitted inside scheduleReconnect now (so the direct
+    // callers — appWillEnterForeground, the phone-call recovery path — emit it
+    // too, not just this auto path). See scheduleReconnect.
     scheduleReconnect(delayMs: autoReconnectBackoffMs, reason: reason)
-    emitConnectionEvent(.reconnecting, reason)
     return true
   }
 
   func scheduleReconnect(delayMs: Int64, reason: String) {
     reconnectTask?.cancel()
     reconnectScheduled = true
+    // Emit RECONNECTING here — NOT in tryAutoReconnect — so EVERY reconnect path
+    // produces the same DISCONNECT→RECONNECTING→CONNECTIONSTARTED→CONNECTIONSUCCESS
+    // arc. The foreground-resume (appWillEnterForeground) and phone-call recovery
+    // (handleAudioSessionInterruption) paths call this directly; before, they
+    // emitted only CONNECTIONSTARTED, so JS saw a DISCONNECT (e.g. from a call)
+    // with no matching "reconnecting" even though the stream recovered.
+    emitConnectionEvent(.reconnecting, reason)
     reconnectTask = Task { [weak self] in
       // Clear the dedupe flag when this Task completes naturally. If we
       // were CANCELLED, skip the clear — cancellation happens when either
@@ -490,28 +500,80 @@ extension HybridRtmpPublisherView {
   // ─── Bitrate timer ───────────────────────────────────────────────────────
 
   func startBitrateTimer() {
-    stopBitrateTimer()
-    // Reset so stale samples from a previous publish don't bleed into the new
-    // session before the first NetworkMonitor tick (~3s).
-    lastMeasuredBps = 0
-    // Count video frames only when a stats consumer is subscribed; this also
-    // resets the counter so the first fps tick measures only the new interval.
-    previewFrameTap.setCounting(onStreamStats != nil)
-    let t = DispatchSource.makeTimerSource(queue: .main)
-    t.schedule(deadline: .now() + 1.0, repeating: 1.0)
-    t.setEventHandler { [weak self] in self?.onBitrateTick() }
-    t.resume()
-    bitrateTimer = t
+    // Serialize on main. This is called from background publish/reconnect Tasks
+    // (startStream:76, scheduleReconnect:331) AND from onMain-context prop
+    // setters, while `onBitrateTick` runs on the .main-queue timer and mutates
+    // the same watchdog fields (stallTicks/bitrateSampleSeen) + bitrateTimer.
+    // Without this hop those are a cross-thread data race on non-atomic state
+    // that drives the reconnect decision. `onMain` runs inline when already on
+    // main, so the synchronous call sites keep their ordering.
+    onMain { [weak self] in
+      guard let self else { return }
+      self.stopBitrateTimer()
+      // Reset so stale samples from a previous publish don't bleed into the new
+      // session before the first NetworkMonitor tick (~1s).
+      self.lastMeasuredBps = 0
+      // Reset the silent-stall watchdog for the fresh session.
+      self.stallTicks = 0
+      self.bitrateSampleSeen = false
+      // Count video frames only when a stats consumer is subscribed; this also
+      // resets the counter so the first fps tick measures only the new interval.
+      self.previewFrameTap.setCounting(self.onStreamStats != nil)
+      let t = DispatchSource.makeTimerSource(queue: .main)
+      t.schedule(deadline: .now() + 1.0, repeating: 1.0)
+      t.setEventHandler { [weak self] in self?.onBitrateTick() }
+      t.resume()
+      self.bitrateTimer = t
+    }
   }
 
   func stopBitrateTimer() {
-    bitrateTimer?.cancel()
-    bitrateTimer = nil
-    previewFrameTap.setCounting(false)
+    // Same main-serialization as startBitrateTimer — bitrateTimer is touched
+    // from background teardown Tasks (stopStream, reconnect catch, handleRtmpStatus)
+    // and from the main-queue timer. `onMain` is inline-on-main, so callers
+    // already on main (onBitrateTick, startBitrateTimer) stay synchronous.
+    onMain { [weak self] in
+      guard let self else { return }
+      self.bitrateTimer?.cancel()
+      self.bitrateTimer = nil
+      self.previewFrameTap.setCounting(false)
+    }
   }
 
   func onBitrateTick() {
     let measured = lastMeasuredBps
+    // ── Silent-stall watchdog (M1) ──────────────────────────────────────────
+    // Count consecutive zero-throughput ticks while we're publishing AND not in
+    // an interruption/background (where 0 bytes is expected, not a failure).
+    // After `stallTickLimit` we force a reconnect — the half-open socket Pedro/
+    // HaishinKit won't report as closed for 10-15s+. Gated on `bitrateSampleSeen`
+    // so the pre-first-byte warm-up never trips it. A slow-but-alive link keeps
+    // measured > 0, so it's never falsely torn down.
+    if cachedIsStreaming, bitrateSampleSeen, !isInBackground, !captureInterrupted {
+      if measured <= 0 {
+        stallTicks += 1
+        if stallTicks >= stallTickLimit, !reconnectScheduled {
+          log("silent stall: no bytes leaving for \(stallTicks)s — forcing reconnect")
+          stallTicks = 0
+          if !tryAutoReconnect(reason: "silent stall: no bytes flowing") {
+            // Reconnect can't run (disabled / budget gone) — surface the dead
+            // stream instead of leaving JS on a fabricated "live" bitrate.
+            shouldBeStreaming = false
+            cachedIsStreaming = false
+            stopBitrateTimer()
+            emitConnectionEvent(.connectionfailed, "silent stall: no bytes flowing")
+          }
+          return
+        }
+      } else {
+        stallTicks = 0
+      }
+    }
+    if measured > 0 { bitrateSampleSeen = true }
+    // Capture for the async body: once we've seen a real sample, a later 0 means
+    // a genuine stall — report it honestly (0) instead of fabricating the
+    // configured rate, which masked dead streams from JS.
+    let sampleSeen = bitrateSampleSeen
     // Only sample fps when a stats consumer is subscribed (the frame counter is
     // otherwise off, so this is a no-op). Read on main; the timer fires at 1.0s.
     let wantsStats = onStreamStats != nil
@@ -526,15 +588,19 @@ extension HybridRtmpPublisherView {
       self.adaptiveCurrentBitrate = vBps
       let bps: Double
       if measured > 0 {
-        // Real measured throughput from PublisherBitrateStrategy (~3s
-        // cadence from HK's NetworkMonitor). Prefer over the configured
-        // value because it tells JS what's actually leaving the device.
+        // Real measured throughput from PublisherBitrateStrategy (1s cadence
+        // from HK's NetworkMonitor). Prefer over the configured value because
+        // it tells JS what's actually leaving the device.
         bps = measured
-      } else {
-        // No real sample yet — fall back to encoder configured rate so
-        // the UI shows *something* instead of zero in the first ~3s.
+      } else if !sampleSeen {
+        // Warm-up only — no real sample yet (first ~1-2s). Fall back to the
+        // encoder configured rate so the UI shows *something* instead of zero.
         let aBps = await self.stream.audioSettings.bitRate
         bps = Double(vBps + aBps)
+      } else {
+        // We've had real samples and now measure 0 — a stalling socket. Report
+        // the truth so JS isn't told a healthy rate over a dead pipe.
+        bps = 0
       }
       self.emitBitrateChange(bps)
       if wantsStats { self.emitStreamStats(bps, fps) }

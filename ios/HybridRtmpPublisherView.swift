@@ -170,9 +170,28 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
 
   /// Last throughput sample reported by `PublisherBitrateStrategy`, in bps.
   /// Updated from a Sendable closure (any actor) — read by the bitrate
-  /// timer on the next tick. Race is benign: we never gate logic on this
-  /// value.
+  /// timer on the next tick. Race is benign: the silent-stall watchdog (the
+  /// one place we now gate logic on it) needs `stallTickLimit` *consecutive*
+  /// zero ticks, so a one-off torn/stale read can't trip a false reconnect.
   var lastMeasuredBps: Double = 0
+
+  // ─── Silent-stall watchdog (M1 parity with Android) ──────────────────────
+  // On a half-open socket no bytes leave the device, so HaishinKit's
+  // NetworkMonitor reports currentBytesOutPerSecond == 0 while the RTMP socket
+  // still looks "open" (connectClosed can lag 10-15s on TCP keepalive, longer
+  // on a NAT-idle half-open). We count consecutive zero-throughput ticks while
+  // publishing and force a reconnect before the user stares at a dead "live"
+  // stream — and we stop fabricating the configured bitrate to JS during it.
+  /// Consecutive 1s `onBitrateTick`s with measured throughput == 0 while live.
+  var stallTicks = 0
+  /// True once at least one real (>0) throughput sample has arrived this
+  /// session — so the first ~1-2s warm-up (before the first byte) can't trip
+  /// the watchdog or report a fabricated rate. Reset in `startBitrateTimer`.
+  var bitrateSampleSeen = false
+  /// Consecutive zero-throughput ticks before the watchdog forces a reconnect.
+  /// 4s of zero bytes is an unambiguous dead pipe yet acts well before the
+  /// ~10-15s TCP-keepalive backstop.
+  let stallTickLimit = 4
 
   // ─── Callbacks (set from JS) — invoke via emit* helpers in +Events.swift
 
@@ -372,12 +391,32 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   // the next foreground.
   var didBackgroundTeardown = false
 
+  // True while capture is paused by an interruption (phone call / Siri / another
+  // app grabbing the audio device, or an AVCaptureSession interruption). During
+  // this window no frames are encoded, so throughput legitimately drops to 0 —
+  // the silent-stall watchdog MUST be gated off here or a foreground call would
+  // trigger a reconnect storm. Set on interruption .began / sessionWasInterrupted,
+  // cleared on .ended / sessionInterruptionEnded.
+  var captureInterrupted = false
+
+  // True between emitting a .disconnect for a recoverable capture interruption
+  // (phone call / Siri) and emitting its matching recovery. The interruption-end
+  // handlers use it to balance that .disconnect with a RECONNECTING→
+  // CONNECTIONSUCCESS arc when the RTMP socket itself survived (capture paused
+  // but the TCP connection stayed up) — otherwise JS is stuck "disconnected"
+  // though the stream is live. When the socket actually dropped, a real reconnect
+  // owns the arc and this flag is just consumed.
+  var interruptionNeedsRecovery = false
+
   // RTMP URL is split into "rtmp://host/app" (connect) + "streamKey" (publish).
   var currentRtmpConnectUrl: String?
 
-  // Auto-reconnect.
-  var autoReconnectMaxAttempts = 0
-  var autoReconnectBackoffMs: Int64 = 0
+  // Auto-reconnect. Defaults ON (5 attempts / 2s) so a transient mid-stream
+  // blip recovers even if the app never calls setAutoReconnect — matches the
+  // Android default. Opt out with setAutoReconnect(0, 0). retriesRemaining is
+  // seeded from autoReconnectMaxAttempts at startStream.
+  var autoReconnectMaxAttempts = 5
+  var autoReconnectBackoffMs: Int64 = 2_000
   var retriesRemaining = 0
   /// In-flight reconnect Task. Cancelling here interrupts both the delay
   /// (`Task.sleep` throws on cancel) and any await-in-flight inside the

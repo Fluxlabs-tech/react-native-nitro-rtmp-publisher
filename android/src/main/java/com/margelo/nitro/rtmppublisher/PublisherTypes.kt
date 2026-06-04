@@ -17,6 +17,20 @@ internal const val WAKE_LOCK_TAG = "RtmpPublisher::WakeLock"
 internal const val MAX_RETRY_ATTEMPTS = 100
 internal const val MAX_RETRY_BACKOFF_MS = 60L * 60L * 1000L  // 1 hour
 
+// Silent-stall watchdog (M1): consecutive onNewBitrate ticks (~1s each) at
+// bitrate==0 — no bytes acked to the server while we still believe we're live —
+// before we force a reconnect. 3s of total silence is unambiguous on a real
+// link yet short enough to recover quickly; a single transient zero tick won't
+// trip it.
+internal const val STALL_TICKS = 3
+
+// Foreground-service readiness wait (M8). startForegroundService is async; we
+// poll RtmpForegroundService.running this many times, this far apart, before
+// starting the encoder (25 × 20ms = 500ms ceiling). Polling (not blocking) is
+// required because the service's onStartCommand runs on the same main looper.
+internal const val MAX_FGS_WAIT_ATTEMPTS = 25
+internal const val FGS_WAIT_POLL_MS = 20L
+
 // Camera2 only allows one open camera per process. Track the active publisher
 // instance so a second mount can fail loudly instead of silently breaking the
 // first one's preview. Atomic CAS — two concurrent mounts must not both win.

@@ -20,6 +20,7 @@ import com.pedro.library.base.recording.RecordController
 import com.pedro.library.rtmp.RtmpCamera2
 import com.pedro.library.util.BitrateAdapter
 import com.pedro.library.view.OpenGlView
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Nitro HybridView that wraps RootEncoder's [RtmpCamera2] + [OpenGlView] and
@@ -62,12 +63,15 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
   // (host activity background/foreground, rotation) so the preview auto-restores.
   // Cleared only on explicit `stopPreview()` or `onDropView()`.
   internal var lastPreview: PreviewConfig? = null
-  internal var pendingStream: String? = null
+  // @Volatile: written by JS-thread startStream (768) and main-thread
+  // surfaceDestroyed (seed), read in surfaceCreated (resume). The two fields are
+  // logically paired, so a torn read would resume with the wrong URL/delay.
+  @Volatile internal var pendingStream: String? = null
   // When the surface is destroyed while streaming, we save the URL here so
   // surfaceCreated can re-publish automatically (matches iOS' foreground-resume
   // behaviour in appWillEnterForeground). Carries a delay so the cached
   // pendingStream path (initial mount race) stays zero-delay.
-  internal var pendingStreamDelayMs: Long = 0L
+  @Volatile internal var pendingStreamDelayMs: Long = 0L
   // Last URL passed to startStream. Used to seed the auto-resume on the next
   // surface restoration. Cleared on explicit stopStream / onDropView.
   @Volatile internal var lastStreamUrl: String? = null
@@ -94,7 +98,10 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
   // double-subscribe.
   internal val thermalLock = Any()
 
-  internal var surfaceReady = false
+  // @Volatile: written on main (surface callbacks), read on main in tryAutoReconnect
+  // but also consulted from the JS-thread startStream gate — keep visibility
+  // consistent with shouldBeStreaming / disconnectEmitted.
+  @Volatile internal var surfaceReady = false
 
   // Encoder prepare-state caches. RootEncoder's BaseEncoder.stop() releases the
   // MediaCodec and flips `prepared` to false, so the next startStream would
@@ -107,19 +114,60 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
   @Volatile internal var audioPrepared = false
 
   // Auto-reconnect config + state.
-  internal var autoReconnectMaxAttempts = 0
-  internal var autoReconnectBackoffMs = 0L
+  //
+  // Default ON (5 attempts / 2s base backoff): a library that ships with
+  // reconnect *off* silently gives apps no recovery from the common mid-stream
+  // network blip — the dominant "stream failed and never came back" report. Opt
+  // out explicitly with setAutoReconnect(0, 0). @Volatile because setAutoReconnect
+  // writes on the JS/Nitro thread while tryAutoReconnect reads on main (and a
+  // 64-bit Long can tear on 32-bit ARM without it).
+  @Volatile internal var autoReconnectMaxAttempts = 5
+  @Volatile internal var autoReconnectBackoffMs = 2_000L
+  // Warn-once if a stream starts with reconnect explicitly disabled, so the
+  // "gave up immediately" failure is distinguishable from "never configured".
+  @Volatile internal var autoReconnectDisabledWarned = false
+
+  // User intent to NOT stream: set by stopStream / onDropView, cleared by
+  // startStream(Internal). The FIRST gate in tryAutoReconnect — distinct from
+  // surfaceReady (surface lifecycle) and shouldBeStreaming (which also clears on
+  // terminal failure). A transient surface loss (background / rotate / PIP) must
+  // NOT look like an explicit stop, or auto-reconnect dies on every backgrounding.
+  @Volatile internal var streamExplicitlyStopped = false
+
+  // Session epoch, bumped just before each fresh camera.startStream. Stale
+  // ConnectChecker callbacks from a torn-down session (still queued on Pedro's
+  // I/O thread) capture the old value and bail, so they can't emit out-of-order
+  // events or retry against the new session. Mirrors iOS' pipelineGeneration.
+  // Best-effort on Android: Pedro reuses one ConnectChecker across sessions, so
+  // a callback Pedro happens to invoke *after* the bump won't be caught here —
+  // the disconnectEmitted dedup + reconnectInProgress latch cover that residue.
+  @Volatile internal var pipelineGeneration = 0L
+
+  // One reconnect in flight per failure cycle. Two Pedro I/O threads can fire
+  // onConnectionFailed microseconds apart (timeout + broken-pipe); without this
+  // both call reTry and burn the retry budget 2x. compareAndSet-guarded in
+  // tryAutoReconnect; released in onConnectionStarted (retry handshake began),
+  // onConnectionSuccess, and every terminal-failure path.
+  internal val reconnectInProgress = AtomicBoolean(false)
+  // Consecutive auto-reconnect attempts since the last success, for escalating
+  // backoff (base · 2^attempt). Reset on success / fresh start. Touched on main.
+  @Volatile internal var currentRetryAttempt = 0
 
   // Dead-man timer for auto-reconnect. Pedro's streamClient.reTry() can queue
   // a retry that never completes (TCP hang, DNS stall) without firing another
   // onConnectionFailed — without this, shouldBeStreaming stays true forever
   // and JS sits in RECONNECTING with nothing to react to.
   internal val mainHandler = Handler(Looper.getMainLooper())
-  internal val reconnectTimeoutMs = 30_000L
+  // Measured from handshake start (reset in onConnectionStarted), not from
+  // queue+backoff time — 45s of pure handshake is generous even for a distant /
+  // congested ingest, so this only bites a genuinely hung reconnect.
+  internal val reconnectTimeoutMs = 45_000L
   internal val reconnectTimeoutRunnable = Runnable {
     if (shouldBeStreaming && !camera.isStreaming) {
       Log.w(TAG, "Auto-reconnect timed out after ${reconnectTimeoutMs}ms")
       shouldBeStreaming = false
+      reconnectInProgress.set(false)
+      currentRetryAttempt = 0
       releaseWakeLock()
       setKeepScreenOn(false)
       onConnectionEvent?.invoke(
@@ -128,6 +176,22 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
       )
     }
   }
+
+  // Silent-stall watchdog (M1/S7). A half-open socket — NAT/firewall idle
+  // timeout, Wi-Fi↔LTE handover, Android 14 bg camera/mic revocation — leaves
+  // camera.isStreaming==true while zero bytes reach the server and Pedro fires
+  // NO failure callback. onNewBitrate then reports bitrate==0 every ~1s tick but
+  // the original code only forwarded it. We count consecutive zero-bitrate ticks
+  // and force a reconnect (or surface terminal failure) once we're confident the
+  // pipe is dead. Touched only on main (onNewBitrate runs via postToMain).
+  internal var stallTicks = 0
+
+  // bg→fg resume backoff (S6). Rapid surface recycles (orientation/PIP loops)
+  // shouldn't re-publish into the same just-broken network every 1.5s; escalate
+  // the resume delay (1.5/3/5s) when destroys come back-to-back. Reset on a
+  // healthy onConnectionSuccess. Touched only on main.
+  private var lastSurfaceDestroyMs = 0L
+  private var resumeDelayLevel = 0
 
   // Adaptive bitrate. Null when disabled.
   @Volatile internal var bitrateAdapter: BitrateAdapter? = null
@@ -222,74 +286,171 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
   // reconnect timer, bitrate-adapter mutation) all happen on one thread —
   // removes the read-decide-write window between Pedro thread and main thread.
   internal val connectChecker = object : ConnectChecker {
-    override fun onConnectionStarted(url: String) = postToMain {
-      onConnectionEvent?.invoke(RtmpConnectionEvent.CONNECTIONSTARTED, url)
-    }
-    override fun onConnectionSuccess() = postToMain {
-      mainHandler.removeCallbacks(reconnectTimeoutRunnable)
-      disconnectEmitted = false
-      onConnectionEvent?.invoke(RtmpConnectionEvent.CONNECTIONSUCCESS, "")
-    }
-    override fun onConnectionFailed(reason: String) = postToMain {
-      if (tryAutoReconnect(reason)) {
-        onConnectionEvent?.invoke(RtmpConnectionEvent.RECONNECTING, reason)
-      } else {
+    // Each callback snapshots `pipelineGeneration` on Pedro's thread BEFORE the
+    // main-thread hop and bails on mismatch, so a stale callback from a
+    // torn-down session can't poison the current one (M7).
+    override fun onConnectionStarted(url: String) {
+      val gen = pipelineGeneration
+      postToMain {
+        if (gen != pipelineGeneration) return@postToMain
+        // Measure the dead-man from handshake start, not from queue+backoff time
+        // — otherwise a slow-but-valid reconnect gets guillotined at T+30s while
+        // the socket is actually coming up (M2). Covers the initial connect too.
         mainHandler.removeCallbacks(reconnectTimeoutRunnable)
-        shouldBeStreaming = false
-        releaseWakeLock()
-        setKeepScreenOn(false)
-        onConnectionEvent?.invoke(RtmpConnectionEvent.CONNECTIONFAILED, reason)
+        mainHandler.postDelayed(reconnectTimeoutRunnable, reconnectTimeoutMs)
+        // The retry handshake has begun — release the in-flight latch so a
+        // genuine *new* failure (this handshake failing) starts a fresh cycle (S2).
+        reconnectInProgress.set(false)
+        onConnectionEvent?.invoke(RtmpConnectionEvent.CONNECTIONSTARTED, url)
       }
     }
-    override fun onNewBitrate(bitrate: Long) = postToMain {
-      // Feed adaptive-bitrate adapter if enabled. It calls back into
-      // `setVideoBitrateOnFly` via its listener, no allocation per tick.
-      bitrateAdapter?.let { adapter ->
-        val congested = safe("hasCongestion", default = false) {
-          camera.streamClient.hasCongestion()
-        }
-        safe("adaptBitrate") { adapter.adaptBitrate(bitrate, congested) }
-      }
-      onBitrateChange?.invoke(bitrate.toDouble())
-      // Live video fps for onStreamStats: derive from the sender's cumulative
-      // sent-video-frame count over this tick. getSentVideoFrames() restarts at
-      // 0 on a fresh stream, so a backwards step means "new stream" → baseline.
-      onStreamStats?.let { cb ->
-        val nowMs = SystemClock.elapsedRealtime()
-        val sent = safe("getSentVideoFrames", default = lastSentVideoFrames) {
-          camera.streamClient.getSentVideoFrames()
-        }
-        val base = if (sent < lastSentVideoFrames) 0L else lastSentVideoFrames
-        val fps =
-          if (lastStatsTsMs == 0L) 0.0
-          else (sent - base) * 1000.0 / (nowMs - lastStatsTsMs).coerceAtLeast(1L)
-        lastSentVideoFrames = sent
-        lastStatsTsMs = nowMs
-        cb.invoke(bitrate.toDouble(), fps)
-      }
-    }
-    override fun onDisconnect() = postToMain {
-      if (tryAutoReconnect("disconnect")) {
-        onConnectionEvent?.invoke(RtmpConnectionEvent.RECONNECTING, "disconnect")
-      } else {
+    override fun onConnectionSuccess() {
+      val gen = pipelineGeneration
+      postToMain {
+        if (gen != pipelineGeneration) return@postToMain
         mainHandler.removeCallbacks(reconnectTimeoutRunnable)
-        shouldBeStreaming = false
-        releaseWakeLock()
-        setKeepScreenOn(false)
-        // Suppress the duplicate when surfaceDestroyed already emitted
-        // DISCONNECT — Pedro fires its own onDisconnect a moment after our
-        // synchronous teardown and JS would otherwise see two in a row.
-        if (!disconnectEmitted) {
-          onConnectionEvent?.invoke(RtmpConnectionEvent.DISCONNECT, "")
-        }
+        reconnectInProgress.set(false)
+        currentRetryAttempt = 0
+        stallTicks = 0
+        resumeDelayLevel = 0
         disconnectEmitted = false
+        onConnectionEvent?.invoke(RtmpConnectionEvent.CONNECTIONSUCCESS, "")
       }
     }
-    override fun onAuthError() = postToMain {
-      onConnectionEvent?.invoke(RtmpConnectionEvent.AUTHERROR, "")
+    override fun onConnectionFailed(reason: String) {
+      val gen = pipelineGeneration
+      postToMain {
+        if (gen != pipelineGeneration) return@postToMain
+        // Surface recycle (bg / rotate / PIP) tears the socket and seeds
+        // pendingStream — the surfaceCreated resume path owns the restart, so
+        // don't double-report it as a terminal failure here (S3).
+        if (!surfaceReady || pendingStream != null) return@postToMain
+        if (tryAutoReconnect(reason)) {
+          onConnectionEvent?.invoke(RtmpConnectionEvent.RECONNECTING, reason)
+        } else {
+          mainHandler.removeCallbacks(reconnectTimeoutRunnable)
+          shouldBeStreaming = false
+          reconnectInProgress.set(false)
+          currentRetryAttempt = 0
+          disconnectEmitted = false
+          releaseWakeLock()
+          setKeepScreenOn(false)
+          onConnectionEvent?.invoke(RtmpConnectionEvent.CONNECTIONFAILED, reason)
+        }
+      }
     }
-    override fun onAuthSuccess() = postToMain {
-      onConnectionEvent?.invoke(RtmpConnectionEvent.AUTHSUCCESS, "")
+    override fun onNewBitrate(bitrate: Long) {
+      val gen = pipelineGeneration
+      postToMain {
+        if (gen != pipelineGeneration) return@postToMain
+        // ── Silent-stall watchdog (M1) ──────────────────────────────────────
+        // A half-open socket leaves camera.isStreaming==true with Pedro firing
+        // no failure callback, but onNewBitrate keeps ticking at bitrate==0 (no
+        // bytes acked over this ~1s window). STALL_TICKS zeros in a row while we
+        // believe we're live ⇒ the pipe is dead. Try to reconnect; if reconnect
+        // can't run (disabled / surface gone / budget gone), surface a terminal
+        // failure so JS stops showing a stream that isn't reaching the server —
+        // the headline "no output detected" bug. A nonzero tick (incl. the
+        // bitrate adapter's congestion floor — still > 0) resets the counter, so
+        // a slow-but-alive link is never torn down here.
+        if (shouldBeStreaming && camera.isStreaming && bitrate <= 0L) {
+          stallTicks++
+          if (stallTicks >= STALL_TICKS && !reconnectInProgress.get()) {
+            Log.w(TAG, "Silent stall: no bytes flowing for ${stallTicks}s — forcing reconnect")
+            stallTicks = 0
+            if (tryAutoReconnect("silent stall: no bytes flowing")) {
+              onConnectionEvent?.invoke(RtmpConnectionEvent.RECONNECTING, "silent stall: no bytes flowing")
+            } else {
+              mainHandler.removeCallbacks(reconnectTimeoutRunnable)
+              shouldBeStreaming = false
+              reconnectInProgress.set(false)
+              currentRetryAttempt = 0
+              disconnectEmitted = false
+              safe("stopStream(stall)") {
+                if (camera.isStreaming) {
+                  camera.stopStream()
+                  videoPrepared = false
+                  audioPrepared = false
+                }
+              }
+              releaseWakeLock()
+              setKeepScreenOn(false)
+              onConnectionEvent?.invoke(RtmpConnectionEvent.CONNECTIONFAILED, "silent stall: no bytes flowing")
+            }
+            return@postToMain
+          }
+        } else {
+          stallTicks = 0
+        }
+        // Feed adaptive-bitrate adapter if enabled. It calls back into
+        // `setVideoBitrateOnFly` via its listener, no allocation per tick.
+        bitrateAdapter?.let { adapter ->
+          val congested = safe("hasCongestion", default = false) {
+            camera.streamClient.hasCongestion()
+          }
+          safe("adaptBitrate") { adapter.adaptBitrate(bitrate, congested) }
+        }
+        onBitrateChange?.invoke(bitrate.toDouble())
+        // Live video fps for onStreamStats: derive from the sender's cumulative
+        // sent-video-frame count over this tick. getSentVideoFrames() restarts at
+        // 0 on a fresh stream, so a backwards step means "new stream" → baseline.
+        onStreamStats?.let { cb ->
+          val nowMs = SystemClock.elapsedRealtime()
+          val sent = safe("getSentVideoFrames", default = lastSentVideoFrames) {
+            camera.streamClient.getSentVideoFrames()
+          }
+          val base = if (sent < lastSentVideoFrames) 0L else lastSentVideoFrames
+          val fps =
+            if (lastStatsTsMs == 0L) 0.0
+            else (sent - base) * 1000.0 / (nowMs - lastStatsTsMs).coerceAtLeast(1L)
+          lastSentVideoFrames = sent
+          lastStatsTsMs = nowMs
+          cb.invoke(bitrate.toDouble(), fps)
+        }
+      }
+    }
+    override fun onDisconnect() {
+      val gen = pipelineGeneration
+      postToMain {
+        if (gen != pipelineGeneration) return@postToMain
+        // Surface recycle already emitted DISCONNECT + seeded the resume — let
+        // that path own it instead of retrying against a dead surface (S3).
+        if (!surfaceReady || pendingStream != null) {
+          disconnectEmitted = false
+          return@postToMain
+        }
+        if (tryAutoReconnect("disconnect")) {
+          onConnectionEvent?.invoke(RtmpConnectionEvent.RECONNECTING, "disconnect")
+        } else {
+          mainHandler.removeCallbacks(reconnectTimeoutRunnable)
+          shouldBeStreaming = false
+          reconnectInProgress.set(false)
+          currentRetryAttempt = 0
+          releaseWakeLock()
+          setKeepScreenOn(false)
+          // Suppress the duplicate when surfaceDestroyed already emitted
+          // DISCONNECT — Pedro fires its own onDisconnect a moment after our
+          // synchronous teardown and JS would otherwise see two in a row.
+          if (!disconnectEmitted) {
+            onConnectionEvent?.invoke(RtmpConnectionEvent.DISCONNECT, "")
+          }
+          disconnectEmitted = false
+        }
+      }
+    }
+    override fun onAuthError() {
+      val gen = pipelineGeneration
+      postToMain {
+        if (gen != pipelineGeneration) return@postToMain
+        onConnectionEvent?.invoke(RtmpConnectionEvent.AUTHERROR, "")
+      }
+    }
+    override fun onAuthSuccess() {
+      val gen = pipelineGeneration
+      postToMain {
+        if (gen != pipelineGeneration) return@postToMain
+        onConnectionEvent?.invoke(RtmpConnectionEvent.AUTHSUCCESS, "")
+      }
     }
   }
 
@@ -367,8 +528,12 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
           onConnectionEvent?.invoke(RtmpConnectionEvent.RECONNECTING, "foreground")
           val r = Runnable {
             pendingResumeRunnable = null
+            // Re-read at fire time: JS may have called startStream(newUrl) or
+            // refreshed a short-lived signed-URL token in lastStreamUrl during
+            // the grace window — the captured `url` could be stale/expired (S6).
+            val resumeUrl = lastStreamUrl ?: url
             if (surfaceReady && !camera.isStreaming) {
-              startStreamInternal(url)
+              startStreamInternal(resumeUrl)
             } else {
               // We promised JS a reconnect via the RECONNECTING event above.
               // If we silently bail here (surface dropped again, race with
@@ -395,9 +560,15 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
       // is false because we hadn't restarted yet) — without this we'd lose
       // the resume intent and the user's stream silently dies.
       val hadPendingResume = pendingResumeRunnable != null
-      // Disable auto-reconnect BEFORE stopStream: the subsequent onDisconnect
-      // would otherwise try to retry against a dead surface.
-      shouldBeStreaming = false
+      // DO NOT clear shouldBeStreaming here. It is *user intent* to be streaming,
+      // not surface lifecycle — clearing it on a transient surface loss
+      // (background / rotate / PIP) permanently disabled auto-reconnect on every
+      // backgrounding (M3). The just-cleared `surfaceReady=false` (top of this
+      // method) + the pendingStream seed below gate tryAutoReconnect and make the
+      // ConnectChecker callbacks defer to the surfaceCreated resume path (S3).
+      // Drop any in-flight reconnect bookkeeping — the resume restarts clean.
+      reconnectInProgress.set(false)
+      currentRetryAttempt = 0
       mainHandler.removeCallbacks(reconnectTimeoutRunnable)
       cancelPendingResume()
       try {
@@ -417,10 +588,20 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
       releaseWakeLock()
       if (wasStreaming || hadPendingResume) {
         // Seed the next surfaceCreated to auto-republish — matches iOS'
-        // foreground-resume semantics.
+        // foreground-resume semantics. Escalate the delay (1.5/3/5s) when
+        // destroys come back-to-back so a rapid orientation/PIP recycle doesn't
+        // re-publish into the same just-broken network every 1.5s (S6).
         lastStreamUrl?.let { url ->
+          val now = SystemClock.elapsedRealtime()
+          val rapid = lastSurfaceDestroyMs != 0L && (now - lastSurfaceDestroyMs) < 8_000L
+          lastSurfaceDestroyMs = now
+          resumeDelayLevel = if (rapid) (resumeDelayLevel + 1).coerceAtMost(2) else 0
           pendingStream = url
-          pendingStreamDelayMs = 1500L
+          pendingStreamDelayMs = when (resumeDelayLevel) {
+            0 -> 1_500L
+            1 -> 3_000L
+            else -> 5_000L
+          }
         }
         if (wasStreaming) {
           // Only emit DISCONNECT when an actual session was torn down. The
@@ -761,6 +942,8 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
       return
     }
     lastStreamUrl = url
+    // A fresh start clears any prior explicit-stop intent (M3).
+    streamExplicitlyStopped = false
     // An explicit startStream supersedes any pending auto-resume from a prior
     // background sequence.
     cancelPendingResume()
@@ -786,33 +969,107 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
       )
       return
     }
-    safe("startStream") {
-      acquireWakeLock()
-      setKeepScreenOn(true)
-      shouldBeStreaming = true
-      disconnectEmitted = false
-      // Reset the video-fps baseline so the first onStreamStats tick of this
-      // stream measures from zero (the sender's frame counters restart too).
-      lastSentVideoFrames = 0L
-      lastStatsTsMs = 0L
-      // Pedro's BaseEncoder.stop() releases the MediaCodec and sets prepared=false,
-      // so the next BaseEncoder.start() throws "not prepared yet". Re-prepare from
-      // cached config before letting Pedro start the encoders.
-      rePrepareEncodersIfNeeded()
-      // Refresh retry budget for this session — `setReTries` is a counter that
-      // ticks down, so we re-set it on every fresh `startStream`.
-      if (autoReconnectMaxAttempts > 0) {
-        safe("startStream/setReTries") {
-          camera.streamClient.setReTries(autoReconnectMaxAttempts)
-        }
+    acquireWakeLock()
+    setKeepScreenOn(true)
+    streamExplicitlyStopped = false
+    shouldBeStreaming = true
+    // Fresh session: clear any in-flight reconnect bookkeeping + stall counter.
+    // NOTE: disconnectEmitted is deliberately NOT cleared here — clearing it
+    // before the connection is up let a stale onDisconnect from the prior
+    // session emit a spurious DISCONNECT (S4). It's cleared on onConnectionSuccess
+    // / stopStream / onDropView and every terminal path instead.
+    reconnectInProgress.set(false)
+    currentRetryAttempt = 0
+    stallTicks = 0
+    // Reset the video-fps baseline so the first onStreamStats tick of this
+    // stream measures from zero (the sender's frame counters restart too).
+    lastSentVideoFrames = 0L
+    lastStatsTsMs = 0L
+    // Pedro's BaseEncoder.stop() releases the MediaCodec and sets prepared=false,
+    // so the next BaseEncoder.start() throws "not prepared yet". Re-prepare from
+    // cached config before letting Pedro start the encoders.
+    rePrepareEncodersIfNeeded()
+    // Refresh retry budget for this session — `setReTries` is a counter that
+    // ticks down, so we re-set it on every fresh `startStream`.
+    if (autoReconnectMaxAttempts > 0) {
+      safe("startStream/setReTries") {
+        camera.streamClient.setReTries(autoReconnectMaxAttempts)
       }
-      // Reset adaptive-bitrate state so each session starts from the ceiling.
-      bitrateAdapter?.reset()
-      // Apply stream-mode tuning to the fresh streamClient state.
-      applyStreamMode()
+    } else if (!autoReconnectDisabledWarned) {
+      // M5: make "reconnect disabled" distinguishable from "reconnect gave up".
+      autoReconnectDisabledWarned = true
+      Log.w(TAG, "auto-reconnect is disabled (autoReconnectMaxAttempts=0). A " +
+        "mid-stream network blip will end the stream with no retry — call " +
+        "setAutoReconnect(attempts, backoffMs) to recover from transient failures.")
+    }
+    // Reset adaptive-bitrate state so each session starts from the ceiling.
+    safe("startStream/bitrateAdapter.reset") { bitrateAdapter?.reset() }
+    // Apply stream-mode tuning to the fresh streamClient state.
+    applyStreamMode()
+    // M8: don't start encoding until the FG service has actually reached the
+    // foreground — on Android 14+ a half-started FGS gets camera/mic revoked and
+    // the encoder stalls with no callback. Polls without blocking the looper.
+    beginStreamWhenServiceReady(url, 0)
+  }
+
+  // Wait (non-blocking) for the FG service to reach the foreground, then start
+  // the encoder. startForegroundService() dispatches onStartCommand onto THIS
+  // looper, so we must yield via postDelayed rather than Thread.sleep — blocking
+  // here would starve the very callback that flips `running` true (deadlock).
+  private fun beginStreamWhenServiceReady(url: String, attempt: Int) {
+    // Nothing to wait on: no FGS requested, build opted out, or it's already up.
+    if (!fgServiceStartedByUs || RtmpForegroundService.running) {
+      launchEncoder(url)
+      return
+    }
+    if (attempt >= MAX_FGS_WAIT_ATTEMPTS) {
+      Log.e(TAG, "Foreground service did not reach the foreground within " +
+        "${MAX_FGS_WAIT_ATTEMPTS * FGS_WAIT_POLL_MS}ms — refusing to encode " +
+        "(Android 14+ would revoke camera/mic mid-stream).")
+      shouldBeStreaming = false
+      releaseWakeLock()
+      setKeepScreenOn(false)
+      onConnectionEvent?.invoke(
+        RtmpConnectionEvent.CONNECTIONFAILED,
+        "foreground service startup timed out"
+      )
+      return
+    }
+    mainHandler.postDelayed({ beginStreamWhenServiceReady(url, attempt + 1) }, FGS_WAIT_POLL_MS)
+  }
+
+  // The actual encoder start. Bumps the session epoch (M7) and surfaces a thrown
+  // start as CONNECTIONFAILED instead of leaving JS hung (M4).
+  private fun launchEncoder(url: String) {
+    // A stopStream / surface loss may have raced the FGS-readiness wait.
+    if (streamExplicitlyStopped || !shouldBeStreaming || !surfaceReady) {
+      Log.w(TAG, "startStream aborted before encode — stopped or surface gone during FGS wait")
+      return
+    }
+    // B2: already live (two start chains overlapped — e.g. a JS startStream
+    // racing a surface-resume). camera.startStream() would throw "already
+    // streaming" and M4's catch below would wrongly tear down a healthy stream.
+    if (camera.isStreaming) {
+      Log.w(TAG, "startStream skipped — already streaming")
+      return
+    }
+    pipelineGeneration++
+    try {
       camera.startStream(url)
       // Stream is live with final dims — refresh the portrait PIP aspect ratio.
       if (pictureInPictureEnabled) refreshPipParams()
+    } catch (e: Exception) {
+      // M4: a thrown startStream (codec in a bad state, surface gone, OOM) fires
+      // NO ConnectChecker callback — without this JS sits in CONNECTING forever.
+      shouldBeStreaming = false
+      reconnectInProgress.set(false)
+      releaseWakeLock()
+      setKeepScreenOn(false)
+      Log.w(TAG, "camera.startStream failed: ${e.javaClass.simpleName}: ${e.message.scrubRtmpKey()}")
+      onConnectionEvent?.invoke(
+        RtmpConnectionEvent.CONNECTIONFAILED,
+        "camera.startStream failed: ${e.javaClass.simpleName}"
+      )
     }
   }
 
@@ -821,7 +1078,15 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     pendingStreamDelayMs = 0L
     lastStreamUrl = null
     cancelPendingResume()
+    // Explicit user stop — the hard gate that stops auto-reconnect/resume from
+    // resurrecting the stream (M3). Reset all in-flight reconnect bookkeeping.
+    streamExplicitlyStopped = true
     shouldBeStreaming = false
+    reconnectInProgress.set(false)
+    currentRetryAttempt = 0
+    stallTicks = 0
+    resumeDelayLevel = 0
+    lastSurfaceDestroyMs = 0L
     disconnectEmitted = false
     postNotificationsWarned = false
     mainHandler.removeCallbacks(reconnectTimeoutRunnable)
@@ -961,7 +1226,17 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
   override fun reTry(delayMs: Double, reason: String): Boolean {
     val d = delayMs.toLong().coerceIn(0L, MAX_RETRY_BACKOFF_MS)
     return safe("reTry", default = false) {
-      camera.streamClient.reTry(d, reason, null)
+      val queued = camera.streamClient.reTry(d, reason, null)
+      // S1: the manual reTry path (app driving its own setReTries loop) gets no
+      // dead-man otherwise — a hung manual retry would never be detected. Arm it
+      // here too when the app still intends to stream. Include the caller's delay
+      // `d` (Pedro waits it out before connecting; see B1). (Handler ops are
+      // thread-safe; reTry may be invoked off-main by Nitro.)
+      if (queued && shouldBeStreaming) {
+        mainHandler.removeCallbacks(reconnectTimeoutRunnable)
+        mainHandler.postDelayed(reconnectTimeoutRunnable, d + reconnectTimeoutMs)
+      }
+      queued
     }
   }
 
@@ -1284,7 +1559,13 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     safe("onDropView/removeSurfaceCallback") {
       openGlView.holder.removeCallback(surfaceCallback)
     }
+    // Hard teardown — same intent as an explicit stop, so no resume/reconnect
+    // can resurrect the stream during the cleanup below (M3).
+    streamExplicitlyStopped = true
     shouldBeStreaming = false
+    reconnectInProgress.set(false)
+    currentRetryAttempt = 0
+    stallTicks = 0
     disconnectEmitted = false
     postNotificationsWarned = false
     lastPreview = null
