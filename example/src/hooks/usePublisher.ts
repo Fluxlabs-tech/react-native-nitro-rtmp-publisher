@@ -105,8 +105,12 @@ export function usePublisher(append: (line: string) => void, sampleRate: number)
           // Adaptive bitrate: cap at `VIDEO_BITRATE`, drop 20% on congestion,
           // recover 5% per tick.
           ref.setAdaptiveBitrate(VIDEO_BITRATE, 20, 5);
-          ref.setOnBitrateChange((bps: number) => {
-            append(`tx=${Math.round(bps / 1000)} kbps`);
+          // Combined stream stats (measured TX bitrate + live video fps) in one
+          // callback. Superset of setOnBitrateChange — use this when you also
+          // want the frame rate. fps is the sent rate on Android, the
+          // encoder-input rate on iOS.
+          ref.setOnStreamStats((bitrateBps: number, videoFps: number) => {
+            append(`tx=${Math.round(bitrateBps / 1000)} kbps · ${Math.round(videoFps)} fps`);
           });
 
           // Thermal monitoring. Seed initial value since the listener only

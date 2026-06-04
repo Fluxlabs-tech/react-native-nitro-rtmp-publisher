@@ -494,6 +494,9 @@ extension HybridRtmpPublisherView {
     // Reset so stale samples from a previous publish don't bleed into the new
     // session before the first NetworkMonitor tick (~3s).
     lastMeasuredBps = 0
+    // Count video frames only when a stats consumer is subscribed; this also
+    // resets the counter so the first fps tick measures only the new interval.
+    previewFrameTap.setCounting(onStreamStats != nil)
     let t = DispatchSource.makeTimerSource(queue: .main)
     t.schedule(deadline: .now() + 1.0, repeating: 1.0)
     t.setEventHandler { [weak self] in self?.onBitrateTick() }
@@ -504,10 +507,15 @@ extension HybridRtmpPublisherView {
   func stopBitrateTimer() {
     bitrateTimer?.cancel()
     bitrateTimer = nil
+    previewFrameTap.setCounting(false)
   }
 
   func onBitrateTick() {
     let measured = lastMeasuredBps
+    // Only sample fps when a stats consumer is subscribed (the frame counter is
+    // otherwise off, so this is a no-op). Read on main; the timer fires at 1.0s.
+    let wantsStats = onStreamStats != nil
+    let fps = wantsStats ? Double(previewFrameTap.takeFrameCount()) : 0
     // Always snapshot the encoder's configured bitrate so the sync
     // `getCurrentBitrate()` reflects adaptive-bitrate adjustments. Without
     // this, the cache only updates when adaptive ticks happen, leaving JS
@@ -516,17 +524,20 @@ extension HybridRtmpPublisherView {
       guard let self else { return }
       let vBps = await self.stream.videoSettings.bitRate
       self.adaptiveCurrentBitrate = vBps
+      let bps: Double
       if measured > 0 {
         // Real measured throughput from PublisherBitrateStrategy (~3s
         // cadence from HK's NetworkMonitor). Prefer over the configured
         // value because it tells JS what's actually leaving the device.
-        self.emitBitrateChange(measured)
+        bps = measured
       } else {
         // No real sample yet — fall back to encoder configured rate so
         // the UI shows *something* instead of zero in the first ~3s.
         let aBps = await self.stream.audioSettings.bitRate
-        self.emitBitrateChange(Double(vBps + aBps))
+        bps = Double(vBps + aBps)
       }
+      self.emitBitrateChange(bps)
+      if wantsStats { self.emitStreamStats(bps, fps) }
     }
   }
 

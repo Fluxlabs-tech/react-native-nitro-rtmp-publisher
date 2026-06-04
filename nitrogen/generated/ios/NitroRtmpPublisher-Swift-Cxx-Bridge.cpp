@@ -30,6 +30,14 @@ namespace margelo::nitro::rtmppublisher::bridge::swift {
     };
   }
   
+  // pragma MARK: std::function<void(double /* bitrateBps */, double /* videoFps */)>
+  Func_void_double_double create_Func_void_double_double(void* NON_NULL swiftClosureWrapper) noexcept {
+    auto swiftClosure = NitroRtmpPublisher::Func_void_double_double::fromUnsafe(swiftClosureWrapper);
+    return [swiftClosure = std::move(swiftClosure)](double bitrateBps, double videoFps) mutable -> void {
+      swiftClosure.call(bitrateBps, videoFps);
+    };
+  }
+  
   // pragma MARK: std::function<void(RecordStatus /* status */)>
   Func_void_RecordStatus create_Func_void_RecordStatus(void* NON_NULL swiftClosureWrapper) noexcept {
     auto swiftClosure = NitroRtmpPublisher::Func_void_RecordStatus::fromUnsafe(swiftClosureWrapper);

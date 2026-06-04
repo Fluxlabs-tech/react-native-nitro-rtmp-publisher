@@ -94,6 +94,28 @@ namespace margelo::nitro::rtmppublisher::bridge::swift {
     return Func_void_double_Wrapper(std::move(value));
   }
   
+  // pragma MARK: std::function<void(double /* bitrateBps */, double /* videoFps */)>
+  /**
+   * Specialized version of `std::function<void(double, double)>`.
+   */
+  using Func_void_double_double = std::function<void(double /* bitrateBps */, double /* videoFps */)>;
+  /**
+   * Wrapper class for a `std::function<void(double / * bitrateBps * /, double / * videoFps * /)>`, this can be used from Swift.
+   */
+  class Func_void_double_double_Wrapper final {
+  public:
+    explicit Func_void_double_double_Wrapper(std::function<void(double /* bitrateBps */, double /* videoFps */)>&& func): _function(std::make_unique<std::function<void(double /* bitrateBps */, double /* videoFps */)>>(std::move(func))) {}
+    inline void call(double bitrateBps, double videoFps) const noexcept {
+      _function->operator()(bitrateBps, videoFps);
+    }
+  private:
+    std::unique_ptr<std::function<void(double /* bitrateBps */, double /* videoFps */)>> _function;
+  } SWIFT_NONCOPYABLE;
+  Func_void_double_double create_Func_void_double_double(void* NON_NULL swiftClosureWrapper) noexcept;
+  inline Func_void_double_double_Wrapper wrap_Func_void_double_double(Func_void_double_double value) noexcept {
+    return Func_void_double_double_Wrapper(std::move(value));
+  }
+  
   // pragma MARK: std::function<void(RecordStatus /* status */)>
   /**
    * Specialized version of `std::function<void(RecordStatus)>`.

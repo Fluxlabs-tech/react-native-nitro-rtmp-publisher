@@ -54,6 +54,7 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
 
   @Volatile internal var onConnectionEvent: ((RtmpConnectionEvent, String) -> Unit)? = null
   @Volatile internal var onBitrateChange: ((Double) -> Unit)? = null
+  @Volatile internal var onStreamStats: ((Double, Double) -> Unit)? = null
   @Volatile internal var onRecordStatusChange: ((RecordStatus) -> Unit)? = null
   @Volatile internal var onThermalWarning: ((ThermalStatus) -> Unit)? = null
 
@@ -130,6 +131,12 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
 
   // Adaptive bitrate. Null when disabled.
   @Volatile internal var bitrateAdapter: BitrateAdapter? = null
+
+  // Baselines for deriving live video fps (for onStreamStats) from the sender's
+  // cumulative sent-video-frame count, sampled each onNewBitrate tick (~1s).
+  // Reset on stream start. Touched only on main (onNewBitrate runs via postToMain).
+  private var lastSentVideoFrames = 0L
+  private var lastStatsTsMs = 0L
   // True between `startStream` and an explicit `stopStream` / drop / surface loss.
   // Gates auto-reconnect so we don't retry against a torn-down camera/surface.
   @Volatile internal var shouldBeStreaming = false
@@ -244,6 +251,22 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
         safe("adaptBitrate") { adapter.adaptBitrate(bitrate, congested) }
       }
       onBitrateChange?.invoke(bitrate.toDouble())
+      // Live video fps for onStreamStats: derive from the sender's cumulative
+      // sent-video-frame count over this tick. getSentVideoFrames() restarts at
+      // 0 on a fresh stream, so a backwards step means "new stream" → baseline.
+      onStreamStats?.let { cb ->
+        val nowMs = SystemClock.elapsedRealtime()
+        val sent = safe("getSentVideoFrames", default = lastSentVideoFrames) {
+          camera.streamClient.getSentVideoFrames()
+        }
+        val base = if (sent < lastSentVideoFrames) 0L else lastSentVideoFrames
+        val fps =
+          if (lastStatsTsMs == 0L) 0.0
+          else (sent - base) * 1000.0 / (nowMs - lastStatsTsMs).coerceAtLeast(1L)
+        lastSentVideoFrames = sent
+        lastStatsTsMs = nowMs
+        cb.invoke(bitrate.toDouble(), fps)
+      }
     }
     override fun onDisconnect() = postToMain {
       if (tryAutoReconnect("disconnect")) {
@@ -768,6 +791,10 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
       setKeepScreenOn(true)
       shouldBeStreaming = true
       disconnectEmitted = false
+      // Reset the video-fps baseline so the first onStreamStats tick of this
+      // stream measures from zero (the sender's frame counters restart too).
+      lastSentVideoFrames = 0L
+      lastStatsTsMs = 0L
       // Pedro's BaseEncoder.stop() releases the MediaCodec and sets prepared=false,
       // so the next BaseEncoder.start() throws "not prepared yet". Re-prepare from
       // cached config before letting Pedro start the encoders.
@@ -1209,6 +1236,10 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     onBitrateChange = callback
   }
 
+  override fun setOnStreamStats(callback: (bitrateBps: Double, videoFps: Double) -> Unit) {
+    onStreamStats = callback
+  }
+
   override fun setOnRecordStatusChange(callback: (status: RecordStatus) -> Unit) {
     onRecordStatusChange = callback
   }
@@ -1293,6 +1324,7 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     // the `?.invoke` no-ops. Don't reorder.
     onConnectionEvent = null
     onBitrateChange = null
+    onStreamStats = null
     onRecordStatusChange = null
     onThermalWarning = null
     onPictureInPictureChange = null

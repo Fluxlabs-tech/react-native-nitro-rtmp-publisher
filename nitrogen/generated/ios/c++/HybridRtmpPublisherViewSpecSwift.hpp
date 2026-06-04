@@ -592,6 +592,12 @@ namespace margelo::nitro::rtmppublisher {
         std::rethrow_exception(__result.error());
       }
     }
+    inline void setOnStreamStats(const std::function<void(double /* bitrateBps */, double /* videoFps */)>& callback) override {
+      auto __result = _swiftPart.setOnStreamStats(callback);
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+    }
     inline void setOnRecordStatusChange(const std::function<void(RecordStatus /* status */)>& callback) override {
       auto __result = _swiftPart.setOnRecordStatusChange(callback);
       if (__result.hasError()) [[unlikely]] {

@@ -18,6 +18,7 @@
 #include "JHybridRtmpPublisherViewSpec.hpp"
 #include "JFunc_void_RtmpConnectionEvent_std__string.hpp"
 #include "JFunc_void_double.hpp"
+#include "JFunc_void_double_double.hpp"
 #include "JFunc_void_RecordStatus.hpp"
 #include "JFunc_void_ThermalStatus.hpp"
 #include "JFunc_void_bool.hpp"
@@ -49,6 +50,7 @@ void registerAllNatives() {
   margelo::nitro::rtmppublisher::JHybridRtmpPublisherViewSpec::CxxPart::registerNatives();
   margelo::nitro::rtmppublisher::JFunc_void_RtmpConnectionEvent_std__string_cxx::registerNatives();
   margelo::nitro::rtmppublisher::JFunc_void_double_cxx::registerNatives();
+  margelo::nitro::rtmppublisher::JFunc_void_double_double_cxx::registerNatives();
   margelo::nitro::rtmppublisher::JFunc_void_RecordStatus_cxx::registerNatives();
   margelo::nitro::rtmppublisher::JFunc_void_ThermalStatus_cxx::registerNatives();
   margelo::nitro::rtmppublisher::JFunc_void_bool_cxx::registerNatives();

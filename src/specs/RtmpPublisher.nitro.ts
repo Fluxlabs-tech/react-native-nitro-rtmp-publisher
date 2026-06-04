@@ -496,6 +496,25 @@ export interface RtmpPublisherViewMethods extends HybridViewMethods {
   setOnBitrateChange(callback: (bitrate: number) => void): void
 
   /**
+   * Opt-in: combined per-second stream stats while publishing — delivered in a
+   * single callback (fires roughly once a second on the JS thread, only while
+   * streaming). Superset of {@link setOnBitrateChange}; use this if you also
+   * want the live frame rate.
+   *
+   * @param bitrateBps Total **measured** RTMP send throughput in bits/sec — the
+   *   muxed audio + video stream plus container overhead (not the configured
+   *   target). Same value as {@link setOnBitrateChange}.
+   * @param videoFps Live video frames per second. **Android:** the actual frames
+   *   sent to the network (post-encoder — drops under congestion show here).
+   *   **iOS:** frames fed to the encoder (capture/composite rate). `0` until the
+   *   first measurement after streaming starts. (Per-track *bitrate* can't be
+   *   split — both engines only measure the muxed total.)
+   */
+  setOnStreamStats(
+    callback: (bitrateBps: number, videoFps: number) => void
+  ): void
+
+  /**
    * Opt-in: fired on every transition of the local recorder state
    * (`started` → `recording` → `paused` → `resumed` → `stopped`).
    */

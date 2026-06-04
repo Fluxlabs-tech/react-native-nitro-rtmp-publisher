@@ -161,6 +161,7 @@ namespace margelo::nitro::rtmppublisher {
       virtual RecordStatus getRecordStatus() = 0;
       virtual void setOnConnectionEvent(const std::function<void(RtmpConnectionEvent /* event */, const std::string& /* message */)>& callback) = 0;
       virtual void setOnBitrateChange(const std::function<void(double /* bitrate */)>& callback) = 0;
+      virtual void setOnStreamStats(const std::function<void(double /* bitrateBps */, double /* videoFps */)>& callback) = 0;
       virtual void setOnRecordStatusChange(const std::function<void(RecordStatus /* status */)>& callback) = 0;
       virtual ThermalStatus getThermalStatus() = 0;
       virtual void setOnThermalWarning(const std::function<void(ThermalStatus /* status */)>& callback) = 0;

@@ -351,6 +351,15 @@ abstract class HybridRtmpPublisherViewSpec: HybridView() {
     return __result
   }
   
+  abstract fun setOnStreamStats(callback: (bitrateBps: Double, videoFps: Double) -> Unit): Unit
+  
+  @DoNotStrip
+  @Keep
+  private fun setOnStreamStats_cxx(callback: Func_void_double_double): Unit {
+    val __result = setOnStreamStats(callback)
+    return __result
+  }
+  
   abstract fun setOnRecordStatusChange(callback: (status: RecordStatus) -> Unit): Unit
   
   @DoNotStrip
