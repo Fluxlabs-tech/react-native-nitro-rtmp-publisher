@@ -76,6 +76,10 @@ extension HybridRtmpPublisherView {
 
   @objc func appWillEnterForeground() {
     isInBackground = false
+    // Belt-and-suspenders: a foreground transition means any interruption is
+    // over. Guarantees the stall watchdog can't stay gated off if a rare device
+    // skipped both interruption-ended callbacks.
+    captureInterrupted = false
     // Defuse any still-pending live-tier background teardown (e.g. a quick
     // background→foreground bounce shorter than the 0.6s defer). The work item's
     // own guard would also no-op it, but cancelling drops the dangling ref. #3.
@@ -83,27 +87,36 @@ extension HybridRtmpPublisherView {
     pendingBackgroundTeardown = nil
     // Resume the PIP display layer's decoder (cheap + harmless on every tier).
     onMain { [weak self] in self?.pip.flushForResume() }
-    // Only resurrect capture/stream if backgrounding actually tore them down.
-    // On a LIVE PIP return the camera + RTMP stream stayed alive (no teardown
-    // ran), so re-attaching the camera here would force a needless ~400ms
-    // reconfigure — the visible jitter when coming back from PIP.
+    // Only re-attach CAPTURE if backgrounding actually tore it down. On a LIVE
+    // PIP return the camera stayed alive (no teardown ran), so re-attaching here
+    // would force a needless ~400ms reconfigure — the visible jitter from PIP.
     let needsResume = didBackgroundTeardown
     didBackgroundTeardown = false
-    guard needsResume else { return }
-    defrostCapture()
-    // If the user was streaming when we backgrounded, the RTMP socket is
-    // dead by now. Kick off one reconnect attempt — `scheduleReconnect`
-    // handles the connection.close → reopen → publish dance.
+    if needsResume {
+      defrostCapture()
+    }
+    // Reconnect the RTMP socket if it's down — for BOTH paths, NOT just the
+    // torn-down one. The live-PIP path (needsResume == false) can still have
+    // lost its socket while backgrounded: handleRtmpStatus(connectClosed) would
+    // have hit `tryAutoReconnect`'s `isInBackground` suppression (no schedule,
+    // no event), and without this it would never recover on return — stranded at
+    // shouldBeStreaming=true / cachedIsStreaming=false forever. The
+    // `!cachedIsStreaming` guard means a still-live PIP stream is left untouched
+    // (no needless blip); only an actually-dead socket reconnects.
     //
-    // The 1500ms delay matters: iOS networking takes a beat to come back
-    // online, and server-side most live ingests (FB Live in particular)
-    // hold the previous session for a short window before accepting a
-    // fresh publish under the same stream key. Reconnecting too aggressively
-    // hits `NetStream.Publish.BadName` / `requestTimedOut`.
-    if shouldBeStreaming, !isPublishingInFlight(), currentRtmpConnectUrl != nil {
+    // The 1500ms delay matters: iOS networking takes a beat to come back online,
+    // and most live ingests (FB Live especially) hold the previous session for a
+    // short window before accepting a fresh publish under the same stream key.
+    // Reconnecting too aggressively hits `NetStream.Publish.BadName` /
+    // `requestTimedOut`.
+    if shouldBeStreaming, !cachedIsStreaming, !isPublishingInFlight(),
+       !reconnectScheduled, currentRtmpConnectUrl != nil {
       retriesRemaining = max(retriesRemaining, 1)
       scheduleReconnect(delayMs: 1500, reason: "foreground")
     }
+    // If a call/interruption emitted a .disconnect and the socket survived (no
+    // reconnect scheduled above), balance it now that we're foregrounded.
+    recoverFromInterruptionIfNeeded()
   }
 
   @objc func sessionWasInterrupted(_ notification: Notification) {
@@ -117,12 +130,43 @@ extension HybridRtmpPublisherView {
     case 5: reason = "video-device-not-available-due-to-system-pressure"
     default: reason = "unknown"
     }
+    // Capture is paused — gate the silent-stall watchdog off (0 bytes is now
+    // expected, not a dead socket).
+    captureInterrupted = true
+    // We're about to tell JS the stream "disconnected"; record that we owe it a
+    // matching recovery event when the interruption ends (only if we were live).
+    if shouldBeStreaming { interruptionNeedsRecovery = true }
     emitConnectionEvent(.disconnect, "session interrupted: \(reason)")
   }
 
   @objc func sessionInterruptionEnded(_ notification: Notification) {
+    captureInterrupted = false
     defrostCapture()
     onMain { [weak self] in self?.pip.flushForResume() }
+    recoverFromInterruptionIfNeeded()
+  }
+
+  /// Balance the `.disconnect` emitted on a recoverable interruption with a
+  /// recovery arc. If the RTMP socket actually dropped, a real reconnect
+  /// (foreground-resume / `.ended` paths) emits RECONNECTING→CONNECTIONSUCCESS
+  /// and we just consume the flag here. If the socket SURVIVED (a foreground
+  /// call/Siri only paused capture), no reconnect runs — so we emit the arc
+  /// ourselves so JS leaves the "disconnected" state. Idempotent: both
+  /// interruption-end callbacks (and appWillEnterForeground) may call it.
+  func recoverFromInterruptionIfNeeded() {
+    guard interruptionNeedsRecovery else { return }
+    // Still mid-interruption / suspended / a reconnect is already in flight, or
+    // the socket dropped (a real reconnect will own the arc) → just consume.
+    guard shouldBeStreaming, cachedIsStreaming, !isInBackground,
+          !reconnectScheduled, !isPublishingInFlight() else {
+      // Only consume once we're foregrounded and settled; while still
+      // backgrounded leave it for the foreground pass.
+      if !isInBackground { interruptionNeedsRecovery = false }
+      return
+    }
+    interruptionNeedsRecovery = false
+    emitConnectionEvent(.reconnecting, "interruption ended")
+    emitConnectionEvent(.connectionsuccess, "")
   }
 
   /// Audio-session interruption (phone call, Siri, alarm, another app grabbing
@@ -142,12 +186,48 @@ extension HybridRtmpPublisherView {
     switch type {
     case .began:
       // iOS has already deactivated the session + stopped our engine; we fully
-      // rebuild on `.ended`, so there's nothing to do here.
-      break
+      // rebuild on `.ended`, so there's nothing to do here. Gate the stall
+      // watchdog off for the interruption (0 bytes is expected during the call).
+      captureInterrupted = true
     case .ended:
+      // Interruption over — re-enable the stall watchdog (cleared before the
+      // preview guard so it always resets, even when not on preview).
+      captureInterrupted = false
       // Only restore if we're actually capturing (preview / stream active).
       guard cachedIsOnPreview else { return }
       scheduleAudioRestart()
+      // Resume VIDEO too. A few devices don't fire
+      // `AVCaptureSession.interruptionEnded` for a phone call, so the capture
+      // session — paused when the call grabbed the audio device — never resumes
+      // via `sessionInterruptionEnded`, leaving video frozen for the rest of the
+      // stream (audio recovers via `scheduleAudioRestart` above, which is why the
+      // symptom is "audio fine, video stuck"). The audio-session `.ended` IS
+      // reliable; a foreground call doesn't release the camera device, so a
+      // re-`startRunning()` resumes it — idempotent (no-op if the session is
+      // already running, e.g. the capture-session notification did fire), and
+      // retried once in case the capture interruption clears a beat after the
+      // audio one.
+      Task { [weak self] in
+        await self?.mixer.startRunning()
+        try? await Task.sleep(nanoseconds: 700_000_000)
+        await self?.mixer.startRunning()
+      }
+      // Revalidate the RTMP socket. Capture is back, but a call that cleanly
+      // closed the socket leaves the publish dead with audio+video flowing only
+      // locally. Reconnect when the socket is confirmed down. (A half-open
+      // socket — cachedIsStreaming still stale-true — is handled by the
+      // silent-stall watchdog once frames resume into the dead pipe.) Guarded so
+      // a still-live stream isn't blipped and we don't race an already-scheduled
+      // reconnect (e.g. one kicked by appWillEnterForeground for a call that
+      // backgrounded the app).
+      if shouldBeStreaming, !cachedIsStreaming, !isPublishingInFlight(),
+         !reconnectScheduled, currentRtmpConnectUrl != nil {
+        retriesRemaining = max(retriesRemaining, 1)
+        scheduleReconnect(delayMs: 1000, reason: "audio-interruption-ended")
+      }
+      // Socket survived (no reconnect scheduled above) → emit the recovery arc
+      // so the interruption's .disconnect is balanced.
+      recoverFromInterruptionIfNeeded()
     @unknown default:
       break
     }

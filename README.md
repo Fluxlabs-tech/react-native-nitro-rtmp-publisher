@@ -484,22 +484,34 @@ For full manual control, subscribe to `setOnBitrateChange` and call `setVideoBit
 
 ### Auto-reconnect
 
-Mobile networks drop. By default the library does NOT retry on its own — opt in:
+Mobile networks drop. **Auto-reconnect is ON by default** — 5 attempts with a
+2-second base backoff, on both platforms — so a transient mid-stream blip
+recovers without any setup. Tune it, or opt out with `(0, 0)`:
 
 ```ts
-// On every `connectionFailed`/`disconnect`, retry up to 5 times with a 3-second
-// backoff. Fires a `reconnecting` event right before each retry; if the budget
-// runs out you'll get a final `disconnect`.
-ref.setAutoReconnect(5, 3000)
+// Retry up to 8 times with a 2-second base backoff. Fires a `reconnecting`
+// event before each attempt; when the budget runs out you'll get a final
+// `connectionFailed`. Pass (0, 0) to disable auto-reconnect entirely.
+ref.setAutoReconnect(8, 2000)
 ```
 
-The retry budget is re-seeded on every fresh `startStream(url)`. Calling `stopStream()` aborts any in-flight retry.
+On Android the backoff escalates (`backoffMs · 2^attempt`, clamped) so a dead or
+rate-limiting server isn't hammered. The retry budget is re-seeded on every
+fresh `startStream(url)`; `stopStream()` aborts any in-flight retry. Every
+recovery path emits a consistent `reconnecting` → `connectionSuccess` sequence
+(network blip, silent stall, phone call, and background→foreground resume alike).
+
+**Silent-stall detection.** Beyond socket errors, the library watches actual
+throughput: if no bytes reach the server for a few seconds while the stream still
+looks "live" — a half-open socket from a NAT idle timeout or a Wi-Fi↔LTE handover
+that fires no error — it forces a reconnect instead of sitting on a frozen stream,
+and reports the real (zero) bitrate during the stall rather than the configured one.
 
 For manual retry control:
 
 ```ts
 ref.setReTries(5)                      // budget for the session
-const ok = ref.reTry(3000, 'manual')   // returns false if budget exhausted
+const ok = ref.reTry(2000, 'manual')   // returns false if budget exhausted
 ```
 
 ### Camera selection
