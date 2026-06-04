@@ -50,6 +50,7 @@ namespace margelo::nitro::rtmppublisher { enum class RtmpConnectionEvent; }
 #include <NitroModules/JNICallable.hpp>
 #include "JRtmpConnectionEvent.hpp"
 #include "JFunc_void_double.hpp"
+#include "JFunc_void_double_double.hpp"
 #include "JFunc_void_RecordStatus.hpp"
 #include "JFunc_void_ThermalStatus.hpp"
 #include "JFunc_void_bool.hpp"
@@ -485,6 +486,10 @@ namespace margelo::nitro::rtmppublisher {
   void JHybridRtmpPublisherViewSpec::setOnBitrateChange(const std::function<void(double /* bitrate */)>& callback) {
     static const auto method = _javaPart->javaClassStatic()->getMethod<void(jni::alias_ref<JFunc_void_double::javaobject> /* callback */)>("setOnBitrateChange_cxx");
     method(_javaPart, JFunc_void_double_cxx::fromCpp(callback));
+  }
+  void JHybridRtmpPublisherViewSpec::setOnStreamStats(const std::function<void(double /* bitrateBps */, double /* videoFps */)>& callback) {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<void(jni::alias_ref<JFunc_void_double_double::javaobject> /* callback */)>("setOnStreamStats_cxx");
+    method(_javaPart, JFunc_void_double_double_cxx::fromCpp(callback));
   }
   void JHybridRtmpPublisherViewSpec::setOnRecordStatusChange(const std::function<void(RecordStatus /* status */)>& callback) {
     static const auto method = _javaPart->javaClassStatic()->getMethod<void(jni::alias_ref<JFunc_void_RecordStatus::javaobject> /* callback */)>("setOnRecordStatusChange_cxx");

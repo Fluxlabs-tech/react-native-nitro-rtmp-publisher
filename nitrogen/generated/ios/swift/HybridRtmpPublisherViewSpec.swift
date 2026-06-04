@@ -83,6 +83,7 @@ public protocol HybridRtmpPublisherViewSpec_protocol: HybridObject, HybridView {
   func getRecordStatus() throws -> RecordStatus
   func setOnConnectionEvent(callback: @escaping (_ event: RtmpConnectionEvent, _ message: String) -> Void) throws -> Void
   func setOnBitrateChange(callback: @escaping (_ bitrate: Double) -> Void) throws -> Void
+  func setOnStreamStats(callback: @escaping (_ bitrateBps: Double, _ videoFps: Double) -> Void) throws -> Void
   func setOnRecordStatusChange(callback: @escaping (_ status: RecordStatus) -> Void) throws -> Void
   func getThermalStatus() throws -> ThermalStatus
   func setOnThermalWarning(callback: @escaping (_ status: ThermalStatus) -> Void) throws -> Void

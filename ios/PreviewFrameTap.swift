@@ -39,6 +39,13 @@ final class PreviewFrameTap: MediaMixerOutput, @unchecked Sendable {
   // what MTHKView does — we avoid that extra ~30 Tasks/sec).
   private let lock = NSLock()
   private var latest: CIImage?
+  // Composited video frames since the last `takeFrameCount()`. Used to derive
+  // the live video fps for `onStreamStats` (the bitrate timer reads + resets it
+  // each second). This is the rate frames are fed to the encoder.
+  private var frameCount: Int = 0
+  // Only count while a stats consumer is active (toggled via `setCounting`), so
+  // the per-frame path stays a no-op when `onStreamStats` isn't subscribed.
+  private var counting = false
 
   // MARK: MediaMixerOutput
 
@@ -52,6 +59,7 @@ final class PreviewFrameTap: MediaMixerOutput, @unchecked Sendable {
     let image = CIImage(cvPixelBuffer: pixelBuffer)
     lock.lock()
     latest = image
+    if counting { frameCount += 1 }
     lock.unlock()
   }
 
@@ -69,11 +77,32 @@ final class PreviewFrameTap: MediaMixerOutput, @unchecked Sendable {
     return latest
   }
 
+  /// Enable/disable frame counting and reset the counter. The bitrate timer
+  /// turns this on only while streaming AND `onStreamStats` is subscribed, so
+  /// the per-frame increment never runs when no one is listening.
+  func setCounting(_ enabled: Bool) {
+    lock.lock()
+    counting = enabled
+    frameCount = 0
+    lock.unlock()
+  }
+
+  /// Number of composited video frames since the last call, resetting the
+  /// counter. The bitrate timer calls this once a second → frames ≈ fps.
+  func takeFrameCount() -> Int {
+    lock.lock()
+    defer { lock.unlock() }
+    let c = frameCount
+    frameCount = 0
+    return c
+  }
+
   /// Drop the retained frame so we don't pin a capture buffer after the
   /// preview stops.
   func clear() {
     lock.lock()
     latest = nil
+    frameCount = 0
     lock.unlock()
   }
 }

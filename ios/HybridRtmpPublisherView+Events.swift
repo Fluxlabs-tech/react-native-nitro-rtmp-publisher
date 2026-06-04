@@ -24,6 +24,13 @@ extension HybridRtmpPublisherView {
     if cachedIsStreaming { startBitrateTimer() }
   }
 
+  func setOnStreamStats(callback: @escaping (Double, Double) -> Void) throws {
+    onStreamStats = callback
+    // The bitrate timer drives stats emission too — start it if we're already
+    // streaming so stats flow even when subscribed mid-stream.
+    if cachedIsStreaming { startBitrateTimer() }
+  }
+
   func setOnRecordStatusChange(callback: @escaping (RecordStatus) -> Void) throws {
     onRecordStatusChange = callback
   }
@@ -50,6 +57,9 @@ extension HybridRtmpPublisherView {
   }
   func emitBitrateChange(_ bps: Double) {
     onMain { [weak self] in self?.onBitrateChange?(bps) }
+  }
+  func emitStreamStats(_ bps: Double, _ fps: Double) {
+    onMain { [weak self] in self?.onStreamStats?(bps, fps) }
   }
   func emitRecordStatusChange(_ status: RecordStatus) {
     onMain { [weak self] in self?.onRecordStatusChange?(status) }

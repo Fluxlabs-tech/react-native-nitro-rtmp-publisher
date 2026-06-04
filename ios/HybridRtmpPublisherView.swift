@@ -178,6 +178,8 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
 
   var onConnectionEvent: ((RtmpConnectionEvent, String) -> Void)?
   var onBitrateChange: ((Double) -> Void)?
+  /// Combined per-second stats (bitrate bps + video fps). See setOnStreamStats.
+  var onStreamStats: ((Double, Double) -> Void)?
   var onRecordStatusChange: ((RecordStatus) -> Void)?
   var onThermalWarning: ((ThermalStatus) -> Void)?
   var onPictureInPictureChange: ((Bool) -> Void)?
@@ -739,6 +741,7 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     }
     onConnectionEvent = nil
     onBitrateChange = nil
+    onStreamStats = nil
     onRecordStatusChange = nil
     onThermalWarning = nil
     onPictureInPictureChange = nil

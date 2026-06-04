@@ -100,6 +100,7 @@ namespace margelo::nitro::rtmppublisher {
       prototype.registerHybridMethod("getRecordStatus", &HybridRtmpPublisherViewSpec::getRecordStatus);
       prototype.registerHybridMethod("setOnConnectionEvent", &HybridRtmpPublisherViewSpec::setOnConnectionEvent);
       prototype.registerHybridMethod("setOnBitrateChange", &HybridRtmpPublisherViewSpec::setOnBitrateChange);
+      prototype.registerHybridMethod("setOnStreamStats", &HybridRtmpPublisherViewSpec::setOnStreamStats);
       prototype.registerHybridMethod("setOnRecordStatusChange", &HybridRtmpPublisherViewSpec::setOnRecordStatusChange);
       prototype.registerHybridMethod("getThermalStatus", &HybridRtmpPublisherViewSpec::getThermalStatus);
       prototype.registerHybridMethod("setOnThermalWarning", &HybridRtmpPublisherViewSpec::setOnThermalWarning);

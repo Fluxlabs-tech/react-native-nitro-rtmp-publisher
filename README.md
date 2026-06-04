@@ -480,6 +480,8 @@ ref.setAdaptiveBitrate(0, 0, 0)
 
 For full manual control, subscribe to `setOnBitrateChange` and call `setVideoBitrateOnFly(...)` yourself.
 
+> **Live fps + bitrate together.** `setOnStreamStats((bitrateBps, videoFps) => …)` delivers both in one per-second callback (superset of `setOnBitrateChange`). `bitrateBps` is the measured muxed TX rate; `videoFps` is the live frame rate — the **sent** rate on Android (drops under congestion show here) and the **encoder-input** rate on iOS. Per-track audio/video *bitrate* isn't available — both engines only measure the combined throughput.
+
 ### Auto-reconnect
 
 Mobile networks drop. By default the library does NOT retry on its own — opt in:

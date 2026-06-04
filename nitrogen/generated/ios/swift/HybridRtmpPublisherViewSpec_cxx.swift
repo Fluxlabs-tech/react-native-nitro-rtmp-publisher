@@ -952,6 +952,22 @@ open class HybridRtmpPublisherViewSpec_cxx {
   }
   
   @inline(__always)
+  public final func setOnStreamStats(callback: bridge.Func_void_double_double) -> bridge.Result_void_ {
+    do {
+      try self.__implementation.setOnStreamStats(callback: { () -> (Double, Double) -> Void in
+        let __wrappedFunction = bridge.wrap_Func_void_double_double(callback)
+        return { (__bitrateBps: Double, __videoFps: Double) -> Void in
+          __wrappedFunction.call(__bitrateBps, __videoFps)
+        }
+      }())
+      return bridge.create_Result_void_()
+    } catch (let __error) {
+      let __exceptionPtr = __error.toCpp()
+      return bridge.create_Result_void_(__exceptionPtr)
+    }
+  }
+  
+  @inline(__always)
   public final func setOnRecordStatusChange(callback: bridge.Func_void_RecordStatus) -> bridge.Result_void_ {
     do {
       try self.__implementation.setOnRecordStatusChange(callback: { () -> (RecordStatus) -> Void in
