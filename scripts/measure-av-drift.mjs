@@ -16,6 +16,15 @@
 // real rate drift dwarfs it. (Comparing instantaneous audio_pts vs video_pts is
 // fragile: muxer interleave + tail mismatch fake a slope.)
 //
+// HEAD ALIGNMENT: a capture that joins an already-live stream gets audio
+// immediately but video only from the next keyframe (mediamtx rejects readers
+// until a publisher exists, so the "armed" capture loop ALWAYS joins a moment
+// late) — that lone-track head excess would read as seconds of fake drift.
+// Both tracks are therefore trimmed to a common head anchor max(firstA, firstV)
+// before measuring spans. This is wall-accurate at the head: the clocks have
+// had only seconds to diverge there, negligible against any real ms/min skew.
+// Tails need no trim — the capture ends for both tracks at the same instant.
+//
 // This is a pts-based ESTIMATE. The authoritative check is a CLAP TEST: stream a
 // clapperboard / a ms-clock with a per-second beep, and eyeball clap-vs-beep at
 // t=0 / 15 / 30 min. Use this script for the number; use the clap to confirm — and
@@ -136,25 +145,32 @@ function main() {
   const aInt = medianInterval(aPts);
   const vInt = medianInterval(vPts);
 
-  // DRIFT = difference in media-time each track covered over the capture.
-  // Immune to interleave/tail artifacts (uses only each stream's own first/last
-  // pts). The first/last interleave adds a bounded (~one packet-interval each)
-  // uncertainty that does NOT grow with capture length — so over a long capture a
-  // real rate drift dwarfs it.
-  const aSpan = aPts[aPts.length - 1] - aPts[0];
-  const vSpan = vPts[vPts.length - 1] - vPts[0];
+  // DRIFT = difference in media-time each track covered over the capture,
+  // measured from a COMMON head anchor (see HEAD ALIGNMENT above). Tails use
+  // each stream's own last pts — the capture ends for both simultaneously.
+  // Residual head/tail interleave adds a bounded (~one packet-interval)
+  // uncertainty that does NOT grow with capture length — so over a long
+  // capture a real rate drift dwarfs it.
+  const head = Math.max(aPts[0], vPts[0]);
+  const aStart = aPts.find((t) => t >= head) ?? aPts[aPts.length - 1];
+  const vStart = vPts.find((t) => t >= head) ?? vPts[vPts.length - 1];
+  // + => video's first packet came later (capture joined mid-stream and waited
+  // for a keyframe). Informational: it is trimmed OUT of the drift numbers,
+  // and it is NOT the lip-sync offset (that needs the clap test).
+  const headMisalignMs = (vPts[0] - aPts[0]) * 1000;
+  const aSpan = aPts[aPts.length - 1] - aStart;
+  const vSpan = vPts[vPts.length - 1] - vStart;
   const overlap = Math.max(
-    Math.min(aPts[aPts.length - 1], vPts[vPts.length - 1]) - Math.max(aPts[0], vPts[0]),
+    Math.min(aPts[aPts.length - 1], vPts[vPts.length - 1]) - head,
     1e-6,
   );
   const driftTotalMs = (aSpan - vSpan) * 1000; // + => audio ran longer (video slow)
   const slopeMsPerMin = (driftTotalMs / overlap) * 60;
-  const noiseMs = (aInt + vInt) * 1000;
-  // Approx static offset: which timeline starts later. The clap test is the
-  // authoritative check for both the static offset AND any mid-stream STEP
-  // (an NS-toggle / phone-call re-anchor, RC-2) — neither is reliably
-  // recoverable from a pts dump alone.
-  const staticOffsetMs = (aPts[0] - vPts[0]) * 1000;
+  // Head/tail boundary effects (keyframe alignment, a tail cut mid-GOP) are
+  // bounded at a couple of packet intervals; on a short capture they dominate
+  // any real slope, so widen the floor there. Real drift accumulates with
+  // time — a ≥10-min capture separates the two cleanly.
+  const noiseMs = (aInt + vInt) * 1000 * (overlap < 600 ? 2 : 1);
 
   const am = meta.audio;
   const vm = meta.video;
@@ -172,9 +188,12 @@ function main() {
   console.log(` video            : ${vm.codec_name ?? '?'} @ ${vm.avg_frame_rate ?? '?'} fps`
     + `  (pkt ${(vInt * 1000).toFixed(1)} ms)`);
   console.log(` media covered    : audio ${aSpan.toFixed(2)}s  vs  video ${vSpan.toFixed(2)}s`
-    + `  (overlap ${overlap.toFixed(1)}s)`);
+    + `  (head-aligned, overlap ${overlap.toFixed(1)}s)`);
   console.log(line);
-  console.log(` static offset ~  : ${f(staticOffsetMs, 1, 8, true)} ms   (+ = audio ahead / video late)`);
+  if (Math.abs(headMisalignMs) > 200) {
+    console.log(` head misalign    : ${f(headMisalignMs, 1, 8, true)} ms   (capture joined mid-stream`
+      + ' — trimmed out; NOT the lip-sync offset)');
+  }
   console.log(` total drift      : ${f(driftTotalMs, 1, 8, true)} ms   (+ = audio ran longer / video slow)`);
   if (withinNoise) {
     console.log(' DRIFT SLOPE      :   inconclusive (drift < noise floor)');
@@ -192,10 +211,6 @@ function main() {
     console.log(' DRIFT VERDICT    : ⚠️  mild drift — noticeable only on long streams');
   } else {
     console.log(' DRIFT VERDICT    : ❌ PROGRESSIVE DRIFT — lip-sync breaks over time');
-  }
-  if (Math.abs(staticOffsetMs) > 80) {
-    console.log(` OFFSET VERDICT   : ⚠️  large static offset (~${staticOffsetMs >= 0 ? '+' : ''}`
-      + `${staticOffsetMs.toFixed(0)} ms) — fixed lip-sync error`);
   }
   console.log(line);
   console.log(' Run the 4 prop combos (≥30 min each) and compare slopes:');
