@@ -555,10 +555,26 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     didSet {
       guard noiseSuppression != oldValue else { return }
       configureAudioSession()
-      // Swap the audio capture path live if we're already previewing (NS on →
-      // spectral denoise pipeline, NS off → mixer mic). If not previewing, the
-      // next attachCameraAndMic picks the right path.
+      // Swap the audio capture path live if we're previewing (NS on → spectral
+      // denoise pipeline, NS off → mixer mic). If not previewing, the next
+      // attachCameraAndMic picks the right path.
+      //
+      // BUT NOT while actively streaming: swapping the capture path changes the
+      // AudioMixerTrack's input format (mic Int16 CMSampleBuffer ↔ engine Float32
+      // tap), which re-creates the converter and RESETS the audio timeline anchor
+      // (HaishinKit AudioMixerTrack.setUp → audioTime.reset()). Video keeps
+      // marching on its own clock, so the audio timeline steps relative to video
+      // — a permanent A/V offset jump the RTMP player can't re-sync. We'd rather
+      // honor the new NS state on the next preview/stream start than introduce a
+      // mid-stream lip-sync step. (The same re-anchor is unavoidable on a phone-
+      // call recovery via scheduleAudioRestart; the durable fix is to stop putting
+      // video on a different clock in offscreen/beauty mode — see the
+      // ios-av-sync analysis.)
       guard cachedIsOnPreview else { return }
+      if cachedIsStreaming {
+        log("noiseSuppression toggled mid-stream — deferring the audio-path swap to avoid an A/V offset step; takes effect on next preview/stream start")
+        return
+      }
       Task { [weak self] in await self?.applyAudioCaptureForCurrentMode() }
     }
   }
