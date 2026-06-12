@@ -17,11 +17,21 @@ internal const val WAKE_LOCK_TAG = "RtmpPublisher::WakeLock"
 internal const val MAX_RETRY_ATTEMPTS = 100
 internal const val MAX_RETRY_BACKOFF_MS = 60L * 60L * 1000L  // 1 hour
 
+// How long a connection must stay up before Pedro's session-scoped reTries
+// budget is re-armed to autoReconnectMaxAttempts (B4). Refilling instantly on
+// connection success would let a success→instant-fail flapping ingest (the
+// agoramdn broken-pipe loop: handshake OK, pipe breaks ~3-4s later) reconnect
+// forever without ever going terminal — each cycle would restore the budget it
+// just spent. 10s is comfortably past the observed flap periods.
+internal const val STABLE_CONNECTION_MS = 10_000L
+
 // Silent-stall watchdog (M1): consecutive onNewBitrate ticks (~1s each) at
-// bitrate==0 — no bytes acked to the server while we still believe we're live —
-// before we force a reconnect. 3s of total silence is unambiguous on a real
-// link yet short enough to recover quickly; a single transient zero tick won't
-// trip it.
+// bitrate==0 — the sender thread wrote nothing to the socket while we still
+// believe we're live (the metric counts bytes accepted into the kernel send
+// buffer, NOT server-ACKed bytes, so even a nonzero tick doesn't prove server
+// receipt) — before we force a reconnect. 3s of total silence is unambiguous
+// on a real link yet short enough to recover quickly; a single transient zero
+// tick won't trip it.
 internal const val STALL_TICKS = 3
 
 // Foreground-service readiness wait (M8). startForegroundService is async; we
@@ -30,6 +40,16 @@ internal const val STALL_TICKS = 3
 // required because the service's onStartCommand runs on the same main looper.
 internal const val MAX_FGS_WAIT_ATTEMPTS = 25
 internal const val FGS_WAIT_POLL_MS = 20L
+
+// Teardown-settle wait before a (re)start. Pedro's disconnect coroutine flips
+// RtmpClient's internal isStreaming only in its clear-block, 100ms-5s after
+// camera.stopStream() returned — and rtmpClient.connect() silently NO-OPS
+// while it's still true (no callback, no error). An immediate stop→start (or a
+// restart from the DISCONNECT/CONNECTIONFAILED handler — the supported
+// recovery pattern) must wait for the teardown to settle or the new session
+// never connects. 120 × 50ms = 6s ceiling, covering the straggler envelope.
+internal const val MAX_TEARDOWN_SETTLE_ATTEMPTS = 120
+internal const val TEARDOWN_SETTLE_POLL_MS = 50L
 
 // Camera2 only allows one open camera per process. Track the active publisher
 // instance so a second mount can fail loudly instead of silently breaking the
