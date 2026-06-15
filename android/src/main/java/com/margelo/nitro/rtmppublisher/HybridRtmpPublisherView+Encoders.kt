@@ -318,6 +318,10 @@ internal fun HybridRtmpPublisherView.rePrepareEncodersIfNeeded() {
 internal fun HybridRtmpPublisherView.applyStreamMode() {
   val client = safe("applyStreamMode/client", default = null) { camera.streamClient }
     ?: return
+  // The mode is invisible in field logs otherwise — and it decides chunk size /
+  // cache depth, which is exactly what stall/broken-pipe reports hinge on
+  // (e.g. the agoramdn 8192-chunk quirk).
+  Log.i(TAG, "applyStreamMode: $streamMode")
   when (streamMode) {
     StreamMode.LOWLATENCY -> {
       safe("streamMode/lowLatency/resizeCache") { client.resizeCache(60) }
