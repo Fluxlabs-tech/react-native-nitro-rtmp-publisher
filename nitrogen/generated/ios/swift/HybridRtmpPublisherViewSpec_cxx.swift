@@ -968,6 +968,33 @@ open class HybridRtmpPublisherViewSpec_cxx {
   }
   
   @inline(__always)
+  public final func setOnAudioDriftCorrection(callback: bridge.Func_void_double_double) -> bridge.Result_void_ {
+    do {
+      try self.__implementation.setOnAudioDriftCorrection(callback: { () -> (Double, Double) -> Void in
+        let __wrappedFunction = bridge.wrap_Func_void_double_double(callback)
+        return { (__correctionMs: Double, __totalCorrectionMs: Double) -> Void in
+          __wrappedFunction.call(__correctionMs, __totalCorrectionMs)
+        }
+      }())
+      return bridge.create_Result_void_()
+    } catch (let __error) {
+      let __exceptionPtr = __error.toCpp()
+      return bridge.create_Result_void_(__exceptionPtr)
+    }
+  }
+  
+  @inline(__always)
+  public final func injectAudioDesyncForTesting(ms: Double) -> bridge.Result_void_ {
+    do {
+      try self.__implementation.injectAudioDesyncForTesting(ms: ms)
+      return bridge.create_Result_void_()
+    } catch (let __error) {
+      let __exceptionPtr = __error.toCpp()
+      return bridge.create_Result_void_(__exceptionPtr)
+    }
+  }
+  
+  @inline(__always)
   public final func setOnRecordStatusChange(callback: bridge.Func_void_RecordStatus) -> bridge.Result_void_ {
     do {
       try self.__implementation.setOnRecordStatusChange(callback: { () -> (RecordStatus) -> Void in

@@ -35,6 +35,10 @@ extension HybridRtmpPublisherView {
     onRecordStatusChange = callback
   }
 
+  func setOnAudioDriftCorrection(callback: @escaping (Double, Double) -> Void) throws {
+    onAudioDriftCorrection = callback
+  }
+
   // `setOnThermalWarning` lives in `+Lifecycle.swift` since it also
   // wires up the thermal observer as a side effect.
   //
@@ -66,5 +70,8 @@ extension HybridRtmpPublisherView {
   }
   func emitThermalWarning(_ status: ThermalStatus) {
     onMain { [weak self] in self?.onThermalWarning?(status) }
+  }
+  func emitAudioDriftCorrection(_ correctionMs: Double, _ totalCorrectionMs: Double) {
+    onMain { [weak self] in self?.onAudioDriftCorrection?(correctionMs, totalCorrectionMs) }
   }
 }

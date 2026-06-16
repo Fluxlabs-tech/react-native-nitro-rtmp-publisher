@@ -491,6 +491,14 @@ namespace margelo::nitro::rtmppublisher {
     static const auto method = _javaPart->javaClassStatic()->getMethod<void(jni::alias_ref<JFunc_void_double_double::javaobject> /* callback */)>("setOnStreamStats_cxx");
     method(_javaPart, JFunc_void_double_double_cxx::fromCpp(callback));
   }
+  void JHybridRtmpPublisherViewSpec::setOnAudioDriftCorrection(const std::function<void(double /* correctionMs */, double /* totalCorrectionMs */)>& callback) {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<void(jni::alias_ref<JFunc_void_double_double::javaobject> /* callback */)>("setOnAudioDriftCorrection_cxx");
+    method(_javaPart, JFunc_void_double_double_cxx::fromCpp(callback));
+  }
+  void JHybridRtmpPublisherViewSpec::injectAudioDesyncForTesting(double ms) {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<void(double /* ms */)>("injectAudioDesyncForTesting");
+    method(_javaPart, ms);
+  }
   void JHybridRtmpPublisherViewSpec::setOnRecordStatusChange(const std::function<void(RecordStatus /* status */)>& callback) {
     static const auto method = _javaPart->javaClassStatic()->getMethod<void(jni::alias_ref<JFunc_void_RecordStatus::javaobject> /* callback */)>("setOnRecordStatusChange_cxx");
     method(_javaPart, JFunc_void_RecordStatus_cxx::fromCpp(callback));

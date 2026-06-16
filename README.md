@@ -646,7 +646,7 @@ The default Android `MIC` source is tuned for phone calls — AGC crushes dynami
 | `'voiceCommunication'` | `.voiceChat` | `VOICE_COMMUNICATION` | Two-way streams with echo cancellation |
 | `'unprocessed'` | `.measurement` | `UNPROCESSED` (API 24+) | Music capture, pro-audio scenarios |
 
-¹ When `noiseSuppression={true}`, iOS captures audio via the library's own `AVAudioEngine` + spectral denoiser instead of this `audioSource`→mode mapping — see [Noise suppression](#noise-suppression).
+¹ When `noiseSuppression={true}`, iOS captures audio via the library's own `AVAudioEngine` (Apple Voice Processing) instead of this `audioSource`→mode mapping — see [Noise suppression](#noise-suppression).
 
 Single biggest perceived audio-quality win available. Test with `'camcorder'` first.
 
@@ -661,7 +661,8 @@ The `noiseSuppression` prop suppresses steady background noise — fans, air-con
 Neither platform applies the AGC/voice-compression of a phone-call processor, so your voice keeps its natural level — it's safe to leave on for talk streams.
 
 - **Android**: a custom **spectral denoiser** (decision-directed Ephraim–Malah Wiener filter with adaptive noise-floor tracking) on the mic PCM via RootEncoder's `setCustomAudioEffect`. Targets the *stationary* noise floor, so a steady fan / AC is removed while voice **and music** pass through largely untouched. Applies live (toggle mid-stream).
-- **iOS**: Apple's **Voice Processing** (FaceTime/Siri-grade NS + echo cancellation) on an owned `AVAudioEngine` capture, with **AGC disabled** so the voice isn't leveled/compressed. HaishinKit has no audio-effect hook, so while `noiseSuppression` is `true` the library owns capture and feeds the mixer via `append`; when `false` it reverts to HaishinKit's own mic. Apple's processor is *voice-isolation*, so it suppresses non-voice background (incl. music) more than Android does.
+- **iOS**: Apple's **Voice Processing** (FaceTime/Siri-grade NS + echo cancellation) on an owned `AVAudioEngine` capture, with **AGC disabled** so the voice isn't leveled/compressed. HaishinKit has no audio-effect hook, so while `noiseSuppression` is `true` the library owns capture and feeds the mixer via `append`; when `false` it reverts to HaishinKit's own in-session mic. Apple's processor is *voice-isolation*, so it suppresses non-voice background (incl. music) more than Android does.
+  - **A/V sync.** Voice Processing runs on a separate audio clock from the camera, which would otherwise drift audio out of sync on long streams. The library corrects this automatically: it shifts the audio timestamps by the measured input latency (so audio anchors with video) and runs a continuous resampler that locks the audio rate to the capture clock — self-healing, with no accumulating drift. Subscribe to [`setOnAudioDriftCorrection`](#events) to monitor it. With `noiseSuppression={false}` the in-session mic shares the camera clock, so there's nothing to correct.
 
 | | `noiseSuppression={false}` | `noiseSuppression={true}` |
 |---|---|---|
@@ -670,9 +671,9 @@ Neither platform applies the AGC/voice-compression of a phone-call processor, so
 | Music in background | Preserved | **Android:** preserved · **iOS:** suppressed (voice-isolation) |
 | Phone-call feel | No | No |
 
-Both platforms behave identically.
-
-Toggleable live mid-session via the prop — the change applies immediately on both platforms (Android swaps the spectral effect; iOS re-runs `setCategory`). No `resetAudioEncoder()` call needed.
+**Toggling mid-session:**
+- **Android** applies the change live — it swaps the spectral effect on the mic tap, no re-prepare needed.
+- **iOS** applies it live only while *not* streaming (e.g. in preview). Toggled **mid-stream it is deferred** and takes effect on the next stream start: switching between the Voice-Processing engine and the in-session mic mid-broadcast would re-anchor the audio timeline and step A/V sync, so the library avoids it. Set `noiseSuppression` before `startStream` to choose the mode for a broadcast.
 
 ### Stereo capture
 
@@ -753,6 +754,11 @@ ref.setOnBitrateChange((bitrateBps) => { ... })
 
 // Local recorder state (OPT-IN).
 ref.setOnRecordStatusChange((status) => { ... })
+
+// iOS A/V drift corrections (OPT-IN). Fires only when noiseSuppression
+// is on. correctionMs = this step; totalCorrectionMs = cumulative offset
+// from the camera clock (heads toward ~0 as sync re-locks). No-op on Android.
+ref.setOnAudioDriftCorrection((correctionMs, totalCorrectionMs) => { ... })
 ```
 
 > **iOS extras** — backgrounding the app or having another app grab the camera (incoming call, Siri, Control Center) emits a synthetic `disconnect` event with a descriptive reason like `"session interrupted: video-device-in-use-by-another-client"`. When the camera comes back, you receive a `connectionSuccess`-equivalent fresh state. The UI never has to poll.

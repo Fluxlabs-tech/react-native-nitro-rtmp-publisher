@@ -101,6 +101,8 @@ namespace margelo::nitro::rtmppublisher {
       prototype.registerHybridMethod("setOnConnectionEvent", &HybridRtmpPublisherViewSpec::setOnConnectionEvent);
       prototype.registerHybridMethod("setOnBitrateChange", &HybridRtmpPublisherViewSpec::setOnBitrateChange);
       prototype.registerHybridMethod("setOnStreamStats", &HybridRtmpPublisherViewSpec::setOnStreamStats);
+      prototype.registerHybridMethod("setOnAudioDriftCorrection", &HybridRtmpPublisherViewSpec::setOnAudioDriftCorrection);
+      prototype.registerHybridMethod("injectAudioDesyncForTesting", &HybridRtmpPublisherViewSpec::injectAudioDesyncForTesting);
       prototype.registerHybridMethod("setOnRecordStatusChange", &HybridRtmpPublisherViewSpec::setOnRecordStatusChange);
       prototype.registerHybridMethod("getThermalStatus", &HybridRtmpPublisherViewSpec::getThermalStatus);
       prototype.registerHybridMethod("setOnThermalWarning", &HybridRtmpPublisherViewSpec::setOnThermalWarning);
