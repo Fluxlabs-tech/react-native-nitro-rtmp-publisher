@@ -520,6 +520,42 @@ export interface RtmpPublisherViewMethods extends HybridViewMethods {
   ): void
 
   /**
+   * Opt-in audio-clock telemetry (**iOS only**, fires only while
+   * `noiseSuppression` is on). When NS is on, iOS captures audio through Apple
+   * Voice Processing on a separate audio-HAL clock from the camera's capture
+   * clock; the library continuously re-aligns the audio sample stream to the
+   * capture clock so audio and video can't drift apart over a long RTMP stream.
+   * This callback reports a **significant cumulative correction** — it fires
+   * each time roughly another {@link 20}ms of net correction has been applied,
+   * so you can monitor the real clock skew in the field.
+   *
+   * @param correctionMs Net correction applied since the previous event, signed
+   *   milliseconds. **Positive** = audio was running AHEAD of video (audio clock
+   *   faster) and samples were dropped to hold it back; **negative** = audio was
+   *   behind and samples were inserted. Magnitude ≈ the report step (~20 ms).
+   * @param totalCorrectionMs Cumulative signed correction since the current
+   *   stream/segment started. Its rate of growth is the effective audio-vs-video
+   *   clock skew (e.g. +200 ms/hour ≈ a ~55 ppm fast audio clock).
+   *
+   * **Android:** never fires — audio there is captured in-session on the same
+   * clock as video, so there is no drift to correct.
+   */
+  setOnAudioDriftCorrection(
+    callback: (correctionMs: number, totalCorrectionMs: number) => void
+  ): void
+
+  /**
+   * DEBUG/TEST (**iOS only**, only while `noiseSuppression` is on): inject a
+   * deliberate A/V desync to verify the self-healing sync corrector. Positive
+   * `ms` jumps the audio AHEAD of video, negative pushes it BEHIND; the audio
+   * resync control loop then drives it back to ~0 over a few seconds. Watch
+   * {@link setOnAudioDriftCorrection} — the reported skew spikes by `ms` and
+   * then decays to zero, and the audible lip-sync recovers. No-op on Android and
+   * when NS is off. For testing/QA only — do not call in production.
+   */
+  injectAudioDesyncForTesting(ms: number): void
+
+  /**
    * Opt-in: fired on every transition of the local recorder state
    * (`started` → `recording` → `paused` → `resumed` → `stopped`).
    */

@@ -121,9 +121,12 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   let mixer = MediaMixer()
 
   /// iOS `noiseSuppression` path. When NS is ON we own audio capture through this
-  /// pipeline (AVAudioEngine with Apple's Voice Processing — NS/AEC, AGC disabled
-  /// — feeding `mixer.append`) instead of `mixer.attachAudio(mic)`. When OFF it's
-  /// never started and the mixer captures the mic directly. See
+  /// pipeline: Apple Voice Processing (ML NS + AEC, AGC off) on an AVAudioEngine,
+  /// drift-corrected to the capture/host clock and fed to `mixer.append(when:)`.
+  /// When OFF it's stopped and the mixer captures the mic directly via
+  /// `mixer.attachAudio(mic)`. Apple VP is the highest-quality, non-muffling iOS
+  /// NS; the pipeline's drift corrector keeps its separate audio clock locked to
+  /// the video so there's no long-stream A/V desync. See
   /// `applyAudioCaptureForCurrentMode()`.
   let denoisePipeline = AudioDenoisePipeline()
 
@@ -202,6 +205,8 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   var onRecordStatusChange: ((RecordStatus) -> Void)?
   var onThermalWarning: ((ThermalStatus) -> Void)?
   var onPictureInPictureChange: ((Bool) -> Void)?
+  /// Audio-clock drift correction telemetry (NS on). See setOnAudioDriftCorrection.
+  var onAudioDriftCorrection: ((Double, Double) -> Void)?
 
   // ─── Picture-in-Picture (see +PictureInPicture.swift) ────────────────────
   // System PIP via an AVSampleBufferDisplayLayer (HaishinKit's PiPHKView) fed
@@ -554,27 +559,26 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   var noiseSuppression: Bool = false {
     didSet {
       guard noiseSuppression != oldValue else { return }
-      configureAudioSession()
-      // Swap the audio capture path live if we're previewing (NS on → spectral
-      // denoise pipeline, NS off → mixer mic). If not previewing, the next
-      // attachCameraAndMic picks the right path.
+      // Swap the audio capture path live if previewing (NS on → VP pipeline,
+      // NS off → mixer mic). If not previewing, the next attachCameraAndMic
+      // picks the right path.
       //
-      // BUT NOT while actively streaming: swapping the capture path changes the
-      // AudioMixerTrack's input format (mic Int16 CMSampleBuffer ↔ engine Float32
-      // tap), which re-creates the converter and RESETS the audio timeline anchor
-      // (HaishinKit AudioMixerTrack.setUp → audioTime.reset()). Video keeps
-      // marching on its own clock, so the audio timeline steps relative to video
-      // — a permanent A/V offset jump the RTMP player can't re-sync. We'd rather
-      // honor the new NS state on the next preview/stream start than introduce a
-      // mid-stream lip-sync step. (The same re-anchor is unavoidable on a phone-
-      // call recovery via scheduleAudioRestart; the durable fix is to stop putting
-      // video on a different clock in offscreen/beauty mode — see the
-      // ios-av-sync analysis.)
+      // BUT NOT while actively streaming: switching between the AVCaptureSession
+      // mic and the Voice-Processing AVAudioEngine changes the AudioMixerTrack's
+      // input format, which re-creates the converter and RESETS HaishinKit's
+      // audio timeline anchor — while video keeps marching — i.e. a permanent
+      // A/V offset step the RTMP player can't re-sync. ALSO: reconfiguring the
+      // AVAudioSession (setCategory/setActive) under a running Voice-Processing
+      // engine glitches its audio + timing. So while streaming we touch NOTHING
+      // — no session reconfig, no swap — and honor the new NS state on the next
+      // preview/stream start.
       guard cachedIsOnPreview else { return }
       if cachedIsStreaming {
         log("noiseSuppression toggled mid-stream — deferring the audio-path swap to avoid an A/V offset step; takes effect on next preview/stream start")
         return
       }
+      // Not streaming: safe to reconfigure the session and swap the path now.
+      configureAudioSession()
       Task { [weak self] in await self?.applyAudioCaptureForCurrentMode() }
     }
   }
@@ -721,7 +725,7 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     pendingStreamKey = nil
     userRotationOverride = nil
     // Cancel any in-flight audio restart so it can't re-attach audio after the
-    // teardown below, then tear down the spectral denoise pipeline.
+    // teardown below, then tear down the Voice Processing pipeline.
     audioRestartTask?.cancel()
     audioRestartTask = nil
     denoisePipeline.stop()

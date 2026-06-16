@@ -129,6 +129,25 @@ export function usePublisher(append: (line: string) => void, sampleRate: number)
             append(`pip=${isInPip}`);
             setPipActive(isInPip);
           });
+
+          // iOS audio-clock drift telemetry (fires only while noiseSuppression
+          // is ON). Apple Voice Processing runs on a separate audio clock from
+          // the camera; the library re-aligns it to the capture clock so A/V
+          // can't drift. This reports each ~20ms of net correction — watch
+          // `total` climb to see the real clock skew being absorbed. No-op on
+          // Android (audio is captured in-session there).
+          ref.setOnAudioDriftCorrection(
+            (correctionMs: number, totalCorrectionMs: number) => {
+              if (Math.abs(totalCorrectionMs) < 1.5) {
+                append(`audio-drift ✓ SYNCED (~0ms)`);
+              } else {
+                append(
+                  `audio-drift ${correctionMs >= 0 ? '+' : ''}${correctionMs.toFixed(1)}ms ` +
+                    `(total ${totalCorrectionMs >= 0 ? '+' : ''}${totalCorrectionMs.toFixed(1)}ms)`
+                );
+              }
+            }
+          );
         } catch (e: unknown) {
           append(`init err: ${errMsg(e)}`);
         }

@@ -302,6 +302,28 @@ function StreamScreen({
         </TouchableOpacity>
       )}
 
+      {/* DEBUG: inject a +400ms A/V desync (iOS, NS on) and watch the self-heal
+          loop recover it — the `audio-drift` log skew spikes then decays to 0. */}
+      {showControls && streaming && (
+        <TouchableOpacity
+          style={{
+            position: 'absolute',
+            top: 104,
+            right: 16,
+            backgroundColor: 'rgba(180,40,40,0.7)',
+            paddingHorizontal: 14,
+            paddingVertical: 9,
+            borderRadius: 18,
+          }}
+          onPress={() => {
+            publisherRef.current?.injectAudioDesyncForTesting(400);
+            append('injected +400ms desync — watch audio-drift heal to ~0');
+          }}
+        >
+          <Text style={{ color: '#fff', fontWeight: '600' }}>Inject desync</Text>
+        </TouchableOpacity>
+      )}
+
       {showControls && (
         <View style={styles.controlsOverlay}>
           <ControlBar

@@ -598,6 +598,18 @@ namespace margelo::nitro::rtmppublisher {
         std::rethrow_exception(__result.error());
       }
     }
+    inline void setOnAudioDriftCorrection(const std::function<void(double /* correctionMs */, double /* totalCorrectionMs */)>& callback) override {
+      auto __result = _swiftPart.setOnAudioDriftCorrection(callback);
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+    }
+    inline void injectAudioDesyncForTesting(double ms) override {
+      auto __result = _swiftPart.injectAudioDesyncForTesting(std::forward<decltype(ms)>(ms));
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+    }
     inline void setOnRecordStatusChange(const std::function<void(RecordStatus /* status */)>& callback) override {
       auto __result = _swiftPart.setOnRecordStatusChange(callback);
       if (__result.hasError()) [[unlikely]] {

@@ -111,7 +111,7 @@ extension HybridRtmpPublisherView {
       self.freezeOverlay.image = nil
     }
     disableOrientationObserver()
-    // Stop the spectral denoise pipeline if it was running (NS on).
+    // Stop the Voice Processing pipeline if it was running (NS on).
     denoisePipeline.stop()
     // If recording was active, finalize it before tearing down.
     if let rec = recorder {
@@ -388,6 +388,13 @@ extension HybridRtmpPublisherView {
   }
 
   func isAudioMuted() throws -> Bool { return cachedAudioMuted }
+
+  /// DEBUG/TEST: inject a deliberate A/V desync (ms) so the self-healing audio
+  /// resync loop can be observed recovering it. Only meaningful while
+  /// noiseSuppression is on (the VP pipeline is running); no-op otherwise.
+  func injectAudioDesyncForTesting(ms: Double) throws {
+    denoisePipeline.injectDesync(ms: ms)
+  }
 
   // ─── Torch ───────────────────────────────────────────────────────────────
 
@@ -893,19 +900,24 @@ extension HybridRtmpPublisherView {
   /// Attach the right audio source for the current `noiseSuppression` state.
   /// Call AFTER `mixer.startRunning()` so the mixer is live for `append`.
   ///
-  /// NS ON → own capture: ensure the mixer isn't also on the mic, then (re)start
-  /// the denoise pipeline (a fresh engine each time covers resume/interruption).
-  /// If the engine can't start we fall back to the built-in mic so audio is never
-  /// lost. NS OFF → HaishinKit's mic, pipeline stopped.
+  /// NS ON → own capture via Apple Voice Processing: detach HaishinKit's mic, then
+  /// (re)start the drift-corrected VP pipeline (a fresh engine each time covers
+  /// resume/interruption). If VP can't start we fall back to the built-in mic so
+  /// audio is never lost. NS OFF → HaishinKit's in-session mic (synced to video
+  /// by the shared capture clock), pipeline stopped.
   func applyAudioCaptureForCurrentMode() async {
     let mic = AVCaptureDevice.default(for: .audio)
     if noiseSuppression {
       try? await mixer.attachAudio(nil)
       denoisePipeline.stop()
+      // Forward A/V sync telemetry (and the inject self-heal) to the JS callback.
+      denoisePipeline.onDriftCorrection = { [weak self] stepMs, totalMs in
+        self?.emitAudioDriftCorrection(stepMs, totalMs)
+      }
       do {
         try denoisePipeline.start(mixer: mixer)
       } catch {
-        log("denoise pipeline start failed: \(error) — falling back to built-in mic")
+        log("voice-processing pipeline start failed: \(error) — falling back to built-in mic")
         if let mic { try? await mixer.attachAudio(mic) }
       }
     } else {

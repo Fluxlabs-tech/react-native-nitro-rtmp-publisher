@@ -360,6 +360,19 @@ abstract class HybridRtmpPublisherViewSpec: HybridView() {
     return __result
   }
   
+  abstract fun setOnAudioDriftCorrection(callback: (correctionMs: Double, totalCorrectionMs: Double) -> Unit): Unit
+  
+  @DoNotStrip
+  @Keep
+  private fun setOnAudioDriftCorrection_cxx(callback: Func_void_double_double): Unit {
+    val __result = setOnAudioDriftCorrection(callback)
+    return __result
+  }
+  
+  @DoNotStrip
+  @Keep
+  abstract fun injectAudioDesyncForTesting(ms: Double): Unit
+  
   abstract fun setOnRecordStatusChange(callback: (status: RecordStatus) -> Unit): Unit
   
   @DoNotStrip

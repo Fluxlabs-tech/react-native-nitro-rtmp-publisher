@@ -1770,6 +1770,19 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     onRecordStatusChange = callback
   }
 
+  // iOS-only telemetry. On Android audio is captured in-session on the same
+  // clock as video (no separate audio engine), so there is no A/V drift to
+  // correct and this never fires — accept the callback and ignore it.
+  override fun setOnAudioDriftCorrection(callback: (correctionMs: Double, totalCorrectionMs: Double) -> Unit) {
+    // no-op
+  }
+
+  // iOS-only test hook. Android audio is captured in-session on the video clock
+  // (no separate VP engine, no resync loop), so there is nothing to inject into.
+  override fun injectAudioDesyncForTesting(ms: Double) {
+    // no-op
+  }
+
   override fun getThermalStatus(): ThermalStatus {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return ThermalStatus.NONE
     // If the listener is registered, the cached value is fresh (updated on
