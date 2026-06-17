@@ -25,6 +25,16 @@ internal const val MAX_RETRY_BACKOFF_MS = 60L * 60L * 1000L  // 1 hour
 // just spent. 10s is comfortably past the observed flap periods.
 internal const val STABLE_CONNECTION_MS = 10_000L
 
+// Reconnect-safe RTMP tuning (Agora-MDN broken-pipe fix). On a reconnect we cap
+// the send cache to RECONNECT_CACHE_SIZE so a backlog accumulated while
+// disconnected can't burst-flush, and cap the write chunk to RECONNECT_CHUNK_SIZE
+// (the size balanced/low-latency use, which Agora accepts — pure RTMP framing, no
+// bitrate effect). The mode's full cache is restored STREAM_MODE_RESTORE_DELAY_MS
+// after the link re-stabilizes. See applyReconnectSafeTuning.
+internal const val RECONNECT_CACHE_SIZE = 60
+internal const val RECONNECT_CHUNK_SIZE = 4096
+internal const val STREAM_MODE_RESTORE_DELAY_MS = 8_000L
+
 // Silent-stall watchdog (M1): consecutive onNewBitrate ticks (~1s each) at
 // bitrate==0 — the sender thread wrote nothing to the socket while we still
 // believe we're live (the metric counts bytes accepted into the kernel send

@@ -218,6 +218,9 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
       shouldBeStreaming = false
       reconnectInProgress.set(false)
       currentRetryAttempt = 0
+      // Terminal teardown — drop reconnect-tuning state so it can't linger.
+      reconnectTuningActive = false
+      mainHandler.removeCallbacks(restoreStreamModeRunnable)
       // Tear the session down for real — kills Pedro's in-flight retry
       // coroutine (a zombie handshake succeeding AFTER we declared failure
       // would fight the app's recovery restart) and marks the codecs for
@@ -232,6 +235,22 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
         "reconnect timed out"
       )
     }
+  }
+
+  // Reconnect-safe RTMP tuning state (see [applyReconnectSafeTuning]). On a
+  // reconnect we drop + cap the send cache and cap the chunk size so a quality-
+  // mode re-publish can't burst-flush a backlog and trip an Agora-MDN broken
+  // pipe; once the link is stably back this runnable restores the mode's full
+  // jitter cache (chunk stays 4096). Scheduled in onConnectionSuccess, cancelled
+  // / re-applied on every fresh disconnect→reconnect.
+  @Volatile internal var reconnectTuningActive = false
+  internal val restoreStreamModeRunnable = Runnable {
+    if (reconnectTuningActive && shouldBeStreaming && camera.isStreaming) {
+      safe("restoreStreamMode/resizeCache") {
+        camera.streamClient.resizeCache(streamModeCacheSize())
+      }
+    }
+    reconnectTuningActive = false
   }
 
   // Silent-stall watchdog (M1/S7). A half-open socket — NAT/firewall idle
@@ -399,6 +418,14 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
           lastConnectionSuccessMs = SystemClock.elapsedRealtime()
           mainHandler.removeCallbacks(budgetRefillRunnable)
           mainHandler.postDelayed(budgetRefillRunnable, STABLE_CONNECTION_MS)
+        }
+        // If this success followed a reconnect-safe downgrade, restore the mode's
+        // full jitter cache once the link has held STREAM_MODE_RESTORE_DELAY_MS
+        // (chunk stays 4096). A fresh disconnect cancels this and re-applies the
+        // safe tuning before the next reconnect.
+        if (reconnectTuningActive) {
+          mainHandler.removeCallbacks(restoreStreamModeRunnable)
+          mainHandler.postDelayed(restoreStreamModeRunnable, STREAM_MODE_RESTORE_DELAY_MS)
         }
         // A socket-only reTry never re-prepares the codec, so without this the
         // encoder resumes at whatever the adapter last applied — possibly a
@@ -727,7 +754,8 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
             // the grace window — the captured `url` could be stale/expired (S6).
             val resumeUrl = lastStreamUrl ?: url
             if (surfaceReady && !camera.isStreaming) {
-              startStreamInternal(resumeUrl)
+              // A bg→fg re-publish IS a reconnect → gentle cache/chunk tuning.
+              startStreamInternal(resumeUrl, reconnectSafe = true)
             } else {
               // We promised JS a reconnect via the RECONNECTING event above.
               // If we silently bail here (surface dropped again, race with
@@ -765,6 +793,8 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
       currentRetryAttempt = 0
       rtmpConnected = false
       mainHandler.removeCallbacks(reconnectTimeoutRunnable)
+      // Drop any pending steady-state cache restore; the resume re-applies tuning.
+      mainHandler.removeCallbacks(restoreStreamModeRunnable)
       cancelPendingResume()
       try {
         // Tracked: the latch swallows this teardown's straggler. The old
@@ -1151,7 +1181,10 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     startStreamInternal(url)
   }
 
-  internal fun startStreamInternal(url: String) {
+  // `reconnectSafe` is set by the surface-resume path (a bg→fg re-publish IS a
+  // reconnect) so the re-publish uses the gentle cache/chunk tuning and doesn't
+  // trip an Agora-MDN broken pipe. A fresh user startStream leaves it false.
+  internal fun startStreamInternal(url: String, reconnectSafe: Boolean = false) {
     // FG service must come up BEFORE we kick off the encoder. On Android 12+
     // background-start restrictions and 14+ FGS-type rules cause this to fail
     // silently otherwise — the encoder runs, the OS kills the camera/mic, and
@@ -1203,6 +1236,19 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     safe("startStream/bitrateAdapter.reset") { bitrateAdapter?.reset() }
     // Apply stream-mode tuning to the fresh streamClient state.
     applyStreamMode()
+    if (reconnectSafe) {
+      // A resume/re-publish: downgrade to gentle cache/chunk so we don't burst a
+      // backlog into the ingest (Agora-MDN broken-pipe fix). Restored on success.
+      applyReconnectSafeTuning()
+    } else {
+      // Fresh full-quality start — drop any stale reconnect-tuning state and force
+      // the chunk size back to the mode's value. A prior reconnect may have pinned
+      // the RtmpConfig global at 4096; applyStreamMode's setWriteChunkSize no-ops
+      // while a previous session is still isStreaming, so restore the global here.
+      mainHandler.removeCallbacks(restoreStreamModeRunnable)
+      reconnectTuningActive = false
+      restoreStreamModeChunkSize()
+    }
     // M8: don't start encoding until the FG service has actually reached the
     // foreground — on Android 14+ a half-started FGS gets camera/mic revoked and
     // the encoder stalls with no callback. Polls without blocking the looper.
@@ -1333,6 +1379,8 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     postNotificationsWarned = false
     mainHandler.removeCallbacks(reconnectTimeoutRunnable)
     mainHandler.removeCallbacks(budgetRefillRunnable)
+    mainHandler.removeCallbacks(restoreStreamModeRunnable)
+    reconnectTuningActive = false
     safe("stopStream") {
       if (stopLiveStreamTracked()) {
         // Confirm the stop to JS now instead of relaying Pedro's onDisconnect
@@ -1842,6 +1890,8 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     abrMaxBitrate = 0
     mainHandler.removeCallbacks(reconnectTimeoutRunnable)
     mainHandler.removeCallbacks(budgetRefillRunnable)
+    mainHandler.removeCallbacks(restoreStreamModeRunnable)
+    reconnectTuningActive = false
     safe("onDropView/stopStream") { if (camera.isStreaming) camera.stopStream() }
     safe("onDropView/stopPreview") { if (camera.isOnPreview) camera.stopPreview() }
     safe("onDropView/stopRecord") {

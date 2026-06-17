@@ -23,6 +23,14 @@ internal fun HybridRtmpPublisherView.tryAutoReconnect(reason: String): Boolean {
   val attempt = currentRetryAttempt
   currentRetryAttempt = attempt + 1
   val backoff = escalatedBackoffMs(attempt)
+  // Cancel any pending steady-state cache restore and apply reconnect-safe tuning
+  // BEFORE reTry triggers the handshake, so the re-publish can't burst-flush a
+  // stale cache in large RTMP chunks and trip an Agora-MDN "Broken pipe" loop.
+  // The global RtmpConfig.writeChunkSize set here is read at the next connect
+  // handshake; the mode's full cache is restored by onConnectionSuccess once the
+  // link has been stable for STREAM_MODE_RESTORE_DELAY_MS.
+  mainHandler.removeCallbacks(restoreStreamModeRunnable)
+  applyReconnectSafeTuning()
   val queued = safe("reTry(auto)", default = false) {
     camera.streamClient.reTry(backoff, reason, null)
   }
