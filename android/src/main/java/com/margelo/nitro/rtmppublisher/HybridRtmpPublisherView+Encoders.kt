@@ -10,6 +10,7 @@ import com.pedro.encoder.TimestampMode
 import com.pedro.encoder.input.audio.NoAudioEffect
 import com.pedro.encoder.input.video.CameraHelper
 import com.pedro.encoder.utils.CodecUtil
+import com.pedro.rtmp.utils.RtmpConfig
 
 /**
  * OEMs whose ENTIRE lineup is budget single-mic and exposes multiple
@@ -322,9 +323,12 @@ internal fun HybridRtmpPublisherView.applyStreamMode() {
   // cache depth, which is exactly what stall/broken-pipe reports hinge on
   // (e.g. the agoramdn 8192-chunk quirk).
   Log.i(TAG, "applyStreamMode: $streamMode")
+  // Single source of truth for the per-mode cache size (also read by the
+  // reconnect-safe restore via streamModeCacheSize()).
+  val cacheSize = streamModeCacheSize()
   when (streamMode) {
     StreamMode.LOWLATENCY -> {
-      safe("streamMode/lowLatency/resizeCache") { client.resizeCache(60) }
+      safe("streamMode/lowLatency/resizeCache") { client.resizeCache(cacheSize) }
       safe("streamMode/lowLatency/chunkSize")   { client.setWriteChunkSize(4096) }
       safe("streamMode/lowLatency/delay")       { client.setDelay(0L) }
       safe("streamMode/lowLatency/expFactor")   { client.setBitrateExponentialFactor(2f) }
@@ -333,7 +337,7 @@ internal fun HybridRtmpPublisherView.applyStreamMode() {
       }
     }
     StreamMode.BALANCED -> {
-      safe("streamMode/balanced/resizeCache") { client.resizeCache(120) }
+      safe("streamMode/balanced/resizeCache") { client.resizeCache(cacheSize) }
       safe("streamMode/balanced/chunkSize")   { client.setWriteChunkSize(4096) }
       safe("streamMode/balanced/delay")       { client.setDelay(150L) }
       safe("streamMode/balanced/expFactor")   { client.setBitrateExponentialFactor(1f) }
@@ -342,7 +346,7 @@ internal fun HybridRtmpPublisherView.applyStreamMode() {
       }
     }
     StreamMode.QUALITY -> {
-      safe("streamMode/quality/resizeCache") { client.resizeCache(240) }
+      safe("streamMode/quality/resizeCache") { client.resizeCache(cacheSize) }
       safe("streamMode/quality/chunkSize")   { client.setWriteChunkSize(8192) }
       safe("streamMode/quality/delay")       { client.setDelay(300L) }
       safe("streamMode/quality/expFactor")   { client.setBitrateExponentialFactor(0.5f) }
@@ -351,4 +355,59 @@ internal fun HybridRtmpPublisherView.applyStreamMode() {
       }
     }
   }
+}
+
+// The send-cache size each stream mode uses (mirrors applyStreamMode above).
+// Used to restore the jitter buffer after a reconnect-safe downgrade once the
+// link re-stabilizes.
+internal fun HybridRtmpPublisherView.streamModeCacheSize(): Int = when (streamMode) {
+  StreamMode.LOWLATENCY -> 60
+  StreamMode.BALANCED -> 120
+  StreamMode.QUALITY -> 240
+}
+
+// Reconnect-safe RTMP tuning (Agora-MDN broken-pipe fix). Some ingests — Agora
+// MDN especially — drop the socket with "Error send packet, Broken pipe" when a
+// reconnect flushes a cache that backed up while disconnected in a burst of large
+// RTMP chunks (quality mode's 8192). Applied on every reconnect:
+//  1. clearCache()  — drop the stale backlog so the re-publish ramps cleanly
+//                     instead of bursting,
+//  2. resizeCache(RECONNECT_CACHE_SIZE) — cap re-growth during the backoff window
+//                     so any residual burst stays small,
+//  3. RtmpConfig.writeChunkSize = RECONNECT_CHUNK_SIZE — the 4096-byte chunk
+//                     balanced/low-latency use, which Agora accepts (RTMP framing).
+// `restoreStreamModeRunnable` restores the mode's full cache once the reconnected
+// stream has been healthy for STREAM_MODE_RESTORE_DELAY_MS; the chunk size stays
+// at 4096 (≈free, and avoids re-introducing the Agora-hostile 8192).
+internal fun HybridRtmpPublisherView.applyReconnectSafeTuning() {
+  val client = safe("reconnectSafe/client", default = null) { camera.streamClient } ?: return
+  reconnectTuningActive = true
+  // clearCache first so resizeCache can't throw "can't fit current cache".
+  safe("reconnectSafe/clearCache") { client.clearCache() }
+  safe("reconnectSafe/resizeCache") { client.resizeCache(RECONNECT_CACHE_SIZE) }
+  // Set the global RtmpConfig.writeChunkSize directly rather than
+  // client.setWriteChunkSize(): the latter is a no-op while isStreaming==true
+  // (decompiled: `if (!isStreaming) RtmpConfig.writeChunkSize = size`), and on
+  // the auto-reconnect (reTry) path the prior session is still "streaming" when
+  // this runs — so the cap would silently not apply and the reconnect would go
+  // out at 8192 again. The chunk size lives in this global (read at each connect
+  // handshake; survives reConnect's CommandsManager.reset, which only touches
+  // readChunkSize), so setting it here applies to the very next reconnect on
+  // BOTH paths. Restored to the mode's size by a fresh startStream/applyStreamMode.
+  safe("reconnectSafe/chunkSize") { RtmpConfig.writeChunkSize = RECONNECT_CHUNK_SIZE }
+}
+
+// The write-chunk size each stream mode uses (quality 8192, balanced/low-latency
+// 4096) — mirrors the setWriteChunkSize calls in applyStreamMode.
+internal fun HybridRtmpPublisherView.streamModeChunkSize(): Int =
+  if (streamMode == StreamMode.QUALITY) 8192 else 4096
+
+// Force the global write-chunk size to the current mode's value, bypassing
+// setWriteChunkSize()'s `!isStreaming` guard. Called on a FRESH start so a prior
+// reconnect's 4096 cap (written straight to the RtmpConfig global) can't persist
+// into a new quality session if the previous session is still flagged streaming
+// (applyStreamMode's setWriteChunkSize would no-op in that window). The global is
+// read at the next connect handshake, so forcing it here is safe and correct.
+internal fun HybridRtmpPublisherView.restoreStreamModeChunkSize() {
+  safe("restoreStreamModeChunkSize") { RtmpConfig.writeChunkSize = streamModeChunkSize() }
 }
