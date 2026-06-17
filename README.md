@@ -947,6 +947,7 @@ Knobs that move CPU/GPU usage:
 | Symptom | Cause | Fix |
 |---|---|---|
 | Camera opens/closes in a loop | `hybridRef` callback recreated per render | Wrap in `useMemo([], …)` |
+| Android: `surface destroyed` → reconnect loop (0 fps), happens in your app but not the example | The preview is a native `SurfaceView`, and **React Native view-flattening reparents it** when a layout-only `<View>` ancestor re-flattens on re-render (common in frequently re-rendering screens, e.g. a MobX `observer`). Reparenting a SurfaceView destroys its surface, which the library reports as `surface destroyed` and auto-resumes — looping. | Add **`collapsable={false}`** to every layout-only `<View>` wrapping the publisher (or keep the publisher high and flat in the tree, like the example). iOS is unaffected (its preview isn't a SurfaceView). |
 | Output stream lands in landscape after a few seconds | `prepareVideo` called after `startPreview`; encoder rotation latched late | Call `prepareVideo` + `prepareAudio` **before** `startPreview` |
 | Output is upside down | Rotation applied twice | Pick one source of truth: either pass `rotation` to `prepareVideo` OR drive `setStreamRotation` from an orientation observer, not both |
 | Audio missing from stream (Android) | `prepareAudio` ran without `RECORD_AUDIO` permission granted | Call `requestRtmpPermissions()` and only mount the view after `granted === true` |
