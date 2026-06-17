@@ -284,8 +284,8 @@ final class AudioDenoisePipeline {
       skewMs = -error / nominalRate * 1000       // + = audio ahead of video
       // Latch the tier to the PEAK offset of this episode (reset once synced) so
       // the whole recovery runs at the speed the severity warrants.
-      if abs(skewMs) < 25 { recoveryPeakMs = 0 }
-      recoveryPeakMs = max(recoveryPeakMs, abs(skewMs))
+      if skewMs.magnitude < 25.0 { recoveryPeakMs = 0 }
+      recoveryPeakMs = max(recoveryPeakMs, skewMs.magnitude)
       let step = maxStep(n, peakMs: recoveryPeakMs)
       var corr: Int
       if injectRemaining != 0 {
@@ -308,7 +308,7 @@ final class AudioDenoisePipeline {
     // Build the timestamp: cumulative output sampleTime (so HaishinKit's ring
     // honors the resampled count), hostTime shifted earlier by the latency.
     let startSample = AVAudioFramePosition(emittedOutput)
-    let latTicks = AVAudioTime.hostTime(forSeconds: abs(inputLatencySeconds))
+    let latTicks = AVAudioTime.hostTime(forSeconds: inputLatencySeconds.magnitude)
     let shiftedHost: UInt64
     if inputLatencySeconds >= 0 {
       shiftedHost = when.hostTime > latTicks ? when.hostTime - latTicks : when.hostTime  // earlier
@@ -350,8 +350,8 @@ final class AudioDenoisePipeline {
     // AND every transition in/out of the synced band — so a recovery is reported
     // as it heals AND a final event fires the moment it reaches ~0 (synced).
     if elapsed > 0 {
-      let synced = abs(skewMs) < syncThresholdMs
-      if abs(skewMs - lastReportedMs) >= reportStepMs || synced != reportedSynced {
+      let synced = skewMs.magnitude < syncThresholdMs
+      if (skewMs - lastReportedMs).magnitude >= reportStepMs || synced != reportedSynced {
         let step = skewMs - lastReportedMs
         lastReportedMs = skewMs
         reportedSynced = synced
