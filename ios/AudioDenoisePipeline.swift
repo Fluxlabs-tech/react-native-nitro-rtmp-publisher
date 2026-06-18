@@ -32,7 +32,10 @@
 //
 //  Correction is ≤ `maxStep` samples/buffer via linear interpolation — identity
 //  when no correction is needed (the common case), sub-sample and inaudible for
-//  ppm drift, and a brief, gentle pitch glide while healing a large offset.
+//  ppm drift, and a slow, sub-percent (≈1%) pitch glide while healing a large
+//  offset. The cap is deliberately kept in the band RTMP players track WITHOUT
+//  dropping video frames (they slave video to the audio master clock) — an
+//  aggressive heal rate was the reported "resync drops a frame / jitter".
 //
 //  Ordering: the tap fires on one serial audio thread; we copy the buffer and a
 //  single high-priority consumer Task runs the control loop and calls the
@@ -73,27 +76,47 @@ final class AudioDenoisePipeline {
   private var anchorHostSeconds: Double = 0
   private var emittedOutput: Double = 0          // cumulative output frames appended
   private let controlGain: Double = 0.25         // correct 25% of the error per buffer
-  // ADAPTIVE recovery rate: the per-buffer correction is capped as a fraction of
-  // the buffer, and the cap SCALES with how far out of sync we are. A big offset
-  // recovers aggressively (worth a brief pitch glide); a small one recovers
-  // gently so it stays inaudible; and because the tier shrinks as the offset
-  // heals, the correction naturally tapers near sync (no overshoot/warble at the
-  // end). At 1024 frames / 48 kHz, ~1 sample/buffer ≈ 1 ms/sec of recovery, so:
-  //   ≥500 ms  → n/4  (~250 ms/sec)  severe → snap back in ~2 s
-  //   ≥200 ms  → n/12 (~85 ms/sec)   medium
-  //   <200 ms  → n/48 (~20 ms/sec)   gentle, ~inaudible
-  // (Real drift is tens of ppm → <1 sample/buffer, far below even the gentle
-  // cap, so steady-state correction is always sub-sample and silent.)
-  //
-  // The tier is keyed off the PEAK offset of the current recovery episode (not
-  // the instantaneous error) so a big desync recovers FULLY at the fast rate
-  // instead of crawling once it dips under a threshold.
-  private func maxStep(_ n: Int, peakMs: Double) -> Int {
-    if peakMs >= 200 { return max(16, n / 4) }   // ≈250 ms/s — fast (≈1.6 s for 400 ms)
-    if peakMs >= 50 { return max(16, n / 10) }   // ≈100 ms/s — medium
-    return max(8, n / 48)                         // ≈20 ms/s — gentle (tiny residual drift)
+  // MAX correction rate, SCALED by how far out of sync we are. The corrector heals
+  // an A/V offset by resampling audio to outN = n ± corr, which changes the audio
+  // TIMELINE's advance rate on the wire; a tight RTMP player tracks that rate by
+  // nudging video frames, so the rate is what governs playback smoothness. Because
+  // the deadband below means this only ever runs for a REAL offset (>15 ms) — never
+  // the steady-state ±few-ms wobble — a FASTER heal for a large offset does NOT
+  // bring back the periodic steady-state jitter (that was the limit cycle, killed
+  // by the deadband). So: small offsets heal transparently (~1%), and only a large
+  // offset (a Voice-Processing glitch, or the debug inject) heals fast — briefly
+  // visible, but far better than a large desync lingering for tens of seconds (a
+  // flat ~1% cap took ~100 s to clear a 1 s inject — the "won't fully recover"
+  // symptom). At 1024 frames / 48 kHz:
+  //   ≥200 ms → n/8  (~12.5%, ~125 ms/s)  large: ~1 s offset heals in a few s
+  //   ≥50 ms  → n/24 (~4%,    ~40 ms/s)   moderate
+  //   <50 ms  → n/96 (~1%,    ~10 ms/s)   final approach, transparent
+  // The tier follows the INSTANTANEOUS skew (no latch), so the heal naturally
+  // decelerates as it closes — fast catch-up, gentle finish, no end-of-heal warble.
+  private func maxStep(_ n: Int, skewMs: Double) -> Int {
+    let mag = skewMs.magnitude
+    if mag >= 200 { return max(16, n / 8) }
+    if mag >= 50 { return max(8, n / 24) }
+    return max(4, n / 96)
   }
-  private var recoveryPeakMs: Double = 0
+  // Deadband + hysteresis — the fix for the periodic "frame jitter that auto-
+  // syncs". Real clock drift is tiny, so without this the loop HUNTS: it resamples
+  // by a few samples every buffer forever to chase a ±few-ms measurement wobble.
+  // Each resample makes the emitted audio-PTS advance at a slightly different RATE,
+  // so the audio MASTER clock on the wire continuously wobbles — and a tight RTMP/
+  // HLS player tracks that wobble by nudging a video frame every cycle (a periodic
+  // micro-jitter). The offset magnitude (±5 ms) is harmless; the continuous RATE
+  // variation from chasing it is what the player sees. So we DON'T correct while
+  // the skew is imperceptible: engage only once |skew| exceeds `deadbandEngageMs`,
+  // then heal down to `deadbandReleaseMs` and idle (identity passthrough — emitted
+  // PTS = pure sample count, perfectly smooth). A stable sub-15 ms offset is
+  // inaudible (lip-sync tolerance ≈ ±45 ms) and, unlike an oscillation, the player
+  // locks to it once and holds. Only genuine accumulated drift past the band
+  // triggers a gentle (≤1%) heal. NS-off shares the capture clock, so this whole
+  // path is moot there.
+  private let deadbandEngageMs: Double = 15
+  private let deadbandReleaseMs: Double = 3
+  private var correcting = false
   // Debug: a deliberate desync to inject (samples; + = audio ahead). Queued by
   // injectDesync (cross-thread, lock-guarded), then drained into injectRemaining
   // and applied gradually via resampled frames (consumer-thread only).
@@ -156,7 +179,7 @@ final class AudioDenoisePipeline {
     reportedSynced = true
     pendingInjectSamples = 0
     injectRemaining = 0
-    recoveryPeakMs = 0
+    correcting = false
     // Compensate the VP delivery latency by AVAudioSession.inputLatency (the
     // documented recipe to recover a tap buffer's true acoustic time). Do NOT add
     // ioBufferDuration + node.presentationLatency on top — presentationLatency
@@ -282,11 +305,7 @@ final class AudioDenoisePipeline {
       let target = elapsed * nominalRate
       let error = target - emittedOutput        // >0 = behind → emit more
       skewMs = -error / nominalRate * 1000       // + = audio ahead of video
-      // Latch the tier to the PEAK offset of this episode (reset once synced) so
-      // the whole recovery runs at the speed the severity warrants.
-      if skewMs.magnitude < 25.0 { recoveryPeakMs = 0 }
-      recoveryPeakMs = max(recoveryPeakMs, skewMs.magnitude)
-      let step = maxStep(n, peakMs: recoveryPeakMs)
+      let step = maxStep(n, skewMs: skewMs)
       var corr: Int
       if injectRemaining != 0 {
         // Burst the queued desync in via real resampled frames (overrides the
@@ -298,9 +317,19 @@ final class AudioDenoisePipeline {
         injectRemaining -= Double(b)
         corr = b
       } else {
-        corr = Int((controlGain * error).rounded())
-        if corr > step { corr = step }
-        if corr < -step { corr = -step }
+        // Deadband with hysteresis: idle (corr = 0, audio untouched) until the
+        // skew leaves the imperceptible band, then heal down to the release
+        // threshold and idle again — so steady-state emits a smooth sample-count
+        // PTS and the master clock stops wobbling (no per-cycle player nudge).
+        if !correcting, skewMs.magnitude > deadbandEngageMs { correcting = true }
+        else if correcting, skewMs.magnitude <= deadbandReleaseMs { correcting = false }
+        if correcting {
+          corr = Int((controlGain * error).rounded())
+          if corr > step { corr = step }
+          if corr < -step { corr = -step }
+        } else {
+          corr = 0
+        }
       }
       outN = max(1, n + corr)
     }
