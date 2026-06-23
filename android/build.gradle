@@ -153,6 +153,11 @@ dependencies {
   // directly. Gradle resolves up to the app's (newer) version.
   implementation "androidx.activity:activity:1.8.0"
 
-  // RootEncoder (https://github.com/pedroSG94/RootEncoder)
-  implementation "com.github.pedroSG94.RootEncoder:library:2.6.1"
+  // RootEncoder — Fluxlabs fork of pedroSG94/RootEncoder 2.6.1 with one patch:
+  // the KTOR TLS socket now sends SNI (serverName), required for SNI-routed
+  // multi-tenant RTMPS ingests like LiveKit Cloud. Built on the 2.6.1 (Kotlin
+  // 2.1.20) base so it stays consumable by Kotlin-2.1 toolchains; upstream's
+  // own fix (2.7.3+, PR #2102) is Kotlin-2.3-only. Tag/source:
+  // https://github.com/Fluxlabs-tech/RootEncoder/releases/tag/2.6.1-zoop
+  implementation "com.github.Fluxlabs-tech.RootEncoder:library:2.6.1-zoop"
 }
