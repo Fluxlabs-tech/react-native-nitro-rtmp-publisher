@@ -994,7 +994,11 @@ Yes. RTMPS (RTMP over TLS) works out of the box — Facebook Live's `rtmps://…
 
 ### Can I stream to YouTube Live, Twitch, or any custom RTMP server?
 
-Yes. The library is server-agnostic. Anything that speaks RTMP / RTMPS works: YouTube Live (`rtmp://a.rtmp.youtube.com/live2`), Twitch (`rtmp://live.twitch.tv/app`), Wowza, Nimble, Ant Media Server, Red5, MediaMTX, or your own Nginx-RTMP / Node-Media-Server. FMLE-style handshake (`releaseStream` + `FCPublish`) is sent on connect so strict ingests (FB Live, YouTube Live, Wowza) accept the publish without timing out.
+Yes. The library is server-agnostic. Anything that speaks RTMP / RTMPS works: YouTube Live (`rtmp://a.rtmp.youtube.com/live2`), Twitch (`rtmp://live.twitch.tv/app`), LiveKit Cloud ingress (`rtmps://<tenant>.rtmp.livekit.cloud/x/<key>`), Wowza, Nimble, Ant Media Server, Red5, MediaMTX, or your own Nginx-RTMP / Node-Media-Server. FMLE-style handshake (`releaseStream` + `FCPublish`) is sent on connect so strict ingests (FB Live, YouTube Live, Wowza) accept the publish without timing out.
+
+### Does it work with LiveKit Cloud (and other SNI-routed RTMPS ingests)?
+
+Yes. Multi-tenant RTMPS ingests like LiveKit Cloud put each tenant on a per-subdomain endpoint (`rtmps://<tenant>.rtmp.livekit.cloud/…`) and route the TLS connection by **SNI** (the `server_name` in the TLS ClientHello). The publisher sends SNI on every RTMPS connection, so the edge routes you to the correct ingress instead of terminating TLS on a default backend and dropping the RTMP handshake. If you previously saw `Error configure stream, Unexpected EOF` on LiveKit while other RTMPS hosts worked, that was the missing-SNI symptom — fixed in `v0.13.5`.
 
 ### Does it work with Expo and EAS Build?
 
@@ -1029,7 +1033,7 @@ Video: H.264 (AVC) and H.265 (HEVC) — both hardware-encoded via `VideoToolbox`
 ## Acknowledgements
 
 - [Nitro Modules](https://github.com/mrousavy/nitro) by Marc Rousavy — the JSI codegen that makes the typed bridge possible
-- [RootEncoder](https://github.com/pedroSG94/RootEncoder) by Pedro Sánchez — Android RTMP runtime
+- [RootEncoder](https://github.com/pedroSG94/RootEncoder) by Pedro Sánchez — Android RTMP runtime (consumed via the [Fluxlabs-tech fork](https://github.com/Fluxlabs-tech/RootEncoder/tree/2.6.1-zoop), 2.6.1 + a one-line TLS-SNI patch for SNI-routed RTMPS ingests)
 - [HaishinKit.swift](https://github.com/HaishinKit/HaishinKit.swift) by Shogo Endo — iOS RTMP runtime
 
 ---
