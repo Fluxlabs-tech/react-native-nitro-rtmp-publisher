@@ -350,6 +350,26 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     context.getSystemService(Context.POWER_SERVICE) as? PowerManager
   }
 
+  // ─── Disconnect-cause classification (see +DisconnectCause.kt) ───────────
+  // A Pedro socket failure reaches us only as a raw reason string. These
+  // signals — sampled at failure time — label the emitted DISCONNECT /
+  // CONNECTIONFAILED message with a likely cause (network-lost /
+  // interrupted-by-call / server-closed / thermal-critical / low-battery), so
+  // callers can tell a lost uplink from a server hang-up. iOS parity
+  // (HybridRtmpPublisherView+DisconnectCause.swift). All ADVISORY: a mislabel
+  // never changes reconnect behavior. Network state is written on the
+  // ConnectivityManager callback thread, read on main → `@Volatile` scalars.
+  internal val connectivityManager: android.net.ConnectivityManager? by lazy {
+    context.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
+  }
+  internal val audioManager: android.media.AudioManager? by lazy {
+    context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
+  }
+  internal var networkCallback: android.net.ConnectivityManager.NetworkCallback? = null
+  @Volatile internal var networkAvailable = true
+  @Volatile internal var networkTransport = "unknown"
+  @Volatile internal var lastNetworkLossUptimeMs = 0L
+
   internal val recordListener = RecordController.Listener { status ->
     val nitro = status.toNitro()
     postToMain { onRecordStatusChange?.invoke(nitro) }
@@ -462,15 +482,19 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
         // pendingStream — the surfaceCreated resume path owns the restart, so
         // don't double-report it as a terminal failure here (S3).
         if (!surfaceReady || pendingStream != null) return@postToMain
-        when (tryAutoReconnect(reason)) {
+        // Label the raw Pedro reason with a likely cause (network-lost /
+        // interrupted-by-call / server-closed / …) for both the reconnect
+        // reason and the terminal message. See +DisconnectCause.kt.
+        val cause = classifyDisconnectCause(reason)
+        when (tryAutoReconnect(cause)) {
           ReconnectOutcome.STARTED ->
-            onConnectionEvent?.invoke(RtmpConnectionEvent.RECONNECTING, reason)
+            onConnectionEvent?.invoke(RtmpConnectionEvent.RECONNECTING, cause)
           // A different failure this cycle already claimed recovery; its reTry is
           // still pending (its dead-man still bounds a hang). Drop this duplicate
           // instead of declaring the stream dead underneath the live retry.
           ReconnectOutcome.ALREADY_IN_FLIGHT -> {}
           ReconnectOutcome.TERMINAL ->
-            enterTerminalFailure(RtmpConnectionEvent.CONNECTIONFAILED, reason)
+            enterTerminalFailure(RtmpConnectionEvent.CONNECTIONFAILED, cause)
         }
       }
     }
@@ -505,9 +529,13 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
             Log.w(TAG, "Silent stall: no bytes flowing for ${stallTicks}s — forcing " +
               "reconnect (itemsInCache=$cached, droppedVideoFrames=$droppedV)")
             stallTicks = 0
-            when (tryAutoReconnect("silent stall: no bytes flowing")) {
+            // A half-open socket (bytes stop, Pedro fires no failure) is almost
+            // always the uplink dying mid-stream — run it through the same
+            // classifier so the reason reads e.g. "network-lost (silent-stall)".
+            val cause = "${disconnectCauseCategory()} (silent-stall)"
+            when (tryAutoReconnect(cause)) {
               ReconnectOutcome.STARTED ->
-                onConnectionEvent?.invoke(RtmpConnectionEvent.RECONNECTING, "silent stall: no bytes flowing")
+                onConnectionEvent?.invoke(RtmpConnectionEvent.RECONNECTING, cause)
               // A reconnect already owns this cycle (the !reconnectInProgress gate
               // above usually catches this first) — leave it to run.
               ReconnectOutcome.ALREADY_IN_FLIGHT -> {}
@@ -519,7 +547,7 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
               ReconnectOutcome.TERMINAL ->
                 enterTerminalFailure(
                   RtmpConnectionEvent.CONNECTIONFAILED,
-                  "silent stall: no bytes flowing",
+                  cause,
                   stopStream = true,
                 )
             }
@@ -582,9 +610,10 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
         if (!surfaceReady || pendingStream != null) {
           return@postToMain
         }
-        when (tryAutoReconnect("disconnect")) {
+        val cause = classifyDisconnectCause("disconnect")
+        when (tryAutoReconnect(cause)) {
           ReconnectOutcome.STARTED ->
-            onConnectionEvent?.invoke(RtmpConnectionEvent.RECONNECTING, "disconnect")
+            onConnectionEvent?.invoke(RtmpConnectionEvent.RECONNECTING, cause)
           // A reconnect already owns recovery — this duplicate disconnect must
           // not tear the stream down or emit a spurious terminal DISCONNECT.
           ReconnectOutcome.ALREADY_IN_FLIGHT -> {}
@@ -593,7 +622,7 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
           // straggler that outlived a settle timeout's latch reset — emitting
           // DISCONNECT there is acceptable.
           ReconnectOutcome.TERMINAL ->
-            enterTerminalFailure(RtmpConnectionEvent.DISCONNECT, "")
+            enterTerminalFailure(RtmpConnectionEvent.DISCONNECT, classifyDisconnectCause(""))
         }
       }
     }
@@ -850,6 +879,9 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     openGlView.holder.addCallback(surfaceCallback)
     // Scope PIP auto-enter to this view's on-screen lifetime (see pipAttachListener).
     openGlView.addOnAttachStateChangeListener(pipAttachListener)
+    // Watch the network path for the whole view lifetime so a socket failure can
+    // be labeled network-lost vs server-closed. iOS parity (NWPathMonitor).
+    registerNetworkMonitor()
   }
 
   override val view: View
@@ -1898,6 +1930,7 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     releaseWakeLock()
     setKeepScreenOn(false)
     unregisterThermalListener()
+    unregisterNetworkMonitor()
     // Clear the Activity-global auto-enter flag so PIP doesn't follow the user to
     // the next screen, and drop the attach observer.
     if (pictureInPictureEnabled) safe("onDropView/disarmPipAutoEnter") { disarmPipAutoEnter() }
