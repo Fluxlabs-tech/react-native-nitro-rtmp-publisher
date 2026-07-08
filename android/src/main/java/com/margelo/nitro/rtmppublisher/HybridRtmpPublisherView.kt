@@ -82,13 +82,6 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
   // (surfaceCreated callback) and reads cross-thread must see the latest ref.
   @Volatile internal var pendingResumeRunnable: Runnable? = null
 
-  // One-shot: did we already emit DISCONNECT for the current session? Set by
-  // the surface-destroyed path, cleared in startStreamInternal /
-  // onConnectionSuccess. Used to suppress the second DISCONNECT that Pedro's
-  // own onDisconnect callback would otherwise fire just after we tore the
-  // socket down ourselves.
-  @Volatile internal var disconnectEmitted = false
-
   // Warn-once on POST_NOTIFICATIONS: the FG-service preflight is called on
   // every startStreamInternal (including the auto-resume after bg→fg), and
   // spamming the log on every cycle is noise. Reset on stopStream / onDropView.
@@ -101,7 +94,7 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
 
   // @Volatile: written on main (surface callbacks), read on main in tryAutoReconnect
   // but also consulted from the JS-thread startStream gate — keep visibility
-  // consistent with shouldBeStreaming / disconnectEmitted.
+  // consistent with shouldBeStreaming.
   @Volatile internal var surfaceReady = false
 
   // Encoder prepare-state caches. RootEncoder's BaseEncoder.stop() releases the
@@ -141,7 +134,7 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
   // events or retry against the new session. Mirrors iOS' pipelineGeneration.
   // Best-effort on Android: Pedro reuses one ConnectChecker across sessions, so
   // a callback Pedro happens to invoke *after* the bump won't be caught here —
-  // the disconnectEmitted dedup + reconnectInProgress latch cover that residue.
+  // the pendingSelfDisconnects latch + reconnectInProgress latch cover that residue.
   @Volatile internal var pipelineGeneration = 0L
 
   // One reconnect in flight per failure cycle. Two Pedro I/O threads can fire
@@ -405,7 +398,6 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
         currentRetryAttempt = 0
         stallTicks = 0
         resumeDelayLevel = 0
-        disconnectEmitted = false
         // Re-arm Pedro's retry budget once the link PROVES stable. `reTries` is
         // session-scoped and only ticks DOWN — refilled by setReTries / a full
         // disconnect, never by a success — while currentRetryAttempt above
@@ -470,17 +462,15 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
         // pendingStream — the surfaceCreated resume path owns the restart, so
         // don't double-report it as a terminal failure here (S3).
         if (!surfaceReady || pendingStream != null) return@postToMain
-        if (tryAutoReconnect(reason)) {
-          onConnectionEvent?.invoke(RtmpConnectionEvent.RECONNECTING, reason)
-        } else {
-          mainHandler.removeCallbacks(reconnectTimeoutRunnable)
-          shouldBeStreaming = false
-          reconnectInProgress.set(false)
-          currentRetryAttempt = 0
-          disconnectEmitted = false
-          releaseWakeLock()
-          setKeepScreenOn(false)
-          onConnectionEvent?.invoke(RtmpConnectionEvent.CONNECTIONFAILED, reason)
+        when (tryAutoReconnect(reason)) {
+          ReconnectOutcome.STARTED ->
+            onConnectionEvent?.invoke(RtmpConnectionEvent.RECONNECTING, reason)
+          // A different failure this cycle already claimed recovery; its reTry is
+          // still pending (its dead-man still bounds a hang). Drop this duplicate
+          // instead of declaring the stream dead underneath the live retry.
+          ReconnectOutcome.ALREADY_IN_FLIGHT -> {}
+          ReconnectOutcome.TERMINAL ->
+            enterTerminalFailure(RtmpConnectionEvent.CONNECTIONFAILED, reason)
         }
       }
     }
@@ -515,24 +505,23 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
             Log.w(TAG, "Silent stall: no bytes flowing for ${stallTicks}s — forcing " +
               "reconnect (itemsInCache=$cached, droppedVideoFrames=$droppedV)")
             stallTicks = 0
-            if (tryAutoReconnect("silent stall: no bytes flowing")) {
-              onConnectionEvent?.invoke(RtmpConnectionEvent.RECONNECTING, "silent stall: no bytes flowing")
-            } else {
-              mainHandler.removeCallbacks(reconnectTimeoutRunnable)
-              shouldBeStreaming = false
-              rtmpConnected = false
-              reconnectInProgress.set(false)
-              currentRetryAttempt = 0
-              disconnectEmitted = false
-              // The latch swallows Pedro's trailing onDisconnect — JS gets the
-              // terminal CONNECTIONFAILED only (the field log's phantom
-              // `disconnect` 2s after the stall verdict was that straggler),
-              // and one landing after an immediate app restart can't queue a
-              // spurious reTry against the new session.
-              safe("stopStream(stall)") { stopLiveStreamTracked() }
-              releaseWakeLock()
-              setKeepScreenOn(false)
-              onConnectionEvent?.invoke(RtmpConnectionEvent.CONNECTIONFAILED, "silent stall: no bytes flowing")
+            when (tryAutoReconnect("silent stall: no bytes flowing")) {
+              ReconnectOutcome.STARTED ->
+                onConnectionEvent?.invoke(RtmpConnectionEvent.RECONNECTING, "silent stall: no bytes flowing")
+              // A reconnect already owns this cycle (the !reconnectInProgress gate
+              // above usually catches this first) — leave it to run.
+              ReconnectOutcome.ALREADY_IN_FLIGHT -> {}
+              // stopStream=true actively closes the half-open socket; the latch
+              // swallows Pedro's trailing onDisconnect so JS gets the terminal
+              // CONNECTIONFAILED only (the field log's phantom `disconnect` 2s
+              // after the stall verdict was that straggler, and one landing after
+              // an immediate app restart can't queue a spurious reTry).
+              ReconnectOutcome.TERMINAL ->
+                enterTerminalFailure(
+                  RtmpConnectionEvent.CONNECTIONFAILED,
+                  "silent stall: no bytes flowing",
+                  stopStream = true,
+                )
             }
             return@postToMain
           }
@@ -591,26 +580,20 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
         // Surface recycle already emitted DISCONNECT + seeded the resume — let
         // that path own it instead of retrying against a dead surface (S3).
         if (!surfaceReady || pendingStream != null) {
-          disconnectEmitted = false
           return@postToMain
         }
-        if (tryAutoReconnect("disconnect")) {
-          onConnectionEvent?.invoke(RtmpConnectionEvent.RECONNECTING, "disconnect")
-        } else {
-          mainHandler.removeCallbacks(reconnectTimeoutRunnable)
-          shouldBeStreaming = false
-          reconnectInProgress.set(false)
-          currentRetryAttempt = 0
-          releaseWakeLock()
-          setKeepScreenOn(false)
-          // Every self-initiated teardown is latch-swallowed above, so this
-          // branch is only reachable for a straggler that outlived a settle
-          // timeout's latch reset — emitting DISCONNECT there is acceptable.
-          // disconnectEmitted is belt-and-braces dedup for that residue.
-          if (!disconnectEmitted) {
-            onConnectionEvent?.invoke(RtmpConnectionEvent.DISCONNECT, "")
-          }
-          disconnectEmitted = false
+        when (tryAutoReconnect("disconnect")) {
+          ReconnectOutcome.STARTED ->
+            onConnectionEvent?.invoke(RtmpConnectionEvent.RECONNECTING, "disconnect")
+          // A reconnect already owns recovery — this duplicate disconnect must
+          // not tear the stream down or emit a spurious terminal DISCONNECT.
+          ReconnectOutcome.ALREADY_IN_FLIGHT -> {}
+          // Every self-initiated teardown is latch-swallowed above (see
+          // consumePendingSelfDisconnect), so this branch is only reachable for a
+          // straggler that outlived a settle timeout's latch reset — emitting
+          // DISCONNECT there is acceptable.
+          ReconnectOutcome.TERMINAL ->
+            enterTerminalFailure(RtmpConnectionEvent.DISCONNECT, "")
         }
       }
     }
@@ -628,6 +611,28 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
         onConnectionEvent?.invoke(RtmpConnectionEvent.AUTHSUCCESS, "")
       }
     }
+  }
+
+  // Shared terminal-failure teardown for the connectChecker paths (must run on
+  // main). Cancels the dead-man, clears streaming/connected state, releases the
+  // reconnect latch + wakelock + screen-on, and emits the terminal event.
+  // `stopStream=true` also tears the Pedro session down — used by the stall path,
+  // where a half-open socket must be actively closed; its trailing onDisconnect
+  // is latch-swallowed (pendingSelfDisconnects) so JS sees only this one event.
+  private fun enterTerminalFailure(
+    event: RtmpConnectionEvent,
+    message: String,
+    stopStream: Boolean = false,
+  ) {
+    mainHandler.removeCallbacks(reconnectTimeoutRunnable)
+    shouldBeStreaming = false
+    rtmpConnected = false
+    reconnectInProgress.set(false)
+    currentRetryAttempt = 0
+    if (stopStream) safe("stopStream(stall)") { stopLiveStreamTracked() }
+    releaseWakeLock()
+    setKeepScreenOn(false)
+    onConnectionEvent?.invoke(event, message)
   }
 
   // Stops a live stream and registers Pedro's trailing onDisconnect with the
@@ -797,11 +802,9 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
       mainHandler.removeCallbacks(restoreStreamModeRunnable)
       cancelPendingResume()
       try {
-        // Tracked: the latch swallows this teardown's straggler. The old
-        // disconnectEmitted dedup only covered it while the surface stayed
-        // down — a straggler outliving a fast destroy→create→resume cycle
-        // passed every guard and queued a spurious reTry against the resumed
-        // session.
+        // Tracked: the latch swallows this teardown's straggler — a straggler
+        // outliving a fast destroy→create→resume cycle would otherwise pass
+        // every guard and queue a spurious reTry against the resumed session.
         stopLiveStreamTracked()
         if (camera.isOnPreview) camera.stopPreview()
       } catch (e: Exception) {
@@ -832,9 +835,8 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
           // Only emit DISCONNECT when an actual session was torn down. The
           // hadPendingResume-only case (bg→fg→bg before resume runs) means
           // JS already got DISCONNECT on the first backgrounding — emitting
-          // again would just be noise. (No disconnectEmitted=true here any
-          // more: the latch swallows the straggler entirely, and a stranded
-          // true flag would suppress a future legitimate DISCONNECT.)
+          // again would just be noise. The pendingSelfDisconnects latch
+          // swallows the self-initiated teardown's straggler entirely.
           onConnectionEvent?.invoke(
             RtmpConnectionEvent.DISCONNECT,
             "surface destroyed"
@@ -1203,10 +1205,6 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     streamExplicitlyStopped = false
     shouldBeStreaming = true
     // Fresh session: clear any in-flight reconnect bookkeeping + stall counter.
-    // NOTE: disconnectEmitted is deliberately NOT cleared here — clearing it
-    // before the connection is up let a stale onDisconnect from the prior
-    // session emit a spurious DISCONNECT (S4). It's cleared on onConnectionSuccess
-    // / stopStream / onDropView and every terminal path instead.
     reconnectInProgress.set(false)
     currentRetryAttempt = 0
     stallTicks = 0
@@ -1375,7 +1373,6 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     stallTicks = 0
     resumeDelayLevel = 0
     lastSurfaceDestroyMs = 0L
-    disconnectEmitted = false
     postNotificationsWarned = false
     mainHandler.removeCallbacks(reconnectTimeoutRunnable)
     mainHandler.removeCallbacks(budgetRefillRunnable)
@@ -1879,7 +1876,6 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     reconnectInProgress.set(false)
     currentRetryAttempt = 0
     stallTicks = 0
-    disconnectEmitted = false
     postNotificationsWarned = false
     lastPreview = null
     pendingStream = null

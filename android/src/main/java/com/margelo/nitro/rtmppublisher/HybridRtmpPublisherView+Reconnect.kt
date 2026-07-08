@@ -6,18 +6,30 @@ package com.margelo.nitro.rtmppublisher
  * connectChecker in the main file can be a thin pass-through to JS events.
  */
 
-internal fun HybridRtmpPublisherView.tryAutoReconnect(reason: String): Boolean {
+// Outcome of an auto-reconnect attempt, so the caller can tell a genuine
+// dead-end (no retry was queued, none is pending → declare terminal) apart from
+// "a *different* failure this cycle already owns recovery" (ALREADY_IN_FLIGHT →
+// drop this duplicate, DON'T declare terminal). ALREADY_IN_FLIGHT is the fix for
+// the two-Pedro-threads-fail-microseconds-apart race: the loser of the
+// compareAndSet below used to fall through to a terminal CONNECTIONFAILED while
+// the winner's reTry was still queued and might yet succeed — abandoning a live
+// retry and lying to JS.
+internal enum class ReconnectOutcome { STARTED, ALREADY_IN_FLIGHT, TERMINAL }
+
+internal fun HybridRtmpPublisherView.tryAutoReconnect(reason: String): ReconnectOutcome {
   // Gate order matters: the hard user-stop check comes first so a stopStream
   // racing an in-flight failure can't be overridden (M3).
-  if (streamExplicitlyStopped) return false
-  if (!shouldBeStreaming) return false
-  if (autoReconnectMaxAttempts <= 0) return false
-  if (!surfaceReady) return false
+  if (streamExplicitlyStopped) return ReconnectOutcome.TERMINAL
+  if (!shouldBeStreaming) return ReconnectOutcome.TERMINAL
+  if (autoReconnectMaxAttempts <= 0) return ReconnectOutcome.TERMINAL
+  if (!surfaceReady) return ReconnectOutcome.TERMINAL
   // S2: only one reconnect in flight per failure cycle. Two Pedro I/O threads can
   // fire onConnectionFailed microseconds apart (timeout + broken-pipe); without
-  // this both would call reTry and burn the retry budget twice. Released in
+  // this both would call reTry and burn the retry budget twice. The CAS loser
+  // reports ALREADY_IN_FLIGHT — the winner already armed a reTry + dead-man for
+  // this cycle, so the loser must NOT tear the stream down. Released in
   // onConnectionStarted (handshake began) / onConnectionSuccess / terminal paths.
-  if (!reconnectInProgress.compareAndSet(false, true)) return false
+  if (!reconnectInProgress.compareAndSet(false, true)) return ReconnectOutcome.ALREADY_IN_FLIGHT
   // S5: escalate the backoff across consecutive attempts so we don't hammer a
   // dead / rate-limiting server. Reset to attempt 0 on success / fresh start.
   val attempt = currentRetryAttempt
@@ -46,8 +58,9 @@ internal fun HybridRtmpPublisherView.tryAutoReconnect(reason: String): Boolean {
     // Pedro refused (budget exhausted / not in a retryable state). Release the
     // latch so a later failure can try again; the caller emits terminal failure.
     reconnectInProgress.set(false)
+    return ReconnectOutcome.TERMINAL
   }
-  return queued
+  return ReconnectOutcome.STARTED
 }
 
 // base · 2^attempt, clamped to [base, MAX_RETRY_BACKOFF_MS]. `coerceIn(0,16)`

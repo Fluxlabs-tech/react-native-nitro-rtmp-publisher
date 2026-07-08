@@ -57,7 +57,14 @@ extension HybridRtmpPublisherView {
   }
 
   func emitConnectionEvent(_ event: RtmpConnectionEvent, _ message: String) {
-    onMain { [weak self] in self?.onConnectionEvent?(event, message) }
+    // Universal credential backstop: strip any `://user:pass@` from every
+    // message before it crosses the bridge, regardless of caller, so a future
+    // emit site can't leak embedded credentials. Stream-key (URL-path) redaction
+    // is NOT applied here — it stays at the server-text call sites via
+    // `sanitizeMessage`, because `.connectionstarted` legitimately carries the
+    // connect URL's non-secret app path, which a path sweep would wrongly redact.
+    let safe = stripUserinfo(message)
+    onMain { [weak self] in self?.onConnectionEvent?(event, safe) }
   }
   func emitBitrateChange(_ bps: Double) {
     onMain { [weak self] in self?.onBitrateChange?(bps) }

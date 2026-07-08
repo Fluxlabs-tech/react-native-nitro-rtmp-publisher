@@ -112,6 +112,10 @@ extension HybridRtmpPublisherView {
     if shouldBeStreaming, !cachedIsStreaming, !isPublishingInFlight(),
        !reconnectScheduled, currentRtmpConnectUrl != nil {
       retriesRemaining = max(retriesRemaining, 1)
+      // Fresh recovery moment — restart the escalation exponent from 0 so a
+      // returning app retries at the base backoff, not wherever the pre-background
+      // outage left the counter.
+      currentReconnectAttempt = 0
       scheduleReconnect(delayMs: 1500, reason: "foreground")
     }
     // If a call/interruption emitted a .disconnect and the socket survived (no
@@ -189,10 +193,16 @@ extension HybridRtmpPublisherView {
       // rebuild on `.ended`, so there's nothing to do here. Gate the stall
       // watchdog off for the interruption (0 bytes is expected during the call).
       captureInterrupted = true
+      // Stamp for the disconnect-cause classifier: a socket drop that lands
+      // within a few seconds of this is attributed to the call/Siri, not the
+      // network. See +DisconnectCause.swift.
+      lastAudioInterruptionUptime = ProcessInfo.processInfo.systemUptime
+      audioInterruptionActive = true
     case .ended:
       // Interruption over — re-enable the stall watchdog (cleared before the
       // preview guard so it always resets, even when not on preview).
       captureInterrupted = false
+      audioInterruptionActive = false
       // Only restore if we're actually capturing (preview / stream active).
       guard cachedIsOnPreview else { return }
       scheduleAudioRestart()
@@ -223,6 +233,8 @@ extension HybridRtmpPublisherView {
       if shouldBeStreaming, !cachedIsStreaming, !isPublishingInFlight(),
          !reconnectScheduled, currentRtmpConnectUrl != nil {
         retriesRemaining = max(retriesRemaining, 1)
+        // Fresh recovery moment — restart the escalation exponent from 0.
+        currentReconnectAttempt = 0
         scheduleReconnect(delayMs: 1000, reason: "audio-interruption-ended")
       }
       // Socket survived (no reconnect scheduled above) → emit the recovery arc

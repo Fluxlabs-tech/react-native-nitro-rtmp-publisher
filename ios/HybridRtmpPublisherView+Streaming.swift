@@ -39,6 +39,7 @@ extension HybridRtmpPublisherView {
     pendingStreamKey = streamKey
     shouldBeStreaming = true
     retriesRemaining = autoReconnectMaxAttempts
+    currentReconnectAttempt = 0
 
     applyStreamMode()
     pinVideoOrientation()
@@ -72,6 +73,7 @@ extension HybridRtmpPublisherView {
         // that survived a couple of mid-session blips has fewer retries
         // available for the next blip.
         self.retriesRemaining = self.autoReconnectMaxAttempts
+        self.currentReconnectAttempt = 0
         self.emitConnectionEvent(.connectionsuccess, "")
         self.startBitrateTimer()
       } catch is CancellationError {
@@ -92,6 +94,7 @@ extension HybridRtmpPublisherView {
         if self.shouldBeStreaming {
           if !self.tryAutoReconnect(reason: desc) {
             self.shouldBeStreaming = false
+            self.currentReconnectAttempt = 0
             self.emitConnectionEvent(.connectionfailed, desc)
           }
         }
@@ -247,7 +250,11 @@ extension HybridRtmpPublisherView {
 
   func setAutoReconnect(maxAttempts: Double, backoffMs: Double) throws {
     autoReconnectMaxAttempts = max(0, Int(maxAttempts))
-    autoReconnectBackoffMs = max(0, Int64(backoffMs))
+    // Clamp the base to the escalation ceiling at the setter — Android parity
+    // (its setAutoReconnect does coerceIn(0, MAX_RETRY_BACKOFF_MS)). Keeps
+    // escalatedBackoffMs's `base << shift` overflow-free without a guard, and
+    // stops a >1h configured backoff from being silently reduced only at use.
+    autoReconnectBackoffMs = min(max(0, Int64(backoffMs)), maxReconnectBackoffMs)
     retriesRemaining = autoReconnectMaxAttempts
   }
 
@@ -273,12 +280,39 @@ extension HybridRtmpPublisherView {
       log("auto-reconnect already scheduled, ignoring duplicate (reason: \(reason))")
       return true
     }
+    // Escalate the backoff across consecutive attempts (base · 2^attempt,
+    // clamped) so a dead / rate-limiting ingest isn't hammered at a flat
+    // interval — mirrors Android's escalatedBackoffMs (+Reconnect.kt). The TS
+    // spec + README document escalating backoff "on both platforms". Use the
+    // dedicated `currentReconnectAttempt` counter — NOT (max - retriesRemaining):
+    // the budget-mutating APIs (setReTries / reTry / setAutoReconnect / the
+    // lifecycle revive) change retriesRemaining without meaning "another
+    // consecutive auto-failure", so deriving the exponent from it would skew the
+    // delay (e.g. setReTries(2) with a max of 5 would start the FIRST retry at
+    // 2^3). Android keeps the same split via currentRetryAttempt.
+    let attempt = currentReconnectAttempt
+    currentReconnectAttempt += 1
     retriesRemaining -= 1
     // `.reconnecting` is emitted inside scheduleReconnect now (so the direct
     // callers — appWillEnterForeground, the phone-call recovery path — emit it
     // too, not just this auto path). See scheduleReconnect.
-    scheduleReconnect(delayMs: autoReconnectBackoffMs, reason: reason)
+    scheduleReconnect(delayMs: escalatedBackoffMs(attempt: attempt), reason: reason)
     return true
+  }
+
+  /// base · 2^attempt, clamped to maxReconnectBackoffMs. Mirrors Android's
+  /// escalatedBackoffMs so consecutive auto-reconnects back off instead of
+  /// hammering a dead server at a flat interval. `attempt` is clamped to [0, 16]
+  /// so the shift stays small; `base` is clamped to [0, maxReconnectBackoffMs]
+  /// at the setter, so `base << shift` can't overflow Int64 and the result only
+  /// needs the ceiling clamp. Direct callers (foreground resume, phone-call
+  /// recovery, the manual `reTry` API) keep passing their own fixed delays —
+  /// only the auto path escalates.
+  func escalatedBackoffMs(attempt: Int) -> Int64 {
+    let base = autoReconnectBackoffMs
+    guard base > 0 else { return 0 }
+    let shift = Swift.min(Swift.max(attempt, 0), 16)
+    return Swift.min(base << shift, maxReconnectBackoffMs)
   }
 
   func scheduleReconnect(delayMs: Int64, reason: String) {
@@ -337,6 +371,7 @@ extension HybridRtmpPublisherView {
         self.cachedIsStreaming = true
         // Replenish — see startStream's success path for rationale.
         self.retriesRemaining = self.autoReconnectMaxAttempts
+        self.currentReconnectAttempt = 0
         self.emitConnectionEvent(.connectionsuccess, "")
         self.startBitrateTimer()
       } catch is CancellationError {
@@ -346,11 +381,30 @@ extension HybridRtmpPublisherView {
         let desc = self.sanitizeError(error)
         self.log("retry connect failed: \(desc)")
         self.stopBitrateTimer()
+        // This attempt has run and FAILED — wind it down BEFORE rescheduling.
+        // Two things the trailing defers can't do here, both idempotent:
+        //  1. releasePublishSlot(): if tryAutoReconnect below schedules a new
+        //     attempt, scheduleReconnect cancels THIS task (reconnectTask == self),
+        //     so the inner `if !Task.isCancelled` slot defer skips and the slot
+        //     leaks — the next attempt could then never claim it. Release now;
+        //     the defer's release becomes a harmless no-op (or is skipped).
+        //  2. reconnectScheduled = false: tryAutoReconnect's dedupe gate would
+        //     otherwise see our own still-true flag (the outer defer clears it
+        //     only after this closure returns), return true WITHOUT scheduling,
+        //     and the caller would skip the terminal emit too — the retry chain
+        //     dies silently with the stream stuck on RECONNECTING (trigger:
+        //     connect() throwing with NO accompanying status event, e.g. a
+        //     DNS/socket failure; iOS has no dead-man timer to rescue it). A
+        //     fresh schedule re-sets the flag and cancels this task, so the
+        //     outer defer no-ops.
+        self.releasePublishSlot()
+        self.reconnectScheduled = false
         // Same dedupe as startStream's catch — skip emit if a terminal
         // stream-level event already announced the failure.
         if self.shouldBeStreaming {
           if !self.tryAutoReconnect(reason: desc) {
             self.shouldBeStreaming = false
+            self.currentReconnectAttempt = 0
             self.emitConnectionEvent(.connectionfailed, desc)
           }
         }
@@ -555,13 +609,18 @@ extension HybridRtmpPublisherView {
         if stallTicks >= stallTickLimit, !reconnectScheduled {
           log("silent stall: no bytes leaving for \(stallTicks)s — forcing reconnect")
           stallTicks = 0
-          if !tryAutoReconnect(reason: "silent stall: no bytes flowing") {
+          // A half-open socket (bytes stop, no FIN for 10-15s) is almost always
+          // the uplink dying mid-stream; run it through the same classifier so
+          // the reason reads e.g. "network-lost (silent-stall)" instead of a bare
+          // stall string. See +DisconnectCause.swift.
+          let cause = "\(disconnectCauseCategory()) (silent-stall)"
+          if !tryAutoReconnect(reason: cause) {
             // Reconnect can't run (disabled / budget gone) — surface the dead
             // stream instead of leaving JS on a fabricated "live" bitrate.
             shouldBeStreaming = false
             cachedIsStreaming = false
             stopBitrateTimer()
-            emitConnectionEvent(.connectionfailed, "silent stall: no bytes flowing")
+            emitConnectionEvent(.connectionfailed, cause)
           }
           return
         }
@@ -628,18 +687,23 @@ extension HybridRtmpPublisherView {
       let isFailed = (code == RTMPConnection.Code.connectFailed.rawValue)
       stopBitrateTimer()
       cachedIsStreaming = false
-      if tryAutoReconnect(reason: code) { return }
+      // A bare RTMP close code doesn't say WHY the socket died. Classify the
+      // likely cause (network-lost / interrupted-by-call / server-closed /
+      // thermal-critical / low-battery) so both the auto-reconnect's
+      // `.reconnecting` reason and the terminal `.disconnect`/`.connectionfailed`
+      // message carry it. See +DisconnectCause.swift.
+      let cause = classifyDisconnectCause(rtmpCode: code)
+      if tryAutoReconnect(reason: cause) { return }
       shouldBeStreaming = false
-      emitConnectionEvent(isFailed ? .connectionfailed : .disconnect, code)
+      emitConnectionEvent(isFailed ? .connectionfailed : .disconnect, cause)
     case RTMPConnection.Code.connectRejected.rawValue,
          RTMPConnection.Code.connectInvalidApp.rawValue:
-      let desc = status.description
-      let isAuth = desc.lowercased().contains("auth") || desc.lowercased().contains("not authorized")
-      if isAuth {
-        emitConnectionEvent(.autherror, desc)
-      } else {
-        emitConnectionEvent(.connectionfailed, desc)
-      }
+      // Classify auth on the RAW text: an auth marker can live in an echoed URL
+      // query (e.g. `?authmod=adobe`) that the key-path scrub would redact. Emit
+      // the SANITIZED text so no stream key / credential crosses the bridge.
+      let raw = status.description
+      let isAuth = raw.lowercased().contains("auth") || raw.lowercased().contains("not authorized")
+      emitConnectionEvent(isAuth ? .autherror : .connectionfailed, sanitizeMessage(raw))
     default:
       break
     }
@@ -655,7 +719,11 @@ extension HybridRtmpPublisherView {
 
   func handleStreamStatus(_ status: RTMPStatus) {
     let code = status.code
-    let desc = status.description
+    // Keep the RAW description for auth classification (an auth marker can live
+    // in an echoed URL query that sanitizeMessage redacts) and the SANITIZED one
+    // for anything that reaches JS or the log.
+    let rawDesc = status.description
+    let desc = sanitizeMessage(rawDesc)
     switch code {
     case RTMPStream.Code.publishStart.rawValue:
       // Server has accepted the publish — best-effort confirmation. We
@@ -683,7 +751,7 @@ extension HybridRtmpPublisherView {
       publishTask?.cancel()
       publishTask = nil
       releasePublishSlot()
-      let isAuth = desc.lowercased().contains("auth") || desc.lowercased().contains("not authorized")
+      let isAuth = rawDesc.lowercased().contains("auth") || rawDesc.lowercased().contains("not authorized")
       emitConnectionEvent(isAuth ? .autherror : .connectionfailed, "publishBadName: \(desc)")
     case RTMPStream.Code.failed.rawValue,
          RTMPStream.Code.playFailed.rawValue,

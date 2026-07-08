@@ -12,6 +12,19 @@ import Foundation
 
 extension HybridRtmpPublisherView {
 
+  // Compiled once, not per call — sanitizeMessage/stripUserinfo run on every
+  // RTMP status + connect/publish-error event. `try?` on a compile-time-constant
+  // pattern won't fail in practice; a nil just skips that sweep (same as the old
+  // inline `try?` behavior). Character classes mirror Android's `scrubRtmpKey`
+  // (PublisherTypes.kt) so both platforms redact identically. Whitespace is
+  // excluded from the userinfo halves so the match can't span into surrounding
+  // prose (an email/`@` later in a server status description); the key-path
+  // class stops at whitespace/quotes so it doesn't eat trailing delimiters.
+  private static let userinfoRegex = try? NSRegularExpression(
+    pattern: "://([^:/@\\s]+):([^@/\\s]+)@")
+  private static let rtmpKeyRegex = try? NSRegularExpression(
+    pattern: "(rtmps?://[^/\\s]+)/[^\\s\"']+", options: [.caseInsensitive])
+
   /// Strip the `user:password@` component from an RTMP URL. We embed AMF
   /// credentials directly into the URL inside `applyAuthToConnectUrl`
   /// (`rtmp://u:p@host/app`), but anything we hand to JS or write to the
@@ -28,19 +41,37 @@ extension HybridRtmpPublisherView {
     return comps.string ?? url
   }
 
+  /// Strip `://user:pass@` userinfo from a string. Safe on ANY message — a
+  /// bridge message should never carry credentials — so it doubles as the
+  /// universal backstop in `emitConnectionEvent`. Does NOT touch the URL path,
+  /// so an emitted connect URL keeps its (non-secret) app name.
+  func stripUserinfo(_ raw: String) -> String {
+    guard let regex = Self.userinfoRegex else { return raw }
+    let range = NSRange(raw.startIndex..<raw.endIndex, in: raw)
+    return regex.stringByReplacingMatches(in: raw, range: range, withTemplate: "://")
+  }
+
+  /// Full scrub for text that may embed a complete RTMP URL (server `onStatus`
+  /// descriptions, error strings): strip userinfo, then redact the URL path
+  /// where the stream key lives. Server status text is server-controlled, so
+  /// anything derived from it must pass through here before crossing the bridge
+  /// or hitting the log.
+  func sanitizeMessage(_ raw: String) -> String {
+    var out = stripUserinfo(raw)
+    if let regex = Self.rtmpKeyRegex {
+      let range = NSRange(out.startIndex..<out.endIndex, in: out)
+      out = regex.stringByReplacingMatches(in: out, range: range, withTemplate: "$1/<redacted>")
+    }
+    return out
+  }
+
   /// Strip credentials from `Error` descriptions before they hit logs or JS.
   /// HaishinKit's `RTMPConnection.Error.unsupportedCommand(command)` carries
   /// the URL verbatim, and Swift's default error `description` interpolates
   /// it. We can't introspect arbitrary `Error` values, so we run the textual
-  /// description through a regex sweep that nukes any embedded user:pass@.
+  /// description through `sanitizeMessage`.
   func sanitizeError(_ error: Error) -> String {
-    let raw = "\(error)"
-    // Match `://user:pass@host` and replace with `://host`. Greedy on the
-    // password segment is fine — RTMP URLs only have one userinfo.
-    let pattern = "://([^:/@]+):([^@/]+)@"
-    guard let regex = try? NSRegularExpression(pattern: pattern) else { return raw }
-    let range = NSRange(raw.startIndex..<raw.endIndex, in: raw)
-    return regex.stringByReplacingMatches(in: raw, range: range, withTemplate: "://")
+    return sanitizeMessage("\(error)")
   }
 
   /// Rewrite `rtmp://host/app` → `rtmp://user:pass@host/app` if creds were set

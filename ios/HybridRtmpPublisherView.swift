@@ -55,6 +55,7 @@
 import AVFoundation
 import Foundation
 import HaishinKit
+import Network
 import NitroModules
 import RTMPHaishinKit
 import UIKit
@@ -413,6 +414,35 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   // owns the arc and this flag is just consumed.
   var interruptionNeedsRecovery = false
 
+  // ─── Disconnect-cause classification (see +DisconnectCause.swift) ─────────
+  // A socket-level drop reaches us only as a generic RTMP code
+  // (`NetConnection.Connect.Closed`) — identical whether the phone lost its
+  // uplink, a call grabbed the audio session, or the ingest server hung up.
+  // These side-channels are sampled at drop time by `classifyDisconnectCause`
+  // to label the cause in the emitted message. All ADVISORY: a mislabel never
+  // changes reconnect behavior, so the cross-thread reads are kept cheap.
+  //
+  // `_networkSatisfied` / `_networkInterface` / `_lastNetworkLossUptime` are
+  // written on `networkMonitorQueue` and read on the RTMP status thread, so
+  // they're guarded by `netStateLock`. Touch them ONLY via the accessors /
+  // classifier in +DisconnectCause.swift.
+  let netStateLock = NSLock()
+  var _networkSatisfied = true
+  var _networkInterface = "unknown"
+  var _lastNetworkLossUptime: TimeInterval = 0
+  var networkMonitor: NWPathMonitor?
+  let networkMonitorQueue = DispatchQueue(label: "rtmp.netpath.monitor")
+  /// `systemUptime` of the last audio-session interruption `.began` (phone call
+  /// / Siri / alarm). A socket drop within a few seconds of this is attributed
+  /// to the call. `audioInterruptionActive` is true across the interruption.
+  var lastAudioInterruptionUptime: TimeInterval = 0
+  var audioInterruptionActive = false
+  /// Battery snapshot, refreshed on main by the battery notification observers
+  /// (reading UIDevice off-main trips the Main Thread Checker), read as plain
+  /// scalars by the classifier. `-1` until battery monitoring is enabled.
+  var cachedBatteryLevel: Float = -1
+  var cachedBatteryUnplugged = false
+
   // RTMP URL is split into "rtmp://host/app" (connect) + "streamKey" (publish).
   var currentRtmpConnectUrl: String?
 
@@ -423,6 +453,17 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   var autoReconnectMaxAttempts = 5
   var autoReconnectBackoffMs: Int64 = 2_000
   var retriesRemaining = 0
+  /// Consecutive auto-reconnect attempts since the last success/fresh start,
+  /// driving the escalating backoff (base · 2^attempt). Tracked separately from
+  /// `retriesRemaining` — mirroring Android's `currentRetryAttempt` — so the
+  /// budget-mutating APIs (setReTries / reTry / setAutoReconnect / the lifecycle
+  /// revive) can't skew the escalation exponent. ONLY `tryAutoReconnect`
+  /// increments it; reset on connection success and fresh startStream.
+  var currentReconnectAttempt = 0
+  /// Ceiling for the escalating reconnect backoff (base · 2^attempt), mirroring
+  /// Android's MAX_RETRY_BACKOFF_MS. 1 hour — a runaway backoff against a dead
+  /// endpoint just wastes the retry budget.
+  let maxReconnectBackoffMs: Int64 = 60 * 60 * 1000
   /// In-flight reconnect Task. Cancelling here interrupts both the delay
   /// (`Task.sleep` throws on cancel) and any await-in-flight inside the
   /// reconnect body — strictly better than `DispatchWorkItem.cancel`,
@@ -681,6 +722,19 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     // audio. See `handleAudioSessionInterruption`.
     nc.addObserver(self, selector: #selector(handleAudioSessionInterruption(_:)),
                    name: AVAudioSession.interruptionNotification, object: nil)
+    // Battery telemetry for the disconnect-cause classifier. The observers fire
+    // on main; `refreshBatteryCache` reads UIDevice there and caches the scalars
+    // the classifier reads. Cleaned up by `removeObserver(self)` in deinit/drop.
+    nc.addObserver(self, selector: #selector(batteryStateDidChange),
+                   name: UIDevice.batteryLevelDidChangeNotification, object: nil)
+    nc.addObserver(self, selector: #selector(batteryStateDidChange),
+                   name: UIDevice.batteryStateDidChangeNotification, object: nil)
+
+    // Disconnect-cause side-channels: watch the network path + battery so a
+    // socket drop can be labeled (network-lost / interrupted-by-call /
+    // server-closed / thermal-critical / low-battery). See +DisconnectCause.swift.
+    startNetworkMonitor()
+    enableBatteryMonitoring()
   }
 
   deinit {
@@ -688,6 +742,7 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     streamStatusObserverTask?.cancel()
     reconnectTask?.cancel()
     publishTask?.cancel()
+    stopNetworkMonitor()
     NotificationCenter.default.removeObserver(self)
     // `removeObserver(self)` only matches observers registered via the
     // selector variant. The orientation + thermal observers use the
@@ -792,6 +847,7 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     }
     unregisterThermalObserver()
     disableOrientationObserver()
+    stopNetworkMonitor()
     NotificationCenter.default.removeObserver(self)
     onMain { UIApplication.shared.isIdleTimerDisabled = false }
     if holdsActiveSlot {
