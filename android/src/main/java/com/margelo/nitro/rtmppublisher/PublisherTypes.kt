@@ -44,6 +44,12 @@ internal const val STREAM_MODE_RESTORE_DELAY_MS = 8_000L
 // tick won't trip it.
 internal const val STALL_TICKS = 3
 
+// Grace after a default-network switch before the rebuild's fresh connect
+// (rebuildForNetworkChange). The new interface (esp. Wi-Fi: DHCP + captive/
+// validation) needs a moment to become routable; connecting into a half-ready
+// link just fails. Matches the surface-resume foreground grace.
+internal const val NETWORK_CHANGE_SETTLE_MS = 1500L
+
 // Foreground-service readiness wait (M8). startForegroundService is async; we
 // poll RtmpForegroundService.running this many times, this far apart, before
 // starting the encoder (25 × 20ms = 500ms ceiling). Polling (not blocking) is

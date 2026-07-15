@@ -102,15 +102,40 @@ export function usePublisher(append: (line: string) => void, sampleRate: number)
           setPreviewing(true);
           append('startPreview(back)');
 
-          // Adaptive bitrate: cap at `VIDEO_BITRATE`, drop 20% on congestion,
-          // recover 5% per tick.
-          ref.setAdaptiveBitrate(VIDEO_BITRATE, 20, 5);
+          // Adaptive bitrate runs automatically on both platforms (armed at
+          // every startStream, ceiling = the prepareVideo bitrate). This
+          // explicit call just demonstrates overriding the tuning: cap at
+          // `VIDEO_BITRATE`, drop 20% on congestion, probe up 10% per step.
+          // Opt out entirely with setAdaptiveBitrate(0, 0, 0).
+          ref.setAdaptiveBitrate(VIDEO_BITRATE, 20, 10);
           // Combined stream stats (measured TX bitrate + live video fps) in one
           // callback. Superset of setOnBitrateChange — use this when you also
           // want the frame rate. fps is the sent rate on Android, the
           // encoder-input rate on iOS.
           ref.setOnStreamStats((bitrateBps: number, videoFps: number) => {
-            append(`tx=${Math.round(bitrateBps / 1000)} kbps · ${Math.round(videoFps)} fps`);
+            // Per-tick diagnostics beyond the measured TX rate:
+            //  • target — the encoder's configured bitrate (what adaptive
+            //    bitrate set via setVideoBitrateOnFly). Watch this drop toward
+            //    the floor on a congested link; it's the real proof ABR is
+            //    adapting. `tx` is the measured throughput, `target` is the
+            //    encoder's aim.
+            //  • resolution — the size going out on the wire. Fixed by
+            //    prepareVideo (adaptive bitrate never changes it), but can
+            //    differ from VIDEO_WIDTH/VIDEO_HEIGHT when stream rotation
+            //    swaps the axes (portrait 720×1280 from a 1280×720 config).
+            let extra = '';
+            try {
+              const target = Math.round(ref.getCurrentBitrate() / 1000);
+              const w = Math.round(ref.getStreamWidth());
+              const h = Math.round(ref.getStreamHeight());
+              if (target > 0) extra += ` · target ${target} kbps`;
+              if (w > 0 && h > 0) extra += ` · ${w}×${h}`;
+            } catch {
+              /* native getters unavailable this tick — just omit the extras */
+            }
+            append(
+              `tx=${Math.round(bitrateBps / 1000)} kbps · ${Math.round(videoFps)} fps${extra}`
+            );
           });
 
           // Thermal monitoring. Seed initial value since the listener only
