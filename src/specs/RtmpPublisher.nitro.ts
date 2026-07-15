@@ -373,21 +373,49 @@ export interface RtmpPublisherViewMethods extends HybridViewMethods {
   /**
    * Change video bitrate WITHOUT resetting the encoder. Use this for adaptive
    * bitrate based on network conditions — cheap, no rotation flash.
+   *
+   * Interaction with the built-in adaptive-bitrate controller (armed
+   * automatically — see `setAdaptiveBitrate`): the manual value is adopted as
+   * the controller's new target instead of being reverted by its next probe.
+   * A manual *decrease* also holds like a congestion cut (probes stay capped
+   * at the manual level for the ~60 s caution window before gently re-testing
+   * above it). For a persistent cap, move the ceiling with
+   * `setAdaptiveBitrate(newMax, …)`; for full manual control, opt out with
+   * `setAdaptiveBitrate(0, 0, 0)` first.
    */
   setVideoBitrateOnFly(bitrate: number): void
 
   /**
-   * Enable built-in adaptive bitrate. The library samples the measured TX
-   * bitrate every second and adjusts the encoder via `setVideoBitrateOnFly`:
-   *  - decreases when the network is congested (RTMP send-buffer fills up)
-   *  - slowly recovers toward `maxBitrate` when the network has headroom
+   * Configure built-in adaptive bitrate. The library samples the link every
+   * second and adjusts the encoder via `setVideoBitrateOnFly`:
+   *  - decreases toward measured link capacity when congestion is detected
+   *    (RTMP send-queue backlog — queued frames on Android, HaishinKit's
+   *    `queueBytesOut` on iOS)
+   *  - probes back toward `maxBitrate` once the link has been stable
+   *
+   * **Runs automatically on both platforms** — every `startStream` arms the
+   * controller with the `prepareVideo` bitrate as ceiling, a floor of
+   * ceiling/20 (never below 100 kbps), slow-start recovery (probe steps
+   * double while the link stays clean, so climbing back from the floor takes
+   * ~30 s, not minutes) and a hold-off/caution scheme that prevents the
+   * classic probe→congest→drop oscillation. After an auto-reconnect it
+   * resumes at the last adapted target and keeps its caution ceiling (a
+   * just-reconnected socket needs a few seconds before it can carry more, so
+   * probes stay capped until the caution window expires, then climb — this
+   * avoids a congest→stall→reconnect loop). On a severe backlog (≥3 s of
+   * queued media despite adapting) Android drops the queued backlog and
+   * requests a keyframe so the viewer snaps back to live; iOS holds the
+   * floor (HaishinKit exposes no queue-flush). Call this
+   * method only to override the ceiling/tuning, or to opt out.
    *
    * `maxBitrate` is the ceiling — usually equal to the `bitrate` you passed
-   * to `prepareVideo`. Pass `0` to disable.
+   * to `prepareVideo`. Pass `0` to disable the automatic controller until
+   * you re-enable with a positive ceiling.
    *
    * The optional `decreaseRangePercent` (0..100, default 20) controls how
    * aggressively bitrate drops on congestion; `increaseRangePercent` (0..100,
-   * default 5) controls how quickly it recovers.
+   * default 10) controls how quickly it recovers. Pass `0` for either to
+   * keep the default.
    */
   setAdaptiveBitrate(
     maxBitrate: number,
@@ -397,6 +425,14 @@ export interface RtmpPublisherViewMethods extends HybridViewMethods {
 
   // ─── Encoder reset (rare) ────────────────────────────────────────────────
 
+  /**
+   * Re-applies the video encoder settings. While adaptive bitrate is armed
+   * (the default), the encoder is re-seeded at the controller's *current
+   * adapted target*, not the configured `prepareVideo` bitrate — resetting
+   * to the full rate mid-congestion would re-flood the link. Opt out with
+   * `setAdaptiveBitrate(0, 0, 0)` first if you need a hard reset to the
+   * configured bitrate.
+   */
   resetVideoEncoder(): boolean
   resetAudioEncoder(): boolean
 
@@ -489,7 +525,32 @@ export interface RtmpPublisherViewMethods extends HybridViewMethods {
 
   // ─── Event callbacks (split for bridge efficiency) ───────────────────────
 
-  /** State changes (connect/disconnect/auth). Fires only on transitions. */
+  /**
+   * State changes (connect/disconnect/auth). Fires only on transitions.
+   *
+   * `message` carries the reason where one is known — useful for logging why a
+   * stream dropped or is recovering:
+   *  - `disconnect` — `"network-changed(wifi)"` / `"network-changed(cellular)"`
+   *    when the device's default network switched under a live stream (BOTH
+   *    platforms stop + restart to re-home the socket — on iOS this is also
+   *    what moves a stream off cellular when WiFi comes back, since iOS keeps
+   *    established connections on the old interface); `"backgrounded (surface
+   *    destroyed)"` (Android) / `"app entered background"` (iOS) when the app
+   *    went to the background; `"connection-lost"` (possibly prefixed with a
+   *    classified cause like `"network-lost"`) when the transport aborted; or,
+   *    for a plain user-initiated `stopStream()`, empty on Android /
+   *    `"stopStream"` on iOS.
+   *  - `reconnecting` — `"foreground"` on background→foreground resume, or the
+   *    classified failure cause (`network-lost`, `server-closed`,
+   *    `interrupted-by-call`, …) for a mid-stream drop retry. An auto-restart
+   *    after a transport abort emits this right before reconnecting with the
+   *    cause **re-checked once the OS has settled** — a socket that died in a
+   *    network handoff often fails *before* Android announces the switch, so
+   *    the preceding `disconnect` can only say `"connection-lost"` while this
+   *    event names the truth (`"network-changed(wifi)"` etc.).
+   *  - `connectionFailed` — the terminal reason (e.g. `"reconnect timed out"`,
+   *    a foreground-service failure, or the last classified cause).
+   */
   setOnConnectionEvent(
     callback: (event: RtmpConnectionEvent, message: string) => void
   ): void

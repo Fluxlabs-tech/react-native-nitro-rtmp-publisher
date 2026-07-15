@@ -44,18 +44,14 @@ internal fun HybridRtmpPublisherView.registerNetworkMonitor() {
   val cb = object : ConnectivityManager.NetworkCallback() {
     override fun onAvailable(network: Network) {
       networkAvailable = true
+      onDefaultNetworkAvailable(network)
     }
     override fun onLost(network: Network) {
       networkAvailable = false
       lastNetworkLossUptimeMs = SystemClock.elapsedRealtime()
     }
     override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
-      networkTransport = when {
-        caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
-        caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
-        caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "ethernet"
-        else -> "other"
-      }
+      networkTransport = transportLabelFor(caps)
       networkAvailable = true
     }
   }
@@ -70,6 +66,33 @@ internal fun HybridRtmpPublisherView.unregisterNetworkMonitor() {
   val cb = networkCallback ?: return
   safe("unregisterNetworkMonitor") { cm.unregisterNetworkCallback(cb) }
   networkCallback = null
+}
+
+// Called from the default-network callback's onAvailable. A new default
+// network became available; if its handle differs from the one we were on AND
+// we're mid-stream, the default network switched under us — the live RTMP
+// socket is bound to the dead interface, so force a full rebuild bound to the
+// new network. Fires PROACTIVELY (before Pedro even reports the socket break),
+// and the reconnectInProgress latch dedups against the failure-driven path.
+internal fun HybridRtmpPublisherView.onDefaultNetworkAvailable(network: Network) {
+  val handle = network.networkHandle
+  val prev = activeNetworkHandle
+  // First network seen — baseline only; the normal connect path owns the
+  // initial link (startStreamInternal re-baselines at every start anyway).
+  if (prev == 0L) {
+    activeNetworkHandle = handle
+    return
+  }
+  if (prev == handle) return
+  // Default network switched under a live stream → stop + restart. Deliberately
+  // do NOT overwrite activeNetworkHandle here: it tracks the network the CURRENT
+  // session is bound to (the restart's startStreamInternal re-baselines it), and
+  // both the disconnect classifier's 3b check and the restart's late re-labeling
+  // rely on the pre-switch value to recognize "the default moved under us".
+  // Transport is read live — the cached networkTransport lags the switch (the
+  // new network's onCapabilitiesChanged hasn't landed yet), which used to label
+  // a cellular→wifi join "network-changed(cellular)".
+  restartStreamForNetworkChange("network-changed(${currentTransportLabel()})")
 }
 
 // ─── Classifier ─────────────────────────────────────────────────────────────
@@ -109,7 +132,24 @@ internal fun HybridRtmpPublisherView.disconnectCauseCategory(): String {
   val now = SystemClock.elapsedRealtime()
   if (!networkAvailable) return "network-lost"
   if (lastNetworkLossUptimeMs > 0 && now - lastNetworkLossUptimeMs < 5_000) {
-    return "network-changed($networkTransport)"
+    return "network-changed(${currentTransportLabel()})"
+  }
+  // 3b) The default network switched, but neither onLost nor the proactive
+  //     onDefaultNetworkAvailable callback has updated our signals yet: both can
+  //     land AFTER Pedro reports the dead socket, and a fresh interface coming up
+  //     while the old one lingers fires no onLost at all (so the 5s window above
+  //     misses it — this is the "network switch mislabeled server-closed" case).
+  //     Compare the LIVE default-network handle against the one the current
+  //     socket is bound to: a mismatch is a switch we haven't processed, so name
+  //     it rather than falling through to the server-closed guess below. Reads
+  //     the transport live (cached networkTransport also lags the switch).
+  //     activeNetworkHandle==0L ⇒ never baselined ⇒ skip.
+  val boundHandle = activeNetworkHandle
+  if (boundHandle != 0L) {
+    val liveHandle = connectivityManager?.activeNetwork?.networkHandle
+    if (liveHandle != null && liveHandle != boundHandle) {
+      return "network-changed(${currentTransportLabel()})"
+    }
   }
 
   // 4) Thermal shutdown pressure.
@@ -123,6 +163,26 @@ internal fun HybridRtmpPublisherView.disconnectCauseCategory(): String {
   //    expiry, ingest restart, rate-limit, …).
   return "server-closed"
 }
+
+// Map a NetworkCapabilities to our coarse transport label. Shared by the
+// onCapabilitiesChanged cache and the live read below so the two can't drift.
+private fun transportLabelFor(caps: NetworkCapabilities): String = when {
+  caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+  caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
+  caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "ethernet"
+  else -> "other"
+}
+
+// Transport of the CURRENT default network, read straight from the system so it
+// reflects a just-completed switch even before our onCapabilitiesChanged lands.
+// Falls back to the cached [networkTransport] on any read hiccup. internal: also
+// used by restartStreamForNetworkChange's late re-labeling in +Reconnect.kt.
+internal fun HybridRtmpPublisherView.currentTransportLabel(): String =
+  safe("currentTransportLabel", default = networkTransport) {
+    val net = connectivityManager?.activeNetwork ?: return@safe networkTransport
+    val caps = connectivityManager?.getNetworkCapabilities(net) ?: return@safe networkTransport
+    transportLabelFor(caps)
+  }
 
 private fun HybridRtmpPublisherView.isThermalCritical(): Boolean {
   if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false

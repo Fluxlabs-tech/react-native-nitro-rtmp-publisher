@@ -30,7 +30,7 @@ Live streaming from a phone is two hard problems entangled — owning the camera
 
 - **Native preview view** — Camera2/Metal + GPU compositor on the C++ thread. Zero React Native UI thread cost per frame.
 - **Hardware H.264/HEVC encoding** — `MediaCodec` on Android, `VideoToolbox` on iOS.
-- **Adaptive bitrate built in** — measures TX throughput, drops on congestion, recovers on headroom. Or take manual control with `setVideoBitrateOnFly`.
+- **Adaptive bitrate built in** — automatic on both platforms, armed at every `startStream`: congestion-cut toward measured capacity, floored, oscillation-damped slow-start recovery. Or take manual control with `setVideoBitrateOnFly`.
 - **Auto-reconnect** — opt-in retry budget that survives the mobile network's mood swings.
 - **Type-safe API** — generated end-to-end by Nitrogen. No JSON serialization on the hot path.
 - **Opt-in callbacks** — per-second bitrate callback is **off** by default. Subscribe only if you need it.
@@ -211,8 +211,10 @@ export default function App() {
       // 5 retries, 3s backoff — survives momentary network drops.
       ref.setAutoReconnect(5, 3000)
 
-      // Adaptive bitrate: cap at 2.5 Mbps, drop 20% on congestion, recover 5%.
-      ref.setAdaptiveBitrate(2_500_000, 20, 5)
+      // Adaptive bitrate runs automatically on both platforms (ceiling = the
+      // prepareVideo bitrate) — this explicit call is only for overriding
+      // the ceiling/tuning, or opting out with (0, 0, 0).
+      ref.setAdaptiveBitrate(2_500_000, 20, 10)
 
       ref.setOnConnectionEvent((event, msg) => {
         console.log('rtmp:', event, msg)
@@ -463,22 +465,33 @@ Call methods imperatively via `hybridRef`. The full ref type is `RtmpPublisherVi
 
 ### Adaptive bitrate
 
-The library samples the measured TX bitrate every second and adjusts the encoder via `setVideoBitrateOnFly`:
-- decreases when congestion is detected (RTMP send-buffer fills up on Android; TX throughput drops on iOS),
-- slowly recovers toward `maxBitrate` when the network has headroom.
+The library samples the link every second and adjusts the encoder via `setVideoBitrateOnFly`.
+
+**Automatic on both platforms.** Every `startStream` arms the controller with the `prepareVideo` bitrate as ceiling — no call needed. The same controller runs on Android and iOS (`AdaptiveBitrateController`, Kotlin/Swift twins):
+
+- watches the RTMP **send-queue backlog** (seconds of queued media — RootEncoder's frame queue on Android, HaishinKit's `queueBytesOut` on iOS) — the one congestion signal a static scene undershooting its VBR target can't fake;
+- on congestion, cuts straight to `measured capacity × 0.8` (one step, not a blind ramp), never below a floor of `ceiling / 20` (≥ 100 kbps) — low enough to keep a marginal link limping rather than stalling;
+- recovers with slow-start probes (+10%, doubling per clean probe, from 5 clean seconds after an 8 s post-cut hold) — climbing back from the floor takes ~30 s, not minutes — while a *caution ceiling* remembered from the last congestion (held 60 s) stops recovery from immediately re-congesting: the classic ABR probe→congest→drop sawtooth;
+- if backlog passes **3 s despite adapting** (link below even the floor): Android drops the queued backlog and requests a keyframe — a brief picture refresh instead of a viewer drifting ever further behind live; iOS holds the floor (HaishinKit exposes no queue-flush) and, if the backlog survives ~3 repeated panics (~30 s), forces a reconnect — the pipeline rebuild discards the queue;
+- after an auto-reconnect, resumes at its last adapted target (not the pre-drop ceiling — re-flooding a link that just dropped a socket is how reconnect loops start) and **keeps the caution ceiling**: a socket needs a few seconds after reconnecting before it can carry more (TCP re-ramp, buffers draining), so probes stay capped at ~where the link last broke until the caution window expires, then climb. Recovery is a little slower but never thrashes into a congest→stall→reconnect loop.
+
+Call `setAdaptiveBitrate` only to override the ceiling/tuning, or to opt out:
 
 ```ts
-// Cap at 2.5 Mbps. On congestion drop 20% of current bitrate; on recovery
-// raise 5% per second.
-ref.setAdaptiveBitrate(2_500_000, 20, 5)
+// Optional override: cap at 2.5 Mbps. On congestion drop 20% of current
+// bitrate; on recovery probe up 10% per step.
+ref.setAdaptiveBitrate(2_500_000, 20, 10)
 
-// Disable
+// Opt out (disables the automatic controller and restores the
+// prepareVideo bitrate)
 ref.setAdaptiveBitrate(0, 0, 0)
 ```
 
-`maxBitrate` should match (or be slightly above) the `bitrate` you passed to `prepareVideo`. The adapter resets to the ceiling at every fresh `startStream`.
+`maxBitrate` should match (or be slightly above) the `bitrate` you passed to `prepareVideo`. The controller resets to the ceiling at every fresh `startStream`.
 
-For full manual control, subscribe to `setOnBitrateChange` and call `setVideoBitrateOnFly(...)` yourself.
+A manual `setVideoBitrateOnFly` while the controller is armed is **adopted, not fought**: the value becomes the controller's target, and a manual *decrease* holds like a congestion cut (probes stay capped at that level for the ~60 s caution window before gently re-testing above it). For a persistent cap — e.g. a backend telling the app to drop a quality rung — move the ceiling with `setAdaptiveBitrate(newMax, …)` instead.
+
+For full manual control, opt out, then subscribe to `setOnBitrateChange` and call `setVideoBitrateOnFly(...)` yourself.
 
 > **Live fps + bitrate together.** `setOnStreamStats((bitrateBps, videoFps) => …)` delivers both in one per-second callback (superset of `setOnBitrateChange`). `bitrateBps` is the measured muxed TX rate; `videoFps` is the live frame rate — the **sent** rate on Android (drops under congestion show here) and the **encoder-input** rate on iOS. Per-track audio/video *bitrate* isn't available — both engines only measure the combined throughput.
 
@@ -869,7 +882,9 @@ Same JS API, same behavior — but worth knowing exactly where the platforms dif
 | RTMP transport | HaishinKit | RootEncoder |
 | Video codecs | H.264, HEVC | H.264, HEVC, AV1 |
 | Audio codec | AAC only (RTMP) | AAC (G.711, Opus accepted but RTMP-incompatible) |
-| Adaptive bitrate signal | TX throughput delta | RTMP send-buffer depth |
+| Adaptive bitrate signal | Send-queue backlog (`queueBytesOut`, bytes) | Send-queue backlog (queued frames → seconds) |
+| Adaptive bitrate default | **Automatic** at `startStream` (opt out with `setAdaptiveBitrate(0, 0, 0)`) | **Automatic** at `startStream` (opt out with `setAdaptiveBitrate(0, 0, 0)`) |
+| ABR panic (backlog ≥ 3 s) | Floor-hold; forced reconnect after ~3 panics (pipeline rebuild drops the queue) | Clears send queue + requests keyframe |
 | `forceIncrementalTs` | Intrinsic (no-op flag) | Active knob |
 | `setStreamDelay` | No-op | Active knob |
 | Background streaming | `UIBackgroundModes: ['audio']` | Foreground service via `foregroundServiceTitle` |

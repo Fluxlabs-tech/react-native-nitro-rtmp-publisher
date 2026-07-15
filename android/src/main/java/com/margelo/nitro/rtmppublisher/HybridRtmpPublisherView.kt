@@ -18,7 +18,6 @@ import com.pedro.common.ConnectChecker
 import com.pedro.encoder.input.video.CameraHelper
 import com.pedro.library.base.recording.RecordController
 import com.pedro.library.rtmp.RtmpCamera2
-import com.pedro.library.util.BitrateAdapter
 import com.pedro.library.view.OpenGlView
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -188,21 +187,23 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
   // @Volatile: written on main, but startStreamInternal/stopStream can run on
   // the JS/Nitro thread — same discipline as shouldBeStreaming.
   @Volatile internal var rtmpConnected = false
-  // Deferred re-arm of Pedro's session-scoped reTries budget (B4): posted on
-  // connection success, fires after STABLE_CONNECTION_MS. The elapsed-time
-  // check (not just rtmpConnected) disqualifies a stale runnable whose
-  // connection dropped and re-established in between — only an UNBROKEN
-  // STABLE_CONNECTION_MS of uptime refills, so a flapping ingest still drains
-  // the budget and goes terminal instead of strobing RECONNECTING forever.
+  // Deferred refill of the reconnect budget (B4): posted on connection success,
+  // fires after STABLE_CONNECTION_MS. The elapsed-time check (not just
+  // rtmpConnected) disqualifies a stale runnable whose connection dropped and
+  // re-established in between — only an UNBROKEN STABLE_CONNECTION_MS of uptime
+  // refills, so a flapping ingest still drains the budget and goes terminal
+  // instead of strobing RECONNECTING forever. Since the reconnect is now a full
+  // restart (no Pedro reTry counter), the budget IS `currentRetryAttempt`, and
+  // this deferred reset is the ONLY path that clears it on a live session —
+  // deliberately not onConnectionSuccess, so a success→instant-fail flap can't
+  // refill it every cycle.
   @Volatile private var lastConnectionSuccessMs = 0L
   internal val budgetRefillRunnable = Runnable {
     val stableForMs = SystemClock.elapsedRealtime() - lastConnectionSuccessMs
     if (rtmpConnected && shouldBeStreaming && autoReconnectMaxAttempts > 0 &&
       stableForMs >= STABLE_CONNECTION_MS - 100
     ) {
-      safe("budgetRefill/setReTries") {
-        camera.streamClient.setReTries(autoReconnectMaxAttempts)
-      }
+      currentRetryAttempt = 0
     }
   }
   internal val reconnectTimeoutRunnable = Runnable {
@@ -262,14 +263,19 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
   private var lastSurfaceDestroyMs = 0L
   private var resumeDelayLevel = 0
 
-  // Adaptive bitrate. Null when disabled.
-  @Volatile internal var bitrateAdapter: BitrateAdapter? = null
-  // The ceiling passed to setAdaptiveBitrate, cached wrapper-side because
-  // Pedro's BitrateAdapter doesn't expose it back. The post-reconnect bitrate
-  // restore (B5) clamps to this — jumping a congested link straight to a
-  // prepareVideo target ABOVE the app's configured ABR ceiling would flood it
-  // at its most fragile moment. 0 = no ceiling configured.
-  @Volatile internal var abrMaxBitrate = 0
+  // Adaptive bitrate (see AdaptiveBitrateController for why Pedro's
+  // BitrateAdapter can't be used against the 2.6.1-zoop fork). Null when
+  // disabled. AUTOMATIC: armed at every startStream with the prepareVideo
+  // bitrate as ceiling, unless JS explicitly configured its own ceiling
+  // (setAdaptiveBitrate > 0 — their tuning wins) or explicitly opted out
+  // (setAdaptiveBitrate 0). Reference swapped from JS-facing methods, ticked
+  // on main (onNewBitrate) — same handling the old bitrateAdapter field had.
+  @Volatile internal var abrController: AdaptiveBitrateController? = null
+  // setAdaptiveBitrate(0, …) was called: the app opted out — never auto-arm.
+  @Volatile internal var abrExplicitlyDisabled = false
+  // setAdaptiveBitrate(max>0, …) was called: keep the app's ceiling/tuning
+  // across sessions instead of re-deriving from prepareVideo each start.
+  @Volatile internal var abrExplicitlyConfigured = false
 
   // Baselines for deriving live video fps (for onStreamStats) from the sender's
   // cumulative sent-video-frame count, sampled each onNewBitrate tick (~1s).
@@ -367,6 +373,22 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
   }
   internal var networkCallback: android.net.ConnectivityManager.NetworkCallback? = null
   @Volatile internal var networkAvailable = true
+  // networkHandle of the default network the CURRENT session is bound to —
+  // baselined by startStreamInternal at every (re)start, NOT chased by network
+  // callbacks. An onAvailable with a DIFFERENT handle means the default network
+  // switched under the session (WiFi↔WiFi AP, WiFi↔cellular, cellular↔WiFi) —
+  // the live RTMP socket is bound to the old, now-dead interface and can't
+  // migrate, so we force a full rebuild. Kept at the PRE-switch value until the
+  // rebuild lands: the disconnect classifier and the restart's late re-labeling
+  // compare it against the live default to recognize the switch. 0 = none seen
+  // yet. Cleared on stopStream / onDropView.
+  @Volatile internal var activeNetworkHandle = 0L
+  // Reason for the NEXT stopStream()'s DISCONNECT, set by a recovery path
+  // (network switch / transport crash) right before it calls stopStream() so
+  // the event tells JS why the stream dropped (e.g. "network-changed(wifi)").
+  // Null for a genuine user-initiated stop → empty reason. Read+cleared in
+  // stopStream().
+  @Volatile internal var pendingDisconnectReason: String? = null
   @Volatile internal var networkTransport = "unknown"
   @Volatile internal var lastNetworkLossUptimeMs = 0L
 
@@ -415,17 +437,15 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
         rtmpConnected = true
         mainHandler.removeCallbacks(reconnectTimeoutRunnable)
         reconnectInProgress.set(false)
-        currentRetryAttempt = 0
         stallTicks = 0
         resumeDelayLevel = 0
-        // Re-arm Pedro's retry budget once the link PROVES stable. `reTries` is
-        // session-scoped and only ticks DOWN — refilled by setReTries / a full
-        // disconnect, never by a success — while currentRetryAttempt above
-        // resets on every success. Without a refill the two drift apart across
-        // mid-session recoveries until a later blip finds reTries==0 and goes
-        // terminal CONNECTIONFAILED with the visible counter reading 0 (B4).
-        // Deferred (not instant) so a success→instant-fail flapping ingest
-        // still exhausts the budget — see STABLE_CONNECTION_MS.
+        // Deliberately DON'T reset currentRetryAttempt here — it's the reconnect
+        // budget (tryAutoReconnect goes terminal at >= autoReconnectMaxAttempts)
+        // as well as the backoff index. Resetting on every success would let a
+        // success→instant-fail flapping ingest reconnect forever; instead the
+        // budget refills only after the link holds STABLE_CONNECTION_MS unbroken
+        // (budgetRefillRunnable, deferred below) — a window a flapper never
+        // reaches, so it still drains the budget and goes terminal (B4).
         if (autoReconnectMaxAttempts > 0) {
           lastConnectionSuccessMs = SystemClock.elapsedRealtime()
           mainHandler.removeCallbacks(budgetRefillRunnable)
@@ -440,20 +460,20 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
           mainHandler.postDelayed(restoreStreamModeRunnable, STREAM_MODE_RESTORE_DELAY_MS)
         }
         // A socket-only reTry never re-prepares the codec, so without this the
-        // encoder resumes at whatever the adapter last applied — possibly a
-        // stall-collapsed floor (~0.5 Mbps observed in the field). Jump back to
-        // the configured target and clear the adapter's averaging window; if
-        // the link genuinely can't carry the target, the adapter re-adapts
-        // down within ~5 ticks (B5).
-        bitrateAdapter?.let { adapter ->
+        // encoder resumes at whatever bitrate was last applied — while the
+        // controller's measurement state still belongs to the dead socket.
+        // Resume at the controller's adapted target (never below its floor by
+        // construction, so the old stall-collapsed ~0.5 Mbps resume can't
+        // recur) rather than the pre-congestion ceiling — re-flooding a link
+        // that JUST dropped a socket is how reconnect loops start. If the
+        // link has headroom, the probe path climbs back to the ceiling; this
+        // apply also seats the ceiling on the FIRST connect of an explicitly
+        // configured session (prepareVideo may have set the encoder above the
+        // app's ABR ceiling) (B5).
+        abrController?.let { abr ->
           safe("onConnectionSuccess/restoreBitrate") {
-            adapter.reset()
-            lastVideoCfg?.let { cfg ->
-              val target =
-                if (abrMaxBitrate > 0) minOf(cfg.bitrate, abrMaxBitrate)
-                else cfg.bitrate
-              if (camera.isStreaming) camera.setVideoBitrateOnFly(target)
-            }
+            abr.onReconnected()
+            if (camera.isStreaming) camera.setVideoBitrateOnFly(abr.targetBps)
           }
         }
         onConnectionEvent?.invoke(RtmpConnectionEvent.CONNECTIONSUCCESS, "")
@@ -556,23 +576,44 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
         } else {
           stallTicks = 0
         }
-        // Feed adaptive-bitrate adapter if enabled. It calls back into
-        // `setVideoBitrateOnFly` via its listener, no allocation per tick.
-        // Verdict-adjacent zero ticks are the stall watchdog's domain, not
-        // congestion data: the adapter halves its running average per sample,
-        // so feeding it the zeros that precede a stall verdict collapses the
-        // average — and if its 5-tick application boundary lands there, it
-        // downshifts the still-live encoder to a floor the reTry path would
-        // then resume at (B5). But skipping ALL zeros starves the adapter on
-        // bursty links that alternate zero/nonzero without ever reaching the
-        // stall verdict (the average would read 2-3x the real throughput), so
-        // the FIRST zero of a run (stallTicks==1 here, post-increment) is still
-        // fed; only deeper runs — already one tick from the verdict — are not.
-        if (bitrate > 0L || stallTicks < STALL_TICKS - 1) bitrateAdapter?.let { adapter ->
-          val congested = safe("hasCongestion", default = false) {
-            camera.streamClient.hasCongestion()
+        // Feed the adaptive-bitrate controller if armed. Zero ticks needed
+        // gating with the old Pedro adapter (its averaging collapsed on the
+        // zeros preceding a stall verdict); the controller ignores them
+        // internally — they're the stall watchdog's domain, not congestion
+        // data — so every tick is fed as-is.
+        abrController?.let { abr ->
+          val queueItems = safe("abr/getItemsInCache", default = 0) {
+            camera.streamClient.getItemsInCache()
           }
-          safe("adaptBitrate") { adapter.adaptBitrate(bitrate, congested) }
+          val action = abr.tick(
+            measuredBps = bitrate,
+            queueItems = queueItems,
+            itemsPerSec = abrItemsPerSec(),
+            audioBps = lastAudioCfg?.bitrate ?: 0,
+          )
+          when (action) {
+            is AdaptiveBitrateController.Action.SetBitrate -> {
+              Log.i(TAG, "ABR ${action.reason} → ${action.bps / 1000} kbps")
+              safe("abr/apply") {
+                if (camera.isStreaming) camera.setVideoBitrateOnFly(action.bps)
+              }
+            }
+            // The queued backlog is already lost time for the viewer — drop
+            // it and re-key so the stream snaps back to live instead of
+            // playing out an ever-growing delay (this fork's unbounded queue
+            // never drops frames on its own).
+            is AdaptiveBitrateController.Action.PanicClear -> {
+              Log.w(TAG, "ABR backlog ${(action.backlogSec * 10).toInt() / 10.0}s " +
+                "despite adaptation — clearing send queue + requesting keyframe " +
+                "(target ${action.bps / 1000} kbps)")
+              safe("abr/panic/apply") {
+                if (camera.isStreaming) camera.setVideoBitrateOnFly(action.bps)
+              }
+              safe("abr/panic/clearCache") { camera.streamClient.clearCache() }
+              requestKeyFrame()
+            }
+            AdaptiveBitrateController.Action.None -> {}
+          }
         }
         onBitrateChange?.invoke(bitrate.toDouble())
         // Live video fps for onStreamStats: derive from the sender's cumulative
@@ -648,6 +689,27 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
   // `stopStream=true` also tears the Pedro session down — used by the stall path,
   // where a half-open socket must be actively closed; its trailing onDisconnect
   // is latch-swallowed (pendingSelfDisconnects) so JS sees only this one event.
+  // Called (off the main thread) by RtmpTransportCrashGuard after it swallows an
+  // otherwise-fatal ktor transport exception, so the app recovers instead of
+  // dying. Same simple recovery as a network switch: stop + restart. (A network
+  // switch also calls this via the ConnectivityManager callback; the second
+  // call no-ops because the first stopStream() cleared shouldBeStreaming.)
+  internal fun onTransportCrashSuppressed() {
+    // Label it with the best-guess cause (network-lost / interrupted-by-call /
+    // …), same classifier the failure path uses, tagged so JS can tell it apart.
+    // EXCEPT the classifier's server-closed fall-through: a transport abort is
+    // not evidence the server hung up — it fires when the socket dies BEFORE any
+    // ConnectivityManager callback lands (e.g. the modem drops the cellular
+    // bearer the instant wifi associates, ahead of the default-network switch
+    // announcement), so at this instant a network switch is indistinguishable
+    // from a server close. Report the honest "connection-lost"; the restart's
+    // RECONNECTING re-labels it network-changed(…) once the switch is visible.
+    val category = disconnectCauseCategory()
+    val reason = if (category == "server-closed") "connection-lost"
+                 else "$category (connection-lost)"
+    restartStreamForNetworkChange(reason)
+  }
+
   private fun enterTerminalFailure(
     event: RtmpConnectionEvent,
     message: String,
@@ -670,8 +732,10 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
   // the dead-man / stall bodies run on main — unsynchronized, both can pass
   // Camera2Base's non-volatile streaming gate, double-increment, and strand
   // the count at +1 forever (the loser's camera.stopStream() no-ops silently).
+  // internal (not private): also called from tryAutoReconnect in +Reconnect.kt
+  // to cleanly close the wedged socket before a full-restart reconnect.
   @Synchronized
-  private fun stopLiveStreamTracked(): Boolean {
+  internal fun stopLiveStreamTracked(): Boolean {
     if (!camera.isStreaming) return false
     pendingSelfDisconnects.incrementAndGet()
     try {
@@ -788,8 +852,12 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
             // the grace window — the captured `url` could be stale/expired (S6).
             val resumeUrl = lastStreamUrl ?: url
             if (surfaceReady && !camera.isStreaming) {
-              // A bg→fg re-publish IS a reconnect → gentle cache/chunk tuning.
-              startStreamInternal(resumeUrl, reconnectSafe = true)
+              // Full fresh start — same proven recovery as the network-change
+              // path. reconnectSafe (gentle cache/chunk) only mattered for
+              // Pedro's socket-only reTry, which kept the stale send-cache; a
+              // full stop→start rebuilds the encoders with an empty cache, so
+              // there's nothing to burst and reconnectSafe=false is correct.
+              startStreamInternal(resumeUrl, reconnectSafe = false)
             } else {
               // We promised JS a reconnect via the RECONNECTING event above.
               // If we silently bail here (surface dropped again, race with
@@ -868,7 +936,7 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
           // swallows the self-initiated teardown's straggler entirely.
           onConnectionEvent?.invoke(
             RtmpConnectionEvent.DISCONNECT,
-            "surface destroyed"
+            "backgrounded (surface destroyed)"
           )
         }
       }
@@ -1218,7 +1286,16 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
   // `reconnectSafe` is set by the surface-resume path (a bg→fg re-publish IS a
   // reconnect) so the re-publish uses the gentle cache/chunk tuning and doesn't
   // trip an Agora-MDN broken pipe. A fresh user startStream leaves it false.
-  internal fun startStreamInternal(url: String, reconnectSafe: Boolean = false) {
+  //
+  // `fromAutoReconnect` is set when tryAutoReconnect drives this as a full
+  // restart (see +Reconnect.kt). It preserves the wrapper-managed retry budget
+  // (`currentRetryAttempt`) across the restart — resetting it every attempt
+  // would let a dead/flapping server be retried forever.
+  internal fun startStreamInternal(
+    url: String,
+    reconnectSafe: Boolean = false,
+    fromAutoReconnect: Boolean = false,
+  ) {
     // FG service must come up BEFORE we kick off the encoder. On Android 12+
     // background-start restrictions and 14+ FGS-type rules cause this to fail
     // silently otherwise — the encoder runs, the OS kills the camera/mic, and
@@ -1234,13 +1311,27 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     }
     acquireWakeLock()
     setKeepScreenOn(true)
+    // Guard against ktor's TLS/socket coroutine crashing the whole app on an
+    // abrupt transport loss (RTMPS + network switch). Idempotent; marks this
+    // instance as the active publisher to nudge on suppression.
+    RtmpTransportCrashGuard.install(this)
     streamExplicitlyStopped = false
     shouldBeStreaming = true
     // Fresh session: clear any in-flight reconnect bookkeeping + stall counter.
+    // An auto-reconnect restart keeps currentRetryAttempt (the budget counter
+    // tryAutoReconnect is spending) so it can still go terminal after N tries.
     reconnectInProgress.set(false)
-    currentRetryAttempt = 0
+    if (!fromAutoReconnect) currentRetryAttempt = 0
     stallTicks = 0
     rtmpConnected = false
+    // Baseline the default-network handle to the one we're (re)starting on, so
+    // the NEXT switch is detected as a change. Relying on onAvailable alone
+    // would miss the first switch after a stop→start on the same network
+    // (handle would still read 0). Safe on a fromAutoReconnect restart too:
+    // it re-baselines to the network we just moved onto.
+    activeNetworkHandle = safe("activeNetworkHandle", default = 0L) {
+      connectivityManager?.activeNetwork?.networkHandle ?: 0L
+    }
     // Reset the video-fps baseline so the first onStreamStats tick of this
     // stream measures from zero (the sender's frame counters restart too).
     lastSentVideoFrames = 0L
@@ -1262,8 +1353,14 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
         "mid-stream network blip will end the stream with no retry — call " +
         "setAutoReconnect(attempts, backoffMs) to recover from transient failures.")
     }
-    // Reset adaptive-bitrate state so each session starts from the ceiling.
-    safe("startStream/bitrateAdapter.reset") { bitrateAdapter?.reset() }
+    // Arm adaptive bitrate (automatic unless JS opted out or supplied its own
+    // tuning). A fresh start begins from the ceiling — congestion knowledge
+    // from a previous session is stale by the next go-live. A reconnect-safe
+    // resume (bg→fg / PIP / rotate re-publish) is the SAME session on the
+    // same network seconds later: keep the adapted target, drop only the
+    // dead socket's measurement state (the onConnectionSuccess restore then
+    // re-applies that target to the fresh encoder).
+    if (reconnectSafe) abrController?.onReconnected() else armAdaptiveBitrateForSession()
     // Apply stream-mode tuning to the fresh streamClient state.
     applyStreamMode()
     if (reconnectSafe) {
@@ -1406,10 +1503,18 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     resumeDelayLevel = 0
     lastSurfaceDestroyMs = 0L
     postNotificationsWarned = false
+    // Re-baseline the network handle so the next session's first onAvailable
+    // doesn't read as a switch.
+    activeNetworkHandle = 0L
     mainHandler.removeCallbacks(reconnectTimeoutRunnable)
     mainHandler.removeCallbacks(budgetRefillRunnable)
     mainHandler.removeCallbacks(restoreStreamModeRunnable)
     reconnectTuningActive = false
+    // A recovery-driven stop (network switch / transport crash) sets this so the
+    // DISCONNECT carries WHY; a genuine JS-initiated stop leaves it null → "".
+    // Read+cleared here so it can't leak into a later unrelated stop.
+    val disconnectReason = pendingDisconnectReason ?: ""
+    pendingDisconnectReason = null
     safe("stopStream") {
       if (stopLiveStreamTracked()) {
         // Confirm the stop to JS now instead of relaying Pedro's onDisconnect
@@ -1417,7 +1522,7 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
         // could land after an immediate startStream and would otherwise be
         // misread as the NEW session disconnecting. Same single DISCONNECT
         // event as before, just prompt and deterministic.
-        onConnectionEvent?.invoke(RtmpConnectionEvent.DISCONNECT, "")
+        onConnectionEvent?.invoke(RtmpConnectionEvent.DISCONNECT, disconnectReason)
       }
     }
     releaseWakeLock()
@@ -1453,6 +1558,12 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
       return
     }
     safe("setVideoBitrateOnFly") { camera.setVideoBitrateOnFly(b) }
+    // Compose with an armed controller instead of being silently reverted by
+    // its next probe: the manual value becomes the controller's target, and a
+    // manual decrease also arms the caution ceiling at that level (see
+    // AdaptiveBitrateController.onManualBitrate). Posted to main — controller
+    // tick-state is main-confined.
+    postToMain { abrController?.onManualBitrate(b) }
   }
 
   override fun setAdaptiveBitrate(
@@ -1462,9 +1573,12 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
   ) {
     val max = maxBitrate.toInt()
     if (max <= 0) {
-      bitrateAdapter = null
-      abrMaxBitrate = 0
-      // Restore the configured ceiling so the user isn't stuck at whatever
+      // Explicit opt-out: disarm AND remember it so startStream doesn't
+      // auto-arm the next session.
+      abrController = null
+      abrExplicitlyDisabled = true
+      abrExplicitlyConfigured = false
+      // Restore the configured target so the user isn't stuck at whatever
       // ABR last reduced to. No-op when not streaming — next prepareVideo
       // will set the bitrate from cached config anyway.
       lastVideoCfg?.let { cfg ->
@@ -1474,20 +1588,55 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
       }
       return
     }
-    val dec = decreaseRangePercent.toFloat().coerceIn(0f, 100f)
-    val inc = increaseRangePercent.toFloat().coerceIn(0f, 100f)
-    // Mutate the existing adapter in place — preserves its adaptation history
-    // (current bitrate, congestion memory) across re-tuning calls.
-    val adapter = bitrateAdapter ?: BitrateAdapter { adapted ->
-      safe("adaptiveBitrate/apply") {
-        if (camera.isStreaming) camera.setVideoBitrateOnFly(adapted)
-      }
+    abrExplicitlyDisabled = false
+    abrExplicitlyConfigured = true
+    // Mid-stream re-tune: continue from the encoder's live target (clamped
+    // into the new floor..ceiling) so tightening the ceiling takes effect
+    // now, not at the next congestion event. Seeded via the constructor so
+    // the reference is never observable with an unclamped target.
+    val startFrom = safe("setAdaptiveBitrate/currentBitrate", default = max) { camera.bitrate }
+    val abr = AdaptiveBitrateController.forCeiling(
+      ceilingBps = max,
+      decreasePercent = decreaseRangePercent,
+      increasePercent = increaseRangePercent,
+      initialBps = startFrom,
+    )
+    abrController = abr
+    if (camera.isStreaming && abr.targetBps != startFrom) {
+      safe("setAdaptiveBitrate/apply") { camera.setVideoBitrateOnFly(abr.targetBps) }
     }
-    adapter.setMaxBitrate(max)
-    if (dec > 0f) adapter.decreaseRange = dec
-    if (inc > 0f) adapter.increaseRange = inc
-    abrMaxBitrate = max
-    bitrateAdapter = adapter
+  }
+
+  // Arm ABR for a starting session. AUTO mode rebuilds the controller so the
+  // ceiling tracks the latest prepareVideo bitrate; an explicitly configured
+  // controller keeps the app's ceiling/tuning and just resets its session
+  // state. The encoder itself starts at prepareVideo's bitrate — the
+  // onConnectionSuccess restore seats it at the controller's target (matters
+  // when an explicit ceiling sits below the prepareVideo bitrate).
+  private fun armAdaptiveBitrateForSession() {
+    if (abrExplicitlyDisabled) return
+    val cfg = lastVideoCfg ?: return
+    val existing = abrController
+    val abr =
+      if (abrExplicitlyConfigured && existing != null) existing
+      // Auto mode — or the incoherent explicit-flag-with-no-controller state
+      // (only reachable if future code nils the controller without clearing
+      // the flags; onDropView clears both): (re)build at the prepareVideo
+      // ceiling rather than silently running without ABR. Matches the iOS
+      // twin's fallback.
+      else AdaptiveBitrateController.forCeiling(cfg.bitrate).also { abrController = it }
+    abr.onSessionStart(minOf(cfg.bitrate, abr.ceilingBps))
+    Log.i(TAG, "ABR armed (${if (abrExplicitlyConfigured) "explicit" else "auto"}): " +
+      "ceiling=${abr.ceilingBps / 1000}kbps floor=${abr.floorBps / 1000}kbps")
+  }
+
+  // Expected media frames/second entering the send queue — converts queue
+  // depth into seconds of backlog for the ABR controller. AAC packs 1024
+  // samples per frame regardless of rate.
+  private fun abrItemsPerSec(): Double {
+    val videoFps = lastVideoCfg?.fps ?: 30
+    val audioFps = (lastAudioCfg?.sampleRate ?: 44_100) / 1024.0
+    return videoFps + audioFps
   }
 
   // Debounce: at most one keyframe request per second. Multiple IDRs in
@@ -1914,8 +2063,12 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     pendingStreamDelayMs = 0L
     lastStreamUrl = null
     cancelPendingResume()
-    bitrateAdapter = null
-    abrMaxBitrate = 0
+    abrController = null
+    // The sticky JS-intent flags go with the controller — leaving them set
+    // with a null controller is the one state where the arm fallback would
+    // have to guess (see armAdaptiveBitrateForSession).
+    abrExplicitlyDisabled = false
+    abrExplicitlyConfigured = false
     mainHandler.removeCallbacks(reconnectTimeoutRunnable)
     mainHandler.removeCallbacks(budgetRefillRunnable)
     mainHandler.removeCallbacks(restoreStreamModeRunnable)
@@ -1930,6 +2083,8 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     releaseWakeLock()
     setKeepScreenOn(false)
     unregisterThermalListener()
+    activeNetworkHandle = 0L
+    RtmpTransportCrashGuard.clear(this)
     unregisterNetworkMonitor()
     // Clear the Activity-global auto-enter flag so PIP doesn't follow the user to
     // the next screen, and drop the attach observer.

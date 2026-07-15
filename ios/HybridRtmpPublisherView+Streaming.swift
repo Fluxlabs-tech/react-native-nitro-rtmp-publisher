@@ -37,6 +37,12 @@ extension HybridRtmpPublisherView {
     let connectUrl = applyAuthToConnectUrl(rawConnectUrl)
     currentRtmpConnectUrl = connectUrl
     pendingStreamKey = streamKey
+    // Keep the FULL original URL for network-change recovery — its resume
+    // re-runs this public startStream, which re-splits / re-applies auth.
+    lastFullStreamUrl = url
+    // Baseline the interface this session binds to, for the network-change
+    // trigger + classifier (see +DisconnectCause.swift).
+    baselineSessionInterface()
     shouldBeStreaming = true
     retriesRemaining = autoReconnectMaxAttempts
     currentReconnectAttempt = 0
@@ -60,6 +66,12 @@ extension HybridRtmpPublisherView {
       }
       do {
         try Task.checkCancellation()
+        // Arm adaptive bitrate (automatic unless JS opted out or supplied its
+        // own tuning). A fresh start begins from the ceiling — congestion
+        // knowledge from a previous session is stale by the next go-live.
+        // Awaited BEFORE rebuildPipeline so applyVideoSettings' target read
+        // sees the post-reset state.
+        await self.armAdaptiveBitrateForSession()
         await self.rebuildPipeline(streamKey: streamKey)
         try Task.checkCancellation()
         _ = try await self.connection.connect(connectUrl)
@@ -110,6 +122,17 @@ extension HybridRtmpPublisherView {
     interruptionNeedsRecovery = false
     pendingStreamKey = nil
     currentRtmpConnectUrl = nil
+    lastFullStreamUrl = nil
+    // Cancel a pending network-change resume: a USER stop during the settle
+    // window must never be resurrected. The recovery path itself schedules its
+    // resume AFTER this method returns, so its own stop doesn't self-cancel.
+    networkChangeResumeWork?.cancel()
+    networkChangeResumeWork = nil
+    // A recovery-driven stop (network switch) stamps WHY on the DISCONNECT
+    // below; a genuine JS-initiated stop keeps the legacy "stopStream" message.
+    // Read+cleared here so it can't leak into a later unrelated stop.
+    let disconnectReason = pendingDisconnectReason ?? "stopStream"
+    pendingDisconnectReason = nil
     reconnectTask?.cancel()
     reconnectTask = nil
     reconnectScheduled = false
@@ -147,7 +170,7 @@ extension HybridRtmpPublisherView {
     // get the same terminal event whether the disconnect was user-initiated
     // (this path) or driven by the server / network (handleRtmpStatus).
     if wasStreaming {
-      emitConnectionEvent(.disconnect, "stopStream")
+      emitConnectionEvent(.disconnect, disconnectReason)
     }
   }
 
@@ -356,12 +379,24 @@ extension HybridRtmpPublisherView {
         return
       }
       self.emitConnectionEvent(.connectionstarted, self.sanitizeUrl(url))
+      // Re-baseline the session's interface — a reconnect often lands on a
+      // different network than the session it replaces (cell→wifi), and the
+      // network-change trigger must compare against where THIS attempt binds.
+      self.baselineSessionInterface()
       // See the matching defer in startStream — skip release when cancelled.
       defer {
         if !Task.isCancelled { self.releasePublishSlot() }
       }
       do {
         try Task.checkCancellation()
+        // The dead socket's measurement state — and its caution ceiling — are
+        // stale (a reconnect often lands on a different network: cell→WiFi).
+        // Drop them but KEEP the adapted target: the pipeline rebuild below
+        // re-seeds the encoder from `abr.targetBps` via applyVideoSettings,
+        // so the resume never re-floods a just-recovered link from the
+        // ceiling, and probing back up starts immediately (B5 parity with
+        // Android's onConnectionSuccess restore).
+        if let abr = self.abrController { await abr.onReconnected() }
         await self.rebuildPipeline(streamKey: key)
         try Task.checkCancellation()
         _ = try await self.connection.connect(url)
@@ -426,6 +461,11 @@ extension HybridRtmpPublisherView {
       var s = await self.stream.videoSettings
       s.bitRate = b
       try? await self.stream.setVideoSettings(s)
+      // Compose with an armed controller instead of being silently reverted
+      // by its next probe: the manual value becomes the controller's target,
+      // and a manual decrease also arms the caution ceiling at that level
+      // (see AdaptiveBitrateController.onManualBitrate).
+      if let abr = self.abrController { await abr.onManualBitrate(b) }
     }
     adaptiveCurrentBitrate = b
   }
@@ -435,17 +475,38 @@ extension HybridRtmpPublisherView {
   ) throws {
     let max = Int(maxBitrate)
     if max <= 0 {
-      adaptiveEnabled = false
-    } else {
-      adaptiveMaxBitrate = max
-      adaptiveDecreasePct = decreaseRangePercent.clamped(0, 100)
-      adaptiveIncreasePct = increaseRangePercent.clamped(0, 100)
-      adaptiveEnabled = true
+      // Explicit opt-out: disarm AND remember it so startStream doesn't
+      // auto-arm the next session. Restore the configured target so the
+      // user isn't stuck at whatever ABR last reduced to.
+      abrController = nil
+      abrExplicitlyDisabled = true
+      abrExplicitlyConfigured = false
+      Task { [weak self] in
+        guard let self else { return }
+        await self.installBitrateStrategy(on: self.stream)
+        if self.cachedIsStreaming, let cfg = self.lastVideoCfg {
+          // abrController is already nil, so this is a plain restore (the
+          // helper also keeps the getCurrentBitrate cache in step).
+          try? self.setVideoBitrateOnFly(bitrate: Double(cfg.bitrate))
+        }
+      }
+      return
     }
-    // Reinstall the strategy on the active stream — the strategy holds
-    // `mamimumVideoBitRate` as a `let`, so changing the cap means creating
-    // a new instance. Safe to call mid-stream.
-    //
+    abrExplicitlyDisabled = false
+    abrExplicitlyConfigured = true
+    // Mid-stream re-tune: continue from the encoder's live target (clamped
+    // into the new floor..ceiling) so tightening the ceiling takes effect
+    // now, not at the next congestion event. Seeded via the initializer —
+    // the published reference must never be readable with an unclamped
+    // target (applyVideoSettings can race this method's Task otherwise).
+    let startFrom = adaptiveCurrentBitrate > 0 ? adaptiveCurrentBitrate : max
+    let abr = AdaptiveBitrateController.forCeiling(
+      ceilingBps: max,
+      decreasePercent: decreaseRangePercent,
+      increasePercent: increaseRangePercent,
+      initialBps: startFrom
+    )
+    abrController = abr
     // Race note: if a `rebuildPipeline` is in flight between this Task's
     // spawn and execution, we may install the strategy on the soon-to-be
     // discarded stream. Benign — that stream is being released anyway,
@@ -455,23 +516,74 @@ extension HybridRtmpPublisherView {
     Task { [weak self] in
       guard let self else { return }
       await self.installBitrateStrategy(on: self.stream)
+      let target = await abr.targetBps
+      if self.cachedIsStreaming, target != startFrom {
+        // Clamp took effect (ceiling below the live target) — seat it now.
+        // Routed through setVideoBitrateOnFly so the cache stays in step;
+        // its onManualBitrate(target) call is a no-op (bps == targetBps).
+        try? self.setVideoBitrateOnFly(bitrate: Double(target))
+      }
     }
   }
 
-  /// Build a `PublisherBitrateStrategy` from current adaptive settings and
+  /// Arm ABR for a starting session. AUTO mode rebuilds the controller so the
+  /// ceiling tracks the latest prepareVideo bitrate; an explicitly configured
+  /// controller keeps the app's ceiling/tuning and just resets its session
+  /// state. Awaited from the publish Task BEFORE `rebuildPipeline`, so
+  /// `applyVideoSettings`' target read is ordered after the session reset.
+  /// Android parity: armAdaptiveBitrateForSession in HybridRtmpPublisherView.kt.
+  func armAdaptiveBitrateForSession() async {
+    guard !abrExplicitlyDisabled, let cfg = lastVideoCfg else { return }
+    let abr: AdaptiveBitrateController
+    if abrExplicitlyConfigured, let existing = abrController {
+      abr = existing
+    } else {
+      abr = AdaptiveBitrateController.forCeiling(ceilingBps: cfg.bitrate)
+      abrController = abr
+    }
+    await abr.onSessionStart(initialBps: min(cfg.bitrate, abr.ceilingBps))
+    log("ABR armed (\(abrExplicitlyConfigured ? "explicit" : "auto")): " +
+      "ceiling=\(abr.ceilingBps / 1000)kbps floor=\(abr.floorBps / 1000)kbps")
+  }
+
+  /// Build a `PublisherBitrateStrategy` from the current ABR state and
   /// attach it to the given stream. The strategy:
   ///  - feeds measured throughput into `lastMeasuredBps` (for the timer to
   ///    forward to JS)
-  ///  - delegates to HK's `StreamVideoAdaptiveBitRateStrategy` only when
-  ///    `adaptiveEnabled` is true
+  ///  - when a controller is armed, feeds it each per-second report
+  ///    (throughput + send-queue backlog), applies its decisions to the
+  ///    encoder, mirrors every applied value into the getCurrentBitrate
+  ///    cache, and escalates repeated hopeless panics into a reconnect
   func installBitrateStrategy(on stream: RTMPStream) async {
-    let cap = adaptiveEnabled ? adaptiveMaxBitrate : (lastVideoCfg?.bitrate ?? 0)
+    let abr = abrController
+    let cap = abr?.ceilingBps ?? (lastVideoCfg?.bitrate ?? 0)
     let strategy = PublisherBitrateStrategy(
       maxVideoBitRate: cap,
-      adaptive: adaptiveEnabled
-    ) { [weak self] bps in
-      self?.lastMeasuredBps = Double(bps)
-    }
+      controller: abr,
+      audioBps: lastAudioCfg?.bitrate ?? 0,
+      onThroughputBps: { [weak self] bps in
+        self?.lastMeasuredBps = Double(bps)
+      },
+      onBitrateApplied: { [weak self] bps in
+        // Keep the sync getCurrentBitrate() cache in step with ABR actions
+        // instead of lagging a tick behind the per-second read-back.
+        self?.adaptiveCurrentBitrate = bps
+      },
+      onPanicEscalation: { [weak self] backlogSec in
+        guard let self, self.shouldBeStreaming, self.cachedIsStreaming else { return }
+        // ~30 s stuck ≥3 s behind live and iOS can't flush HK's send queue —
+        // a reconnect rebuilds the pipeline, which discards the queue
+        // (Android parity: clearCache + keyframe). tryAutoReconnect dedupes
+        // via reconnectScheduled and spends the normal retry budget; if it
+        // can't run (disabled / exhausted) we stay on the floor-hold path.
+        self.log("ABR backlog stuck (\(Int(backlogSec))s) across repeated panics — " +
+          "forcing reconnect to drop the send queue")
+        _ = self.tryAutoReconnect(reason: "\(self.disconnectCauseCategory()) (abr-backlog)")
+      },
+      log: { [weak self] msg in
+        self?.log(msg)
+      }
+    )
     await stream.setBitRateStrategy(strategy)
   }
 
@@ -509,7 +621,22 @@ extension HybridRtmpPublisherView {
       guard let self else { return }
       var settings = await self.stream.videoSettings
       settings.videoSize = .init(width: encodedWidth, height: encodedHeight)
-      settings.bitRate = cfg.bitrate
+      // When ABR is armed AND a session is live/starting, the controller
+      // owns the bitrate — seed the (re)built encoder from its target.
+      // Fresh session: the publish Task awaited onSessionStart before this,
+      // so the target is the ceiling-clamped config. Reconnect: the target
+      // is the last adapted value (never below the floor) — resuming there
+      // instead of at the ceiling is what keeps a marginal link from being
+      // re-flooded the moment it comes back. Gated on shouldBeStreaming so
+      // an IDLE re-prepare (prepareVideo after stopStream) seeds the
+      // configured bitrate instead of a stale adapted target — keeping the
+      // idle encoder consistent with the getCurrentBitrate cache that
+      // prepareVideo just set.
+      var bitrate = cfg.bitrate
+      if self.shouldBeStreaming, let abr = self.abrController {
+        bitrate = await abr.targetBps
+      }
+      settings.bitRate = bitrate
       settings.maxKeyFrameIntervalDuration = Int32(cfg.iFrameInterval)
       settings.scalingMode = .trim
       if self.videoCodec == .h265 {
@@ -680,7 +807,12 @@ extension HybridRtmpPublisherView {
       // once we actually have a publishing stream — that's the moment
       // JS should treat us as "live". Without this elision, JS sees two
       // `.connectionsuccess` events ~2s apart (handshake → publish).
-      adaptiveCurrentBitrate = lastVideoCfg?.bitrate ?? adaptiveCurrentBitrate
+      // With ABR armed the encoder was seeded from the controller's adapted
+      // target (see applyVideoSettings) — don't overwrite the cache with the
+      // configured value; the per-second tick refresh keeps it honest.
+      if abrController == nil {
+        adaptiveCurrentBitrate = lastVideoCfg?.bitrate ?? adaptiveCurrentBitrate
+      }
       pinVideoOrientation()
     case RTMPConnection.Code.connectFailed.rawValue,
          RTMPConnection.Code.connectClosed.rawValue:

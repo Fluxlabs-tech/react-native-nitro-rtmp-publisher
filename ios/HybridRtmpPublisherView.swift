@@ -430,6 +430,14 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   var _networkSatisfied = true
   var _networkInterface = "unknown"
   var _lastNetworkLossUptime: TimeInterval = 0
+  /// Interface the CURRENT session bound at (re)connect time ("wifi" /
+  /// "cellular" / "ethernet" / "other"; "" = no session yet). Stamped by
+  /// `baselineSessionInterface` at every connect attempt and deliberately NOT
+  /// chased by path updates — the proactive network-change trigger and the
+  /// classifier's 3b check compare the live path against it to recognize "the
+  /// default network moved under the session" (Android parity:
+  /// `activeNetworkHandle`). Guarded by `netStateLock` like its siblings.
+  var _sessionInterface = ""
   var networkMonitor: NWPathMonitor?
   let networkMonitorQueue = DispatchQueue(label: "rtmp.netpath.monitor")
   /// `systemUptime` of the last audio-session interruption `.began` (phone call
@@ -445,6 +453,21 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
 
   // RTMP URL is split into "rtmp://host/app" (connect) + "streamKey" (publish).
   var currentRtmpConnectUrl: String?
+  /// Full URL of the last accepted `startStream` — kept so network-change
+  /// recovery can re-run the PUBLIC startStream (which re-splits / re-applies
+  /// auth itself). Cleared on stopStream / onDropView; the recovery path
+  /// captures it before calling stopStream.
+  var lastFullStreamUrl: String?
+  /// Reason for the NEXT stopStream()'s DISCONNECT, set by a recovery path
+  /// (network switch) right before it calls stopStream() so the event tells JS
+  /// why the stream dropped (e.g. "network-changed(wifi)"). Nil for a genuine
+  /// user-initiated stop → the legacy "stopStream" message. Read+cleared in
+  /// stopStream. (Android parity: same-named field.)
+  var pendingDisconnectReason: String?
+  /// Pending network-change resume — the delayed startStream scheduled after
+  /// the settle window. Cancelled by a USER stopStream / onDropView so a
+  /// deliberate stop during the settle is never resurrected.
+  var networkChangeResumeWork: DispatchWorkItem?
 
   // Auto-reconnect. Defaults ON (5 attempts / 2s) so a transient mid-stream
   // blip recovers even if the app never calls setAutoReconnect — matches the
@@ -477,11 +500,19 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   /// `.reconnecting` twice per real disconnect.
   var reconnectScheduled = false
 
-  // Adaptive bitrate.
-  var adaptiveMaxBitrate = 0
-  var adaptiveDecreasePct: Double = 20
-  var adaptiveIncreasePct: Double = 5
-  var adaptiveEnabled = false
+  // Adaptive bitrate (see AdaptiveBitrateController.swift). Nil when
+  // disabled. AUTOMATIC: armed at every startStream with the prepareVideo
+  // bitrate as ceiling, unless JS explicitly configured its own ceiling
+  // (setAdaptiveBitrate > 0 — their tuning wins) or explicitly opted out
+  // (setAdaptiveBitrate 0). Android parity: HybridRtmpPublisherView.kt.
+  var abrController: AdaptiveBitrateController?
+  /// setAdaptiveBitrate(0, …) was called: the app opted out — never auto-arm.
+  var abrExplicitlyDisabled = false
+  /// setAdaptiveBitrate(max>0, …) was called: keep the app's ceiling/tuning
+  /// across sessions instead of re-deriving from prepareVideo each start.
+  var abrExplicitlyConfigured = false
+  /// Cache backing the sync `getCurrentBitrate()`; refreshed every bitrate
+  /// tick from the encoder's live `videoSettings.bitRate`.
   var adaptiveCurrentBitrate = 0
   /// `DispatchSourceTimer` (not `Timer`) — the source doesn't require its
   /// creation thread to own a runloop. `Timer.scheduledTimer` schedules
@@ -804,8 +835,20 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     reconnectTask?.cancel()
     reconnectTask = nil
     reconnectScheduled = false
+    // A pending network-change resume must die with the view — it captures
+    // self weakly, but cancelling drops the queued work immediately.
+    networkChangeResumeWork?.cancel()
+    networkChangeResumeWork = nil
+    pendingDisconnectReason = nil
+    lastFullStreamUrl = nil
     publishTask?.cancel()
     publishTask = nil
+    abrController = nil
+    // The sticky JS-intent flags go with the controller — leaving them set
+    // with a nil controller is the one state where the arm fallback would
+    // have to guess (see armAdaptiveBitrateForSession).
+    abrExplicitlyDisabled = false
+    abrExplicitlyConfigured = false
     // Sync release — see stopStream for rationale. The cancelled publish
     // Task's deferred release is skipped via its `Task.isCancelled` check,
     // preventing a double-release.
