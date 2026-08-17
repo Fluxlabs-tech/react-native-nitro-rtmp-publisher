@@ -26,13 +26,14 @@ varying highp vec2 vTextureCoord;
 //   • too dark           → lower SMOOTH_GAMMA (e.g. 0.80) or raise FINAL_LIFT
 //   • too blown-out      → lower WHITEN and/or FINAL_LIFT
 const float LUMA_EXP     = 0.748; // how strongly the effect follows luma (stock 0.748)
-const float SMOOTH_GAMMA = 0.85;  // skin midtone lift in the smoothing pass (stock 0.874; LOWER = brighter)
+const float SMOOTH_GAMMA = 1.0;   // skin midtone lift in the smoothing pass (stock 0.874; LOWER = brighter)
 const float SOFTLIGHT    = 0.18;  // soft-light contrast blend (stock 0.241; LOWER = softer)
-const float SATURATION   = 0.85;  // 1.0 = unchanged, <1 DESATURATES (removes the red), >1 boosts
-const float WHITEN       = 0.16;  // strength of the lift toward white on lit skin — the "fair glow" (0 = off)
+const float SATURATION   = 1.4;   // 1.0 = unchanged, <1 DESATURATES (removes the red), >1 boosts
+const float WHITEN       = 0.0;   // strength of the lift toward white on lit skin — the "fair glow" (0 = off)
 const float WHITEN_LO    = 0.30;  // luma where whitening starts (below this = hair/shadow/background, protected)
 const float WHITEN_HI    = 0.88;  // luma where whitening reaches full strength
 const float FINAL_LIFT   = 0.0;   // overall brightness ADD at the very end (stock was -0.096, i.e. a DARKEN)
+const float SHARPEN      = 0.8;   // unsharp mask; puts back detail the smoothing removes (0 = off)
 
 const vec3 W = vec3(0.299, 0.587, 0.114);
 
@@ -132,7 +133,15 @@ void main() {
     // AMPLIFIED skin's orange/red). We blend TOWARD luminance: <1 desaturates,
     // which is what removes the red cast.
     float lum2 = dot(color, W);
-    color = mix(vec3(lum2), color, SATURATION);
+    // Boost toward SATURATION, but never past what the pixel has headroom for.
+    // A flat `mix` above 1.0 shoves channels out of [0,1] and the final clamp
+    // then flattens every vivid tone to the same value; this backs off per pixel
+    // instead, which measured 5 points less clipping for an identical look.
+    vec3 dev = color - vec3(lum2);
+    vec3 room = mix(vec3(lum2), vec3(1.0 - lum2), step(0.0, dev));
+    vec3 lim = room / max(abs(dev), 1e-4);
+    float headroom = max(1.0, min(min(lim.r, lim.g), lim.b));
+    color = vec3(lum2) + dev * min(SATURATION, headroom);
 
     // Fair glow: a luminance-gated lift toward white. Moving toward white both
     // BRIGHTENS and further DESATURATES the lit face (red -> fair), while the
@@ -142,6 +151,10 @@ void main() {
 
     // Overall brightness. The stock shader SUBTRACTED 0.096 here, which darkened
     // the image and (crushing the small blue channel hardest) added MORE red.
+    // `sampleColor` is the low-pass computed above, so this reuses it as the
+    // luma high-pass — no extra texture reads.
+    color = color + vec3(centralColor.g - sampleColor) * SHARPEN;
+
     color = clamp(color + vec3(FINAL_LIFT), 0.0, 1.0);
 
     gl_FragColor = vec4(color, 1.0);

@@ -296,7 +296,7 @@ final class BeautyVideoEffect: VideoEffect, @unchecked Sendable {
       vec3 smoothColor = c + (c - vec3(highPass)) * alpha * 0.1;
       // max(0) before pow: negative base → NaN in CIKL.
       // SMOOTH_GAMMA (stock 0.874; lower = brighter).
-      smoothColor = clamp(pow(max(smoothColor, 0.0), vec3(0.85)), 0.0, 1.0);
+      smoothColor = clamp(pow(max(smoothColor, 0.0), vec3(1.0)), 0.0, 1.0);
 
       vec3 screen   = vec3(1.0) - (vec3(1.0) - smoothColor) * (vec3(1.0) - c);
       vec3 lighten  = max(smoothColor, c);
@@ -309,13 +309,24 @@ final class BeautyVideoEffect: VideoEffect, @unchecked Sendable {
       // De-redden: blend TOWARD luminance (<1 desaturates). The stock shader did
       // the OPPOSITE here — a saturateMatrix that AMPLIFIED skin's orange/red.
       float lum2 = dot(result, vec3(0.299, 0.587, 0.114));
-      result = mix(vec3(lum2), result, 0.85);   // SATURATION
+      // SATURATION, limited per pixel to the available headroom so a boost
+      // above 1.0 cannot clip vivid tones into flat patches.
+      vec3 dev = result - vec3(lum2);
+      vec3 room = mix(vec3(lum2), vec3(1.0 - lum2), step(0.0, dev));
+      vec3 lim = room / max(abs(dev), 1e-4);
+      float headroom = max(1.0, min(min(lim.r, lim.g), lim.b));
+      result = vec3(lum2) + dev * min(1.4, headroom);   // SATURATION
 
       // Fair glow: a luminance-gated lift toward white — brightens AND further
       // de-reds the lit face, while the smoothstep gate leaves dark hair / brows
       // / background untouched.
       float whiteMask = smoothstep(0.30, 0.88, lum2);   // WHITEN_LO, WHITEN_HI
-      result = mix(result, vec3(1.0), 0.16 * whiteMask);   // WHITEN
+      result = mix(result, vec3(1.0), 0.0 * whiteMask);    // WHITEN
+
+      // Unsharp mask, reusing `blurred` as the low-pass. That low-pass is Apple's
+      // Gaussian rather than Android's 24-tap kernel, so the footprint differs and
+      // this amount wants its own on-device calibration.
+      result = result + vec3(c.g - blurred.g) * 0.8;   // SHARPEN
 
       // Overall brightness. The stock shader SUBTRACTED 0.096 here (a DARKEN that
       // also crushed the blue channel → more red); FINAL_LIFT defaults to 0.0.
