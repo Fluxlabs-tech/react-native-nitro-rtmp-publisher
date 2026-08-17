@@ -316,11 +316,12 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
   // once preview is up — so we cache the desired on/off state and (re)apply it
   // after each startPreview. `beautyFilter` holds the live render instance
   // while it's attached (null when detached). It is always our own
-  // [WhiteningBeautyFilterRender] (fair/bright look, not the stock reddish one);
-  // only its shader PRECISION is chosen at attach time — highp on capable GPUs,
-  // mediump on budget GPUs / under thermal pressure (see [applyBeautyFilter]).
+  // [BeautyFilterRender] (guided filter + three-band reconstruction, not the
+  // stock fixed blur); only its shader PRECISION is chosen at attach time —
+  // highp on capable GPUs, mediump on budget GPUs / under thermal pressure
+  // (see [applyBeautyFilter]).
   internal var desiredBeautyFilter = false
-  internal var beautyFilter: WhiteningBeautyFilterRender? = null
+  internal var beautyFilter: BeautyFilterRender? = null
   // Set when thermal pressure (SEVERE+) forces a running highp beauty filter
   // down to the cheaper mediump shader; cleared when the device cools back to
   // LIGHT/NONE. Driven from the thermal observer (onThermalStatusChanged).
@@ -1841,7 +1842,7 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
   // safe(); startPreview re-runs this once the pipeline is live). Tracks the
   // live instance in `beautyFilter` so we never double-add or leak it.
   //
-  // It's always our own [WhiteningBeautyFilterRender] (fair/bright look); only
+  // It's always our own [BeautyFilterRender]; only
   // its shader PRECISION is chosen at attach time: budget GPUs (entry Mali /
   // PowerVR / old Adreno) get the mediump build — they run highp at half rate
   // and have the least memory bandwidth to spare while encoding — and capable
@@ -1862,7 +1863,7 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
         return@safe // already attached at the right precision
       }
       current?.let { camera.glInterface.removeFilter(it) }
-      val filter = WhiteningBeautyFilterRender(highPrecision = wantHighPrecision)
+      val filter = BeautyFilterRender(highPrecision = wantHighPrecision)
       camera.glInterface.setFilter(filter)
       beautyFilter = filter
       Log.i(
