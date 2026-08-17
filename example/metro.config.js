@@ -13,18 +13,36 @@ config.resolver.nodeModulesPaths = [
   path.resolve(moduleRoot, 'node_modules'),
 ];
 
+// Build a blockList regex from path segments. Escapes regex metacharacters and
+// accepts either separator, so it also matches on Windows where absolute paths
+// contain backslashes (a raw `new RegExp(winPath)` silently matches nothing,
+// which lets duplicate copies of react-native into the bundle and breaks
+// getHostComponent's view-config registration).
+const blockDir = (...segments) =>
+  new RegExp(
+    '^' +
+      path
+        .join(...segments)
+        .replace(/[.*+?^${}()|[\]]/g, '\\$&')
+        .replace(/[\\/]/g, '[\\\\/]') +
+      '[\\\\/].*'
+  );
+
 // Avoid Metro recursing into the parent module's example/ (which is this app),
 // and prefer a single copy of react/react-native from example/node_modules.
 config.resolver.blockList = [
   // The package symlink at example/node_modules/react-native-nitro-rtmp-publisher
   // points back to ../.. which contains this example/. Prevent Metro from
   // recursing through that symlink into its own example folder.
-  new RegExp(
-    `${projectRoot}/node_modules/react-native-nitro-rtmp-publisher/example/.*`
+  blockDir(
+    projectRoot,
+    'node_modules',
+    'react-native-nitro-rtmp-publisher',
+    'example'
   ),
-  new RegExp(`${moduleRoot}/node_modules/react/.*`),
-  new RegExp(`${moduleRoot}/node_modules/react-native/.*`),
-  new RegExp(`${moduleRoot}/node_modules/react-native-nitro-modules/.*`),
+  blockDir(moduleRoot, 'node_modules', 'react'),
+  blockDir(moduleRoot, 'node_modules', 'react-native'),
+  blockDir(moduleRoot, 'node_modules', 'react-native-nitro-modules'),
 ];
 
 config.resolver.extraNodeModules = {
