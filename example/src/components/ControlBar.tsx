@@ -26,6 +26,8 @@ type Props = {
   onToggleBeauty: () => void;
   /** Enter Android Picture-in-Picture (no-op on iOS). */
   onEnterPip: () => void;
+  recording: boolean;
+  onToggleRecord: () => void;
 };
 
 /**
@@ -47,6 +49,8 @@ export function ControlBar({
   onToggleNoiseSuppression,
   onToggleBeauty,
   onEnterPip,
+  recording,
+  onToggleRecord,
 }: Props) {
   // Start is enabled only when the publisher is fully idle. Stop stays
   // enabled while connecting so the user can cancel an in-flight attempt
@@ -108,6 +112,16 @@ export function ControlBar({
         </Pressable>
         <Pressable onPress={onEnterPip} style={[styles.btn, styles.btnAlt]}>
           <Text style={styles.btnText}>PIP</Text>
+        </Pressable>
+      </View>
+
+      {/* A/B instrument for proving a shader change, not for production use. */}
+      <View style={styles.row}>
+        <Pressable
+          onPress={onToggleRecord}
+          style={[styles.btn, recording ? styles.btnStop : styles.btnAlt]}
+        >
+          <Text style={styles.btnText}>{recording ? '■ REC' : '● REC'}</Text>
         </Pressable>
       </View>
     </View>

@@ -1,5 +1,6 @@
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import * as FileSystem from 'expo-file-system/legacy';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, Text, TouchableOpacity, View } from 'react-native';
@@ -18,6 +19,9 @@ import { usePermissions } from './src/hooks/usePermissions';
 import { usePinchZoom } from './src/hooks/usePinchZoom';
 import { usePublisher } from './src/hooks/usePublisher';
 import { styles } from './src/styles';
+
+// Bump on a shader change so pulled recordings say which build made them.
+const BUILD_TAG = 'v017guided';
 
 function StreamScreen({
   navigation,
@@ -60,6 +64,7 @@ function StreamScreen({
   // becomes true *after* the transition) still governs the exit so controls
   // re-appear cleanly once we're back full-screen.
   const [appActive, setAppActive] = useState(true);
+  const [recording, setRecording] = useState(false);
 
   const { logs, append, clear } = useEventLog();
   const permissionsReady = usePermissions(append);
@@ -169,6 +174,33 @@ function StreamScreen({
       append(`pip err: ${errMsg(e)}`);
     }
   }, [append, publisherRef]);
+
+  // Records the encoder output to disk with no network in the path, so a
+  // difference between two shader builds can only be the shader. Filenames carry
+  // the build tag and beauty state, and the log line carries the pull command.
+  const onToggleRecord = useCallback(() => {
+    const ref = publisherRef.current;
+    if (!ref) return;
+    try {
+      if (recording) {
+        ref.stopRecord();
+        setRecording(false);
+        return;
+      }
+      const name = `beauty-${BUILD_TAG}-${beauty ? 'on' : 'off'}-${Date.now()}.mp4`;
+      // Native recorders want a raw path, not a file:// URI.
+      const path = `${FileSystem.cacheDirectory ?? ''}${name}`.replace(/^file:\/\//, '');
+      const ok = ref.startRecord(path);
+      setRecording(ok);
+      append(
+        ok
+          ? `rec ${name}\npull: adb exec-out run-as com.fluxlabs.rtmppublisherexample cat ${path} > ${name}`
+          : `startRecord refused ${name}`
+      );
+    } catch (e: unknown) {
+      append(`rec err: ${errMsg(e)}`);
+    }
+  }, [recording, beauty, append, publisherRef]);
 
   const lastSwitchAtRef = useRef(0);
   const onSwitch = useCallback(() => {
@@ -341,6 +373,8 @@ function StreamScreen({
             onToggleNoiseSuppression={onToggleNoiseSuppression}
             onToggleBeauty={onToggleBeauty}
             onEnterPip={onEnterPip}
+            recording={recording}
+            onToggleRecord={onToggleRecord}
           />
         </View>
       )}
