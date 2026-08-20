@@ -13,31 +13,18 @@ config.resolver.nodeModulesPaths = [
   path.resolve(moduleRoot, 'node_modules'),
 ];
 
-const blockDir = (...segments) =>
-  new RegExp(
-    '^' +
-      path
-        .join(...segments)
-        .replace(/[.*+?^${}()|[\]]/g, '\\$&')
-        .replace(/[\\/]/g, '[\\\\/]') +
-      '[\\\\/].*'
-  );
-
 // Avoid Metro recursing into the parent module's example/ (which is this app),
 // and prefer a single copy of react/react-native from example/node_modules.
 config.resolver.blockList = [
   // The package symlink at example/node_modules/react-native-nitro-rtmp-publisher
   // points back to ../.. which contains this example/. Prevent Metro from
   // recursing through that symlink into its own example folder.
-  blockDir(
-    projectRoot,
-    'node_modules',
-    'react-native-nitro-rtmp-publisher',
-    'example'
+  new RegExp(
+    `${projectRoot}/node_modules/react-native-nitro-rtmp-publisher/example/.*`
   ),
-  blockDir(moduleRoot, 'node_modules', 'react'),
-  blockDir(moduleRoot, 'node_modules', 'react-native'),
-  blockDir(moduleRoot, 'node_modules', 'react-native-nitro-modules'),
+  new RegExp(`${moduleRoot}/node_modules/react/.*`),
+  new RegExp(`${moduleRoot}/node_modules/react-native/.*`),
+  new RegExp(`${moduleRoot}/node_modules/react-native-nitro-modules/.*`),
 ];
 
 config.resolver.extraNodeModules = {
