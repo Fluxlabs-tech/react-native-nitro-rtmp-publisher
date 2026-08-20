@@ -6,17 +6,23 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, Text, TouchableOpacity, View } from 'react-native';
 import {
   RtmpPublisherView,
+  type BeautyLook,
   type CameraFacing,
 } from 'react-native-nitro-rtmp-publisher';
 
-import { ControlBar } from './src/components/ControlBar';
-import { EventsModal } from './src/components/EventsModal';
+import {
+  BeautyTuner,
+  BASE_PARAMS,
+  type BeautyParams,
+} from './src/components/BeautyTuner';
+import { ControlPanel } from './src/components/ControlPanel';
 import { PreviewOverlay } from './src/components/PreviewOverlay';
 import { UrlModal } from './src/components/UrlModal';
 import { DEFAULT_RTMP_URL, errMsg, getDeviceSampleRate } from './src/constants';
 import { useEventLog } from './src/hooks/useEventLog';
 import { usePermissions } from './src/hooks/usePermissions';
 import { usePinchZoom } from './src/hooks/usePinchZoom';
+import { useProcStats } from './src/hooks/useProcStats';
 import { usePublisher } from './src/hooks/usePublisher';
 import { styles } from './src/styles';
 
@@ -29,7 +35,6 @@ function StreamScreen({
   navigation: { navigate: (screen: string) => void };
 }) {
   const [url, setUrl] = useState(DEFAULT_RTMP_URL);
-  const [logsOpen, setLogsOpen] = useState(false);
   // URL is edited in a separate modal (not an inline field) so its keyboard
   // lives in the modal's own window and can never resize the main preview /
   // PIP layout.
@@ -65,8 +70,16 @@ function StreamScreen({
   // re-appear cleanly once we're back full-screen.
   const [appActive, setAppActive] = useState(true);
   const [recording, setRecording] = useState(false);
+  // Live look params. Uniform-only on the native side, so pushing these per tap
+  // costs nothing — no shader rebuild, no FBO churn.
+  const [params, setParams] = useState<BeautyParams>(BASE_PARAMS);
+  const [look, setLook] = useState<BeautyLook>('warm');
+  const [lookIntensity, setLookIntensity] = useState(0);
+  // Full-frame view: hides every control so the footage can be judged.
+  const [uiHidden, setUiHidden] = useState(false);
 
-  const { logs, append, clear } = useEventLog();
+  const { logs, append, clear, counts, tags } = useEventLog();
+  const procStats = useProcStats();
   const permissionsReady = usePermissions(append);
 
   useEffect(() => {
@@ -151,13 +164,63 @@ function StreamScreen({
       const next = !prev;
       try {
         publisherRef.current?.setBeautyFilterEnabled(next);
-        append(`beautyFilter=${next}`);
+        append(`beautyFilter=${next}`, 'info', 'beauty');
       } catch (e: unknown) {
         append(`beauty err: ${errMsg(e)}`);
       }
       return next;
     });
   }, [append, publisherRef]);
+
+  const applyParams = useCallback(
+    (next: BeautyParams) => {
+      setParams(next);
+      append(
+        `base temp=${next.temperature.toFixed(2)} sat=${next.saturation.toFixed(
+          2
+        )} lift=${next.skinLift.toFixed(2)}`,
+        'info',
+        'beauty'
+      );
+      try {
+        publisherRef.current?.setBeautyParams(
+          next.temperature,
+          next.saturation,
+          next.skinLift
+        );
+      } catch (e: unknown) {
+        append(`setBeautyParams err: ${errMsg(e)}`, 'error', 'beauty');
+      }
+    },
+    [append, publisherRef]
+  );
+
+  const applyLook = useCallback(
+    (next: BeautyLook) => {
+      setLook(next);
+      append(`look=${next}`, 'info', 'beauty');
+      try {
+        publisherRef.current?.setBeautyLook(next);
+      } catch (e: unknown) {
+        append(`setBeautyLook err: ${errMsg(e)}`, 'error', 'beauty');
+      }
+    },
+    [append, publisherRef]
+  );
+
+  // Driven from a drag, so this fires many times a second. One uniform, no
+  // texture work, so it does not need throttling.
+  const applyLookIntensity = useCallback(
+    (next: number) => {
+      setLookIntensity(next);
+      try {
+        publisherRef.current?.setBeautyLookIntensity(next);
+      } catch (e: unknown) {
+        append(`setBeautyLookIntensity err: ${errMsg(e)}`, 'error', 'beauty');
+      }
+    },
+    [append, publisherRef]
+  );
 
   // Last time a flip was actually dispatched. The native side already
   // coalesces rapid flips (an in-flight camera attach absorbs extra taps and
@@ -311,71 +374,63 @@ function StreamScreen({
           previewing={previewing}
           thermal={thermal}
           sampleRate={sampleRate}
+          stats={procStats}
+          onSwitchCamera={onSwitch}
         />
-      )}
-
-      {/* Navigate to a second (publisher-free) screen. Used to verify PIP is
-          scoped to THIS screen: once on Screen 2, pressing Home must NOT enter
-          Picture-in-Picture. */}
-      {showControls && (
-        <TouchableOpacity
-          style={{
-            position: 'absolute',
-            top: 56,
-            right: 16,
-            backgroundColor: 'rgba(0,0,0,0.55)',
-            paddingHorizontal: 14,
-            paddingVertical: 9,
-            borderRadius: 18,
-          }}
-          onPress={() => navigation.navigate('Second')}
-        >
-          <Text style={{ color: '#fff', fontWeight: '600' }}>Screen 2 →</Text>
-        </TouchableOpacity>
-      )}
-
-      {/* DEBUG: inject a +400ms A/V desync (iOS, NS on) and watch the self-heal
-          loop recover it — the `audio-drift` log skew spikes then decays to 0. */}
-      {showControls && streaming && (
-        <TouchableOpacity
-          style={{
-            position: 'absolute',
-            top: 104,
-            right: 16,
-            backgroundColor: 'rgba(180,40,40,0.7)',
-            paddingHorizontal: 14,
-            paddingVertical: 9,
-            borderRadius: 18,
-          }}
-          onPress={() => {
-            publisherRef.current?.injectAudioDesyncForTesting(400);
-            append('injected +400ms desync — watch audio-drift heal to ~0');
-          }}
-        >
-          <Text style={{ color: '#fff', fontWeight: '600' }}>Inject desync</Text>
-        </TouchableOpacity>
       )}
 
       {showControls && (
         <View style={styles.controlsOverlay}>
-          <ControlBar
+          {uiHidden ? (
+            <TouchableOpacity
+              onPress={() => setUiHidden(false)}
+              style={styles.hidePill}
+            >
+              <Text style={styles.btnText}>Show controls</Text>
+            </TouchableOpacity>
+          ) : (
+          <ControlPanel
             url={url}
             onEditUrl={() => setUrlModalOpen(true)}
             streaming={streaming}
             connecting={connecting}
-            logCount={logs.length}
-            noiseSuppression={noiseSuppression}
-            beauty={beauty}
+            previewing={previewing}
             onStart={onStart}
             onStop={onStop}
             onSwitch={onSwitch}
-            onOpenLogs={() => setLogsOpen(true)}
-            onToggleNoiseSuppression={onToggleNoiseSuppression}
-            onToggleBeauty={onToggleBeauty}
-            onEnterPip={onEnterPip}
+            facing={facing}
             recording={recording}
             onToggleRecord={onToggleRecord}
+            onEnterPip={onEnterPip}
+            noiseSuppression={noiseSuppression}
+            onToggleNoiseSuppression={onToggleNoiseSuppression}
+            beauty={beauty}
+            onToggleBeauty={onToggleBeauty}
+            look={look}
+            lookIntensity={lookIntensity}
+            onChangeLook={applyLook}
+            onChangeLookIntensity={applyLookIntensity}
+            params={params}
+            onChangeParams={applyParams}
+            thermal={thermal}
+            sampleRate={sampleRate}
+            buildTag={BUILD_TAG}
+            onNavigateSecond={() => navigation.navigate('Second')}
+            onInjectDesync={() => {
+              publisherRef.current?.injectAudioDesyncForTesting(400);
+              append(
+                'injected +400ms desync -- watch audio-drift heal to ~0',
+                'warn',
+                'debug'
+              );
+            }}
+            logs={logs}
+            logTags={tags}
+            logCounts={counts}
+            onClearLogs={clear}
+            onHideUi={() => setUiHidden(true)}
           />
+          )}
         </View>
       )}
 
@@ -387,13 +442,6 @@ function StreamScreen({
           setUrlModalOpen(false);
         }}
         onClose={() => setUrlModalOpen(false)}
-      />
-
-      <EventsModal
-        visible={logsOpen}
-        logs={logs}
-        onClose={() => setLogsOpen(false)}
-        onClear={clear}
       />
     </View>
   );

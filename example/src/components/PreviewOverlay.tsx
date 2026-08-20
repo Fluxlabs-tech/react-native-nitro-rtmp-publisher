@@ -1,6 +1,7 @@
-import { Text, View } from 'react-native';
+import { Pressable, Text, View } from 'react-native';
 import type { ThermalStatus } from 'react-native-nitro-rtmp-publisher';
 import { THERMAL_COLOR } from '../constants';
+import type { ProcStats } from '../hooks/useProcStats';
 import { styles } from '../styles';
 
 type Props = {
@@ -16,20 +17,28 @@ type Props = {
    * expectation).
    */
   sampleRate: number | null;
+  /** Process RAM / CPU, so a look change can be judged against its cost. */
+  stats: ProcStats;
+  onSwitchCamera: () => void;
 };
 
 /**
- * Status overlay on top of the camera preview. Shows LIVE / PREVIEW / IDLE
- * + thermal state on the left, and the resolved capture sample rate on
- * the right. Matches the original example styling.
+ * Status overlay on top of the camera preview. Left: LIVE / PREVIEW / IDLE,
+ * thermal state, and current process RAM / CPU. Right: capture sample rate and
+ * a camera flip button — flipping to the selfie camera to look at a face should
+ * not mean opening a panel over the preview.
  */
 export function PreviewOverlay({
   streaming,
   previewing,
   thermal,
   sampleRate,
+  stats,
+  onSwitchCamera,
 }: Props) {
   const label = streaming ? 'LIVE' : previewing ? 'PREVIEW' : 'IDLE';
+  const ram = stats.rssMb == null ? '—' : `${Math.round(stats.rssMb)} MB`;
+  const cpu = stats.cpuPct == null ? '—' : `${Math.round(stats.cpuPct)}%`;
   return (
     <>
       <View style={styles.previewOverlay}>
@@ -44,15 +53,26 @@ export function PreviewOverlay({
           <Text style={styles.chipText}>{thermal.toUpperCase()}</Text>
         </View>
       </View>
-      {sampleRate != null && (
-        <View style={styles.previewOverlayRight}>
+      <View style={styles.statsOverlay}>
+        <View style={styles.chip}>
+          <Text style={styles.chipText}>
+            {stats.err ? 'proc n/a' : `RAM ${ram}  CPU ${cpu}`}
+          </Text>
+        </View>
+      </View>
+
+      <View style={styles.previewOverlayRight}>
+        {sampleRate != null && (
           <View style={styles.chip}>
             <Text style={styles.chipText}>
               {(sampleRate / 1000).toFixed(1).replace(/\.0$/, '')} kHz
             </Text>
           </View>
-        </View>
-      )}
+        )}
+        <Pressable onPress={onSwitchCamera} style={styles.flipBtn}>
+          <Text style={styles.flipIcon}>⇄</Text>
+        </Pressable>
+      </View>
     </>
   );
 }
