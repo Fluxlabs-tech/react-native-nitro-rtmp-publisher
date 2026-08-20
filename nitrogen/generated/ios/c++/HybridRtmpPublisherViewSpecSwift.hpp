@@ -26,6 +26,8 @@ namespace margelo::nitro::rtmppublisher { enum class AudioSource; }
 namespace margelo::nitro::rtmppublisher { enum class StreamMode; }
 // Forward declaration of `CameraFacing` to properly resolve imports.
 namespace margelo::nitro::rtmppublisher { enum class CameraFacing; }
+// Forward declaration of `BeautyLook` to properly resolve imports.
+namespace margelo::nitro::rtmppublisher { enum class BeautyLook; }
 // Forward declaration of `RecordStatus` to properly resolve imports.
 namespace margelo::nitro::rtmppublisher { enum class RecordStatus; }
 // Forward declaration of `RtmpConnectionEvent` to properly resolve imports.
@@ -40,6 +42,7 @@ namespace margelo::nitro::rtmppublisher { enum class RtmpConnectionEvent; }
 #include <string>
 #include "CameraFacing.hpp"
 #include <vector>
+#include "BeautyLook.hpp"
 #include "RecordStatus.hpp"
 #include "RtmpConnectionEvent.hpp"
 #include <functional>
@@ -545,6 +548,24 @@ namespace margelo::nitro::rtmppublisher {
       }
       auto __value = std::move(__result.value());
       return __value;
+    }
+    inline void setBeautyFilterIntensity(double intensity) override {
+      auto __result = _swiftPart.setBeautyFilterIntensity(std::forward<decltype(intensity)>(intensity));
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+    }
+    inline void setBeautyLook(BeautyLook look) override {
+      auto __result = _swiftPart.setBeautyLook(static_cast<int>(look));
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+    }
+    inline void setBeautyLookIntensity(double intensity) override {
+      auto __result = _swiftPart.setBeautyLookIntensity(std::forward<decltype(intensity)>(intensity));
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
     }
     inline bool startRecord(const std::string& path) override {
       auto __result = _swiftPart.startRecord(path);

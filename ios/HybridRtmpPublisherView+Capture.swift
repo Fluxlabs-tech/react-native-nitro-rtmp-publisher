@@ -440,6 +440,17 @@ extension HybridRtmpPublisherView {
   // stalls ~2s per toggle. Affects both preview and encoded stream. See
   // `BeautyVideoEffect`.
 
+  // Android-only until the looks are independently calibrated for CIColorCube.
+  func setBeautyLook(look _: BeautyLook) throws {}
+
+  func setBeautyLookIntensity(intensity _: Double) throws {}
+
+  func setBeautyFilterIntensity(intensity: Double) throws {
+    let value = Float(min(max(intensity, 0.0), 1.0))
+    let effect = beautyEffect
+    Task { @ScreenActor in effect.setIntensity(value) }
+  }
+
   func setBeautyFilterEnabled(enabled: Bool) throws {
     guard enabled != cachedBeautyEnabled else { return }
     cachedBeautyEnabled = enabled
