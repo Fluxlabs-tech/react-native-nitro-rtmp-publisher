@@ -588,19 +588,25 @@ ref.setExposure(0)                // EV-compensation step
 
 ### Beauty filter
 
-Skin-smoothing applied per frame, affecting **both the preview and the encoded stream**. Fixed strength (no intensity parameter). Supported on **both platforms** (iOS and Android).
+Skin-smoothing applied per frame, affecting **both the preview and the encoded stream**. Supported on **both platforms** (iOS and Android). Android also provides Warm, Bright, and Cool colour looks.
 
 | Method | Notes |
 |---|---|
 | `setBeautyFilterEnabled(on): void` | Toggle the beauty filter. |
 | `isBeautyFilterEnabled(): boolean` | Current state. |
+| `setBeautyFilterIntensity(value): void` | Continuous overall strength from 0 to 1; safe for a live slider. |
+| `setBeautyLook(look): void` | Android: select `'warm'`, `'bright'`, or `'cool'`. Warm is the exact base filter. |
+| `setBeautyLookIntensity(value): void` | Android: set Bright/Cool strength from 0 to 1. |
 
 ```ts
 ref.setBeautyFilterEnabled(true)
+ref.setBeautyFilterIntensity(0.65)
+ref.setBeautyLook('bright')
+ref.setBeautyLookIntensity(0.5)
 ```
 
-- **Android** — a custom GPU shader (`WhiteningBeautyFilterRender`) in the GL pipeline, tuned for a bright/fair look rather than the stock reddish tint. Precision is auto-selected: budget GPUs (≤ 8 GB RAM) use a cheaper `mediump` build (same look, kinder on bandwidth/thermals), and on capable devices `highp` auto-downgrades to `mediump` under `severe` thermal pressure, restoring on cooldown (see [Thermals](#thermals)).
-- **iOS** — a CoreImage `VideoEffect` registered on the HaishinKit mixer: **frequency-separation** skin-smoothing (a GPU port of the Android high-pass shader, so it's edge-preserving — smooths skin without blurring eyes, hair, or detail), not a plain Gaussian blur. Equivalent result, but not pixel-identical to Android. Under sustained heat it auto-throttles — lighter smoothing + a smaller blur at `serious`, lighter still at `critical`, restored on cooldown — the iOS analog of Android's `highp`→`mediump` downgrade (see [Thermals](#thermals)).
+- **Android** — a five-pass Fast Guided Filter: four quarter-resolution analysis passes share two RGBA8 targets, followed by full-resolution three-band reconstruction. Warm bypasses colour grading; Bright and Cool share one preloaded GLES2 LUT atlas. Devices without fragment `highp` use passthrough instead of running numerically invalid packed moments.
+- **iOS** — a CoreImage frequency-separation `VideoEffect`. Android colour-look methods are accepted but have no effect until separately calibrated `CIColorCube` looks are implemented. Under sustained heat, smoothing strength and blur radius are reduced.
 
 ### Local recording
 

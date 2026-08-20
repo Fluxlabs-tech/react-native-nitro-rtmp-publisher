@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, Text, TouchableOpacity, View } from 'react-native';
 import {
   RtmpPublisherView,
+  type BeautyLook,
   type CameraFacing,
 } from 'react-native-nitro-rtmp-publisher';
 
@@ -46,6 +47,8 @@ function StreamScreen({
   const [noiseSuppression, setNoiseSuppression] = useState(false);
   // Beauty filter (GPU skin-smoothing). Supported on both platforms.
   const [beauty, setBeauty] = useState(false);
+  const [beautyIntensity, setBeautyIntensity] = useState(1);
+  const [beautyLook, setBeautyLook] = useState<BeautyLook>('warm');
   // Device's native audio capture rate, probed via the AudioManager module
   // (Android: PROPERTY_OUTPUT_SAMPLE_RATE; iOS: AVAudioSession.sampleRate).
   // Stays `null` until the native call resolves — we gate the publisher
@@ -153,6 +156,31 @@ function StreamScreen({
       return next;
     });
   }, [append, publisherRef]);
+
+  const onBeautyLook = useCallback(
+    (look: BeautyLook) => {
+      try {
+        publisherRef.current?.setBeautyLook(look);
+        setBeautyLook(look);
+        append(`beautyLook=${look}`);
+      } catch (e: unknown) {
+        append(`beauty look err: ${errMsg(e)}`);
+      }
+    },
+    [append, publisherRef]
+  );
+
+  const onBeautyIntensity = useCallback(
+    (intensity: number) => {
+      try {
+        publisherRef.current?.setBeautyFilterIntensity(intensity);
+        setBeautyIntensity(intensity);
+      } catch (e: unknown) {
+        append(`beauty intensity err: ${errMsg(e)}`);
+      }
+    },
+    [append, publisherRef]
+  );
 
   // Last time a flip was actually dispatched. The native side already
   // coalesces rapid flips (an in-flight camera attach absorbs extra taps and
@@ -334,12 +362,16 @@ function StreamScreen({
             logCount={logs.length}
             noiseSuppression={noiseSuppression}
             beauty={beauty}
+            beautyIntensity={beautyIntensity}
+            beautyLook={beautyLook}
             onStart={onStart}
             onStop={onStop}
             onSwitch={onSwitch}
             onOpenLogs={() => setLogsOpen(true)}
             onToggleNoiseSuppression={onToggleNoiseSuppression}
             onToggleBeauty={onToggleBeauty}
+            onBeautyIntensity={onBeautyIntensity}
+            onBeautyLook={onBeautyLook}
             onEnterPip={onEnterPip}
           />
         </View>

@@ -1,5 +1,9 @@
-import { Pressable, Text, View } from 'react-native';
+import { useRef } from 'react';
+import { PanResponder, Pressable, Text, View } from 'react-native';
+import type { BeautyLook } from 'react-native-nitro-rtmp-publisher';
 import { styles } from '../styles';
+
+const LOOKS: BeautyLook[] = ['warm', 'bright', 'cool'];
 
 type Props = {
   url: string;
@@ -18,12 +22,16 @@ type Props = {
   noiseSuppression: boolean;
   /** Current beauty-filter on/off state. */
   beauty: boolean;
+  beautyIntensity: number;
+  beautyLook: BeautyLook;
   onStart: () => void;
   onStop: () => void;
   onSwitch: () => void;
   onOpenLogs: () => void;
   onToggleNoiseSuppression: () => void;
   onToggleBeauty: () => void;
+  onBeautyIntensity: (intensity: number) => void;
+  onBeautyLook: (look: BeautyLook) => void;
   /** Enter Android Picture-in-Picture (no-op on iOS). */
   onEnterPip: () => void;
 };
@@ -40,12 +48,16 @@ export function ControlBar({
   logCount,
   noiseSuppression,
   beauty,
+  beautyIntensity,
+  beautyLook,
   onStart,
   onStop,
   onSwitch,
   onOpenLogs,
   onToggleNoiseSuppression,
   onToggleBeauty,
+  onBeautyIntensity,
+  onBeautyLook,
   onEnterPip,
 }: Props) {
   // Start is enabled only when the publisher is fully idle. Stop stays
@@ -54,6 +66,24 @@ export function ControlBar({
   const startDisabled = streaming || connecting;
   const stopDisabled = !streaming && !connecting;
   const startLabel = connecting && !streaming ? 'Connecting…' : 'Start';
+  const sliderWidth = useRef(0);
+  const changeIntensity = useRef(onBeautyIntensity);
+  changeIntensity.current = onBeautyIntensity;
+  const seekIntensity = useRef((x: number) => {});
+  seekIntensity.current = (x: number) => {
+    if (sliderWidth.current <= 0) return;
+    const value = Math.min(1, Math.max(0, x / sliderWidth.current));
+    changeIntensity.current(Math.round(value * 100) / 100);
+  };
+  const intensityPan = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: (event) => seekIntensity.current(event.nativeEvent.locationX),
+      onPanResponderMove: (event) => seekIntensity.current(event.nativeEvent.locationX),
+      onPanResponderRelease: (event) => seekIntensity.current(event.nativeEvent.locationX),
+    })
+  ).current;
   return (
     <View style={styles.controls}>
       <Text style={styles.label}>RTMP URL</Text>
@@ -110,6 +140,42 @@ export function ControlBar({
           <Text style={styles.btnText}>PIP</Text>
         </Pressable>
       </View>
+
+      {beauty ? (
+        <>
+          <View style={styles.row}>
+            <View
+              {...intensityPan.panHandlers}
+              onLayout={(event) => {
+                sliderWidth.current = event.nativeEvent.layout.width;
+              }}
+              style={styles.beautySlider}
+            >
+              <View
+                pointerEvents="none"
+                style={[
+                  styles.beautySliderFill,
+                  { width: `${beautyIntensity * 100}%` },
+                ]}
+              />
+              <Text pointerEvents="none" style={styles.beautySliderText}>
+                Beauty {Math.round(beautyIntensity * 100)}%
+              </Text>
+            </View>
+          </View>
+          <View style={styles.row}>
+            {LOOKS.map((look) => (
+              <Pressable
+                key={look}
+                onPress={() => onBeautyLook(look)}
+                style={[styles.btn, beautyLook === look ? styles.btn : styles.btnAlt]}
+              >
+                <Text style={styles.btnText}>{look}</Text>
+              </Pressable>
+            ))}
+          </View>
+        </>
+      ) : null}
     </View>
   );
 }

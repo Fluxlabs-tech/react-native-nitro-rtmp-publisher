@@ -81,6 +81,26 @@ export const styles = StyleSheet.create({
   btnAlt: { backgroundColor: '#4b5563' },
   btnDisabled: { opacity: 0.4 },
   btnText: { color: '#fff', fontWeight: '600' },
+  beautySlider: {
+    flex: 1,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#374151',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  beautySliderFill: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    backgroundColor: '#2563eb',
+  },
+  beautySliderText: {
+    color: '#fff',
+    fontWeight: '600',
+    textAlign: 'center',
+  },
   logLine: { color: '#9ca3af', fontFamily: 'monospace', fontSize: 11 },
   logLineMuted: {
     color: '#6b7280',
