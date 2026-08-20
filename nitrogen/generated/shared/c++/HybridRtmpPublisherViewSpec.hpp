@@ -27,6 +27,8 @@ namespace margelo::nitro::rtmppublisher { enum class AudioSource; }
 namespace margelo::nitro::rtmppublisher { enum class StreamMode; }
 // Forward declaration of `CameraFacing` to properly resolve imports.
 namespace margelo::nitro::rtmppublisher { enum class CameraFacing; }
+// Forward declaration of `BeautyLook` to properly resolve imports.
+namespace margelo::nitro::rtmppublisher { enum class BeautyLook; }
 // Forward declaration of `RecordStatus` to properly resolve imports.
 namespace margelo::nitro::rtmppublisher { enum class RecordStatus; }
 // Forward declaration of `RtmpConnectionEvent` to properly resolve imports.
@@ -41,6 +43,7 @@ namespace margelo::nitro::rtmppublisher { enum class RtmpConnectionEvent; }
 #include <string>
 #include "CameraFacing.hpp"
 #include <vector>
+#include "BeautyLook.hpp"
 #include "RecordStatus.hpp"
 #include "RtmpConnectionEvent.hpp"
 #include <functional>
@@ -152,6 +155,9 @@ namespace margelo::nitro::rtmppublisher {
       virtual bool isVideoStabilizationEnabled() = 0;
       virtual bool setOpticalVideoStabilizationEnabled(bool enabled) = 0;
       virtual bool isOpticalVideoStabilizationEnabled() = 0;
+      virtual void setBeautyParams(double temperature, double saturation, double skinLift) = 0;
+      virtual void setBeautyLook(BeautyLook look) = 0;
+      virtual void setBeautyLookIntensity(double intensity) = 0;
       virtual void setBeautyFilterEnabled(bool enabled) = 0;
       virtual bool isBeautyFilterEnabled() = 0;
       virtual bool startRecord(const std::string& path) = 0;

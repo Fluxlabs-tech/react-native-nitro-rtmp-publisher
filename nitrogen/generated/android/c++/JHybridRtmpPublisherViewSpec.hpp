@@ -130,6 +130,9 @@ namespace margelo::nitro::rtmppublisher {
     bool isVideoStabilizationEnabled() override;
     bool setOpticalVideoStabilizationEnabled(bool enabled) override;
     bool isOpticalVideoStabilizationEnabled() override;
+    void setBeautyParams(double temperature, double saturation, double skinLift) override;
+    void setBeautyLook(BeautyLook look) override;
+    void setBeautyLookIntensity(double intensity) override;
     void setBeautyFilterEnabled(bool enabled) override;
     bool isBeautyFilterEnabled() override;
     bool startRecord(const std::string& path) override;

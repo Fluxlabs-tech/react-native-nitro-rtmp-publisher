@@ -35,6 +35,13 @@ export type AudioCodec = 'aac' | 'g711' | 'opus'
  */
 export type AspectRatioMode = 'fill' | 'adjust' | 'none'
 
+/**
+ * Beauty colour looks. No 'none': beauty on/off is `setBeautyFilterEnabled`, so
+ * while the filter is on exactly one of these is active. Order matches the slots
+ * in the stacked LUT atlas.
+ */
+export type BeautyLook = 'warm' | 'bright' | 'cool'
+
 /** State of the local file recorder (independent of streaming). */
 export type RecordStatus =
   | 'started'
@@ -507,6 +514,41 @@ export interface RtmpPublisherViewMethods extends HybridViewMethods {
    * Supported on both platforms — Android uses a RootEncoder GL shader,
    * iOS a HaishinKit CoreImage `VideoEffect`.
    */
+  /**
+   * Absolute look parameters for the beauty filter. Cheap: only uniforms change,
+   * so calling this per slider frame does not rebuild the shader or the FBOs.
+   *
+   * `saturation` 1.0 leaves the source's own chroma untouched — it is the raw
+   * mathematical baseline, NOT the product look. The shipped product base sits
+   * above it on purpose.
+   *
+   * `temperature` is a signed warm/cool axis: -1 cool, 0 unshifted, +1 warm.
+   * Saturation cannot substitute for it — saturation only magnifies whatever
+   * chroma direction the source already has, and skin's points warm, so raising
+   * it can never produce a cool look.
+   *
+   * `skinLift` is a midtone lift applied through the skin region mask only.
+   */
+  setBeautyParams(temperature: number, saturation: number, skinLift: number): void
+
+  /**
+   * Select the colour look applied after the base params above. There is no
+   * "off" value: beauty on/off is `setBeautyFilterEnabled`, and while the filter
+   * is on one of these three is always active.
+   *
+   * All three live in one stacked LUT texture, so this is a uniform change --
+   * safe to call mid-stream, no texture upload, no frame hitch.
+   *
+   * Android only for now. iOS grades through Core Image and wants a CIColorCube.
+   */
+  setBeautyLook(look: BeautyLook): void
+
+  /**
+   * Look strength, 0..1. Cheap enough to drive from a drag gesture: it is a
+   * single uniform, and 0 bypasses the lookup entirely rather than blending to
+   * nothing.
+   */
+  setBeautyLookIntensity(intensity: number): void
   setBeautyFilterEnabled(enabled: boolean): void
   isBeautyFilterEnabled(): boolean
 

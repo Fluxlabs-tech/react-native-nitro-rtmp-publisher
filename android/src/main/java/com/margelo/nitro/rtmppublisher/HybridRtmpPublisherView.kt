@@ -320,6 +320,15 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
   // stock fixed blur); only its shader PRECISION is chosen at attach time —
   // highp on capable GPUs, mediump on budget GPUs / under thermal pressure
   // (see [applyBeautyFilter]).
+  // Look params live HERE, not only on the filter, because applyBeautyFilter
+  // builds a fresh BeautyFilterRender on a precision change; without this a
+  // thermal event would silently reset the user's look. Defaults are the PRODUCT
+  // BASE — raw/unshifted would be 0f / 1.0f / 0f.
+  internal var desiredTemperature = 0.0f
+  internal var desiredSaturation = 1.45f
+  internal var desiredSkinLift = 0.05f
+  internal var desiredLookSlot = 0.0f
+  internal var desiredLookMix = 0.0f
   internal var desiredBeautyFilter = false
   internal var beautyFilter: BeautyFilterRender? = null
   // Set when thermal pressure (SEVERE+) forces a running highp beauty filter
@@ -1835,6 +1844,29 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     applyBeautyFilter()
   }
 
+  override fun setBeautyParams(temperature: Double, saturation: Double, skinLift: Double) {
+    desiredTemperature = temperature.toFloat()
+    desiredSaturation = saturation.toFloat()
+    desiredSkinLift = skinLift.toFloat()
+    // Uniform-only change: no shader rebuild, no FBO reallocation, safe per frame.
+    beautyFilter?.let {
+      it.temperature = desiredTemperature
+      it.saturation = desiredSaturation
+      it.skinLift = desiredSkinLift
+    }
+  }
+
+  // The enum's ordinals are the atlas slot order, so no mapping table.
+  override fun setBeautyLook(look: BeautyLook) {
+    desiredLookSlot = look.value.toFloat()
+    beautyFilter?.lookSlot = desiredLookSlot
+  }
+
+  override fun setBeautyLookIntensity(intensity: Double) {
+    desiredLookMix = intensity.toFloat().coerceIn(0f, 1f)
+    beautyFilter?.lookMix = desiredLookMix
+  }
+
   override fun isBeautyFilterEnabled(): Boolean = desiredBeautyFilter
 
   // Add/remove the GL render to match `desiredBeautyFilter`. Idempotent and
@@ -1864,6 +1896,13 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
       }
       current?.let { camera.glInterface.removeFilter(it) }
       val filter = BeautyFilterRender(highPrecision = wantHighPrecision)
+      filter.temperature = desiredTemperature
+      filter.saturation = desiredSaturation
+      filter.skinLift = desiredSkinLift
+      // Copied before attach, so a thermal precision swap does not silently drop
+      // the selected look the way it would if these lived only on the filter.
+      filter.lookSlot = desiredLookSlot
+      filter.lookMix = desiredLookMix
       camera.glInterface.setFilter(filter)
       beautyFilter = filter
       Log.i(

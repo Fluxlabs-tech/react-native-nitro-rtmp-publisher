@@ -30,6 +30,34 @@ uniform sampler2D uSampler;   // original frame
 uniform sampler2D uCoeff;     // pass 2: (a, b, region)
 uniform highp vec2 uTexel;    // narrow tap spacing, in source coordinates
 
+// Look controls. The shader has no concept of Warm / White / Cool -- it receives
+// three absolute numbers and renders them. The preset table and the intensity
+// interpolation live in TypeScript, so tuning a look never needs a native build.
+//
+//   uTemperature  -1 cool .. 0 unshifted .. +1 warm
+//   uSaturation    1.0 = the source's own chroma, untouched
+//   uSkinLift      0.0 = no lift
+uniform float uTemperature;
+uniform float uSaturation;
+uniform float uSkinLift;
+
+
+// Look grade. `uLut` is a 3D colour LUT flattened into a 2D atlas: 32 slices of
+// 32x32, laid out 8 across and 4 down, so texel (i,j) of slice k is the output
+// for input (i/31, j/31, k/31). GLES2 has no sampler3D, so the blue axis is
+// tiled and interpolated by hand; red and green come from hardware bilinear.
+//
+// All three looks are stacked in ONE texture, four rows each, selected by
+// uLookSlot. That makes switching look a uniform change rather than a texture
+// reload, so tapping between looks mid-stream cannot decode a PNG or upload a
+// texture on the GL thread.
+//
+// uLookMix 0 skips the lookup entirely -- it is uniform across the draw, so the
+// branch is coherent and costs nothing.
+uniform sampler2D uLut;
+uniform float uLookMix;
+uniform float uLookSlot;
+
 varying highp vec2 vTextureCoord;
 
 const vec3 W = vec3(0.299, 0.587, 0.114);
@@ -40,9 +68,40 @@ const float EPS_FLOOR  = 0.04;
 const float SKIN_FINE  = 0.35;   // fine-band gain on flat skin
 const float SKIN_MED   = 1.40;   // medium-band gain on the face
 const float BG_MED     = 5.00;   // ... off the face, gated on hard contrast
-const float SKIN_LIFT  = 0.05;   // midtone lift, face only
-const float SATURATION = 1.70;
 const float SHOULDER   = 0.88;   // roll off above this instead of clipping
+
+const float LUT_N     = 32.0;
+const float LUT_COLS  = 8.0;
+const float LUT_ROWS  = 4.0;   // rows per look
+const float LUT_STACK = 12.0;  // rows in the whole atlas (LUT_ROWS * 3 looks)
+
+vec3 lutLookup(vec3 c) {
+  c = clamp(c, 0.0, 1.0);
+
+  float b  = c.b * (LUT_N - 1.0);
+  float s0 = floor(b);
+  float s1 = min(s0 + 1.0, LUT_N - 1.0);
+  float f  = b - s0;
+
+  // Half-texel inset spanning N-1 texels, not the whole tile: without it
+  // GL_LINEAR reaches across the tile edge into an unrelated blue slice, which
+  // reads as banding at 31 specific blue values. Measured 127/255 error.
+  //
+  // highp, because the tile offset and the in-tile position sum to nearly 1.0
+  // and mediump's absolute error there is a quarter of a texel -- enough to
+  // blend a quarter of the way into the neighbouring entry.
+  highp vec2 inTile =
+    (c.rg * (LUT_N - 1.0) + 0.5) / (LUT_N * vec2(LUT_COLS, LUT_STACK));
+
+  highp float row = uLookSlot * LUT_ROWS;
+  highp vec2 o0 =
+    vec2(mod(s0, LUT_COLS), row + floor(s0 / LUT_COLS)) / vec2(LUT_COLS, LUT_STACK);
+  highp vec2 o1 =
+    vec2(mod(s1, LUT_COLS), row + floor(s1 / LUT_COLS)) / vec2(LUT_COLS, LUT_STACK);
+
+  return mix(texture2D(uLut, o0 + inTile).rgb,
+             texture2D(uLut, o1 + inTile).rgb, f);
+}
 
 void main() {
   vec3 src = texture2D(uSampler, vTextureCoord).rgb;
@@ -93,7 +152,7 @@ void main() {
 
   // Midtone lift, zero at both ends so it cannot push anything into clipping.
   float t = clamp(outY, 0.0, 1.0);
-  outY += SKIN_LIFT * region * 4.0 * t * (1.0 - t);
+  outY += uSkinLift * region * 4.0 * t * (1.0 - t);
 
   // Soft shoulder rather than a hard clamp, so highlights roll off instead of
   // flattening to a single value.
@@ -105,7 +164,17 @@ void main() {
 
   vec3 color = src * clamp(outY / max(y, 0.03), 0.0, 3.0);
 
-  // Boost toward SATURATION, but never past what the pixel has headroom for. A
+  // Warm/cool on one signed axis: opposite gains on R and B. Luma is renormalised
+  // afterwards so a colour grade never doubles as an exposure change. This sits
+  // after the RGB reconstruction because it needs RGB, and before the saturation
+  // step below so the gamut-safe headroom clamp sees the final colour direction.
+  if (uTemperature != 0.0) {
+    float lumaPre = dot(color, W);
+    color *= vec3(1.0 + uTemperature * 0.12, 1.0, 1.0 - uTemperature * 0.12);
+    color *= lumaPre / max(dot(color, W), 1e-4);
+  }
+
+  // Boost toward uSaturation, but never past what the pixel has headroom for. A
   // flat mix above 1.0 shoves channels out of range and the final clamp then
   // flattens every vivid tone to the same value; this backs off per pixel.
   float lum = dot(color, W);
@@ -113,7 +182,14 @@ void main() {
   vec3 room = mix(vec3(lum), vec3(1.0 - lum), step(0.0, dev));
   vec3 lim = room / max(abs(dev), 1e-4);
   float headroom = max(1.0, min(min(lim.r, lim.g), lim.b));
-  color = vec3(lum) + dev * min(SATURATION, headroom);
+  color = vec3(lum) + dev * min(uSaturation, headroom);
+
+  // The look sits after temperature and saturation because those two are the
+  // base calibration the LUT was authored on top of, and before the clamp so a
+  // grade that pushes slightly out of range still gets caught.
+  if (uLookMix > 0.0) {
+    color = mix(color, lutLookup(color), uLookMix);
+  }
 
   gl_FragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
 }

@@ -74,6 +74,9 @@ public protocol HybridRtmpPublisherViewSpec_protocol: HybridObject, HybridView {
   func isVideoStabilizationEnabled() throws -> Bool
   func setOpticalVideoStabilizationEnabled(enabled: Bool) throws -> Bool
   func isOpticalVideoStabilizationEnabled() throws -> Bool
+  func setBeautyParams(temperature: Double, saturation: Double, skinLift: Double) throws -> Void
+  func setBeautyLook(look: BeautyLook) throws -> Void
+  func setBeautyLookIntensity(intensity: Double) throws -> Void
   func setBeautyFilterEnabled(enabled: Bool) throws -> Void
   func isBeautyFilterEnabled() throws -> Bool
   func startRecord(path: String) throws -> Bool

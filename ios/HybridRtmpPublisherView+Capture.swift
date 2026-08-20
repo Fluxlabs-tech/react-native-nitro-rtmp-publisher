@@ -440,6 +440,29 @@ extension HybridRtmpPublisherView {
   // stalls ~2s per toggle. Affects both preview and encoded stream. See
   // `BeautyVideoEffect`.
 
+  /// Look parameters. Accepted and stored so the shared Nitro spec is satisfied
+  /// and JS behaves identically on both platforms, but NOT yet applied: the iOS
+  /// effect is a `CIColorKernel` with its own colour tail, and its low-pass is a
+  /// `CIGaussianBlur` rather than Android's guided filter, so these values would
+  /// need their own calibration before they mean the same thing. Android-only for
+  /// now, matching the rest of the guided-filter work.
+  func setBeautyParams(temperature: Double, saturation: Double, skinLift: Double) throws {
+    beautyTemperature = temperature
+    beautySaturation = saturation
+    beautySkinLift = skinLift
+  }
+
+  /// Stored, not applied, for the same reason as `setBeautyParams`. The Android
+  /// path samples a LUT atlas by hand because GLES2 has no 3D texture; Core Image
+  /// has `CIColorCube`, so iOS wants that rather than a port of the atlas maths.
+  func setBeautyLook(look: BeautyLook) throws {
+    beautyLook = look
+  }
+
+  func setBeautyLookIntensity(intensity: Double) throws {
+    beautyLookMix = min(max(intensity, 0.0), 1.0)
+  }
+
   func setBeautyFilterEnabled(enabled: Bool) throws {
     guard enabled != cachedBeautyEnabled else { return }
     cachedBeautyEnabled = enabled

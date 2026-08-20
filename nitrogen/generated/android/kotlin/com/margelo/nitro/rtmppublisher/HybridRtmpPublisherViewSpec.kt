@@ -307,6 +307,18 @@ abstract class HybridRtmpPublisherViewSpec: HybridView() {
   
   @DoNotStrip
   @Keep
+  abstract fun setBeautyParams(temperature: Double, saturation: Double, skinLift: Double): Unit
+  
+  @DoNotStrip
+  @Keep
+  abstract fun setBeautyLook(look: BeautyLook): Unit
+  
+  @DoNotStrip
+  @Keep
+  abstract fun setBeautyLookIntensity(intensity: Double): Unit
+  
+  @DoNotStrip
+  @Keep
   abstract fun setBeautyFilterEnabled(enabled: Boolean): Unit
   
   @DoNotStrip

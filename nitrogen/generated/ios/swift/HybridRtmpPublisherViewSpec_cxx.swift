@@ -840,6 +840,39 @@ open class HybridRtmpPublisherViewSpec_cxx {
   }
   
   @inline(__always)
+  public final func setBeautyParams(temperature: Double, saturation: Double, skinLift: Double) -> bridge.Result_void_ {
+    do {
+      try self.__implementation.setBeautyParams(temperature: temperature, saturation: saturation, skinLift: skinLift)
+      return bridge.create_Result_void_()
+    } catch (let __error) {
+      let __exceptionPtr = __error.toCpp()
+      return bridge.create_Result_void_(__exceptionPtr)
+    }
+  }
+  
+  @inline(__always)
+  public final func setBeautyLook(look: Int32) -> bridge.Result_void_ {
+    do {
+      try self.__implementation.setBeautyLook(look: margelo.nitro.rtmppublisher.BeautyLook(rawValue: look)!)
+      return bridge.create_Result_void_()
+    } catch (let __error) {
+      let __exceptionPtr = __error.toCpp()
+      return bridge.create_Result_void_(__exceptionPtr)
+    }
+  }
+  
+  @inline(__always)
+  public final func setBeautyLookIntensity(intensity: Double) -> bridge.Result_void_ {
+    do {
+      try self.__implementation.setBeautyLookIntensity(intensity: intensity)
+      return bridge.create_Result_void_()
+    } catch (let __error) {
+      let __exceptionPtr = __error.toCpp()
+      return bridge.create_Result_void_(__exceptionPtr)
+    }
+  }
+  
+  @inline(__always)
   public final func setBeautyFilterEnabled(enabled: Bool) -> bridge.Result_void_ {
     do {
       try self.__implementation.setBeautyFilterEnabled(enabled: enabled)

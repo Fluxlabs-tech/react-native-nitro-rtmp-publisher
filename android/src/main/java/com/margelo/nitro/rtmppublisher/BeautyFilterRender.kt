@@ -1,7 +1,9 @@
 package com.margelo.nitro.rtmppublisher
 
 import android.content.Context
+import android.graphics.BitmapFactory
 import android.opengl.GLES20
+import android.opengl.GLUtils
 import android.opengl.Matrix
 import android.util.Log
 import com.pedro.encoder.input.gl.render.filters.BaseFilterRender
@@ -84,6 +86,30 @@ class BeautyFilterRender(val highPrecision: Boolean) : BaseFilterRender() {
    */
   private var degraded = false
 
+  /**
+   * Look controls, pushed as uniforms every frame. Written from the JS thread,
+   * read on the GL thread.
+   *
+   * Defaults ARE GOLDEN_PR28: the compile-time constants PR #28 shipped. Warm is
+   * defined as this base with an identity LUT, so Warm reproduces PR #28 exactly
+   * and `scripts/parity.py` asserts it bit-for-bit. Changing `saturation` here
+   * silently changes what Warm means -- run parity.py after touching it.
+   *
+   * Saturation 1.0 would be the mathematically raw value; 1.70 is above it because
+   * skin's chroma vector points warm and scaling it is what gives the look colour.
+   */
+  @Volatile var temperature = 0.0f
+  @Volatile var saturation = 1.70f
+  @Volatile var skinLift = 0.05f
+
+  /** Look strength. 0 skips the LUT lookup entirely. */
+  @Volatile var lookMix = 0.0f
+
+  /** Which of the stacked looks to sample: 0 warm, 1 bright, 2 cool. */
+  @Volatile var lookSlot = 0.0f
+
+  private var lutTex = 0
+
   private val fbo = IntArray(2)
   private val fboTex = IntArray(2)
   private var fboWidth = 0
@@ -134,7 +160,10 @@ class BeautyFilterRender(val highPrecision: Boolean) : BaseFilterRender() {
       Log.e(TAG, "blit shader unavailable", t)
     }
 
-    if (!degraded) allocateFbos(getWidth(), getHeight())
+    if (!degraded) {
+      lutTex = loadLut(context, R.raw.lut_looks)
+      allocateFbos(getWidth(), getHeight())
+    }
   }
 
   override fun drawFilter() {
@@ -197,8 +226,25 @@ class BeautyFilterRender(val highPrecision: Boolean) : BaseFilterRender() {
       GLES20.glGetUniformLocation(compositeProgram, "uTexel"),
       NARROW_STRIDE.toFloat() / getWidth(), NARROW_STRIDE.toFloat() / getHeight()
     )
+    GLES20.glUniform1f(
+      GLES20.glGetUniformLocation(compositeProgram, "uTemperature"), temperature
+    )
+    GLES20.glUniform1f(
+      GLES20.glGetUniformLocation(compositeProgram, "uSaturation"), saturation
+    )
+    GLES20.glUniform1f(
+      GLES20.glGetUniformLocation(compositeProgram, "uSkinLift"), skinLift
+    )
+    GLES20.glUniform1f(
+      GLES20.glGetUniformLocation(compositeProgram, "uLookMix"),
+      if (lutTex == 0) 0f else lookMix
+    )
+    GLES20.glUniform1f(
+      GLES20.glGetUniformLocation(compositeProgram, "uLookSlot"), lookSlot
+    )
     bindTexture(compositeProgram, "uSampler", 0, previousTexId)
     bindTexture(compositeProgram, "uCoeff", 1, fboTex[1])
+    bindTexture(compositeProgram, "uLut", 2, lutTex)
   }
 
   private fun drawBlit() {
@@ -235,6 +281,54 @@ class BeautyFilterRender(val highPrecision: Boolean) : BaseFilterRender() {
     GLES20.glUniform1i(GLES20.glGetUniformLocation(program, name), unit)
     GLES20.glActiveTexture(GLES20.GL_TEXTURE0 + unit)
     GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texId)
+  }
+
+  /**
+   * Uploads the stacked colour LUT atlas. Kept in res/raw rather than
+   * res/drawable because drawable resources are density-scaled, and any resample
+   * of the atlas smears colour across the tile boundaries and corrupts every
+   * lookup.
+   *
+   * All three looks live in this one texture, so this runs once per filter and
+   * never again -- switching look only moves [lookSlot].
+   */
+  private fun loadLut(context: Context, resId: Int): Int {
+    val opts = BitmapFactory.Options().apply { inScaled = false }
+    val bitmap = context.resources.openRawResource(resId).use {
+      BitmapFactory.decodeStream(it, null, opts)
+    }
+    if (bitmap == null) {
+      Log.e(TAG, "beauty LUT failed to decode, look disabled")
+      return 0
+    }
+    val ids = IntArray(1)
+    GLES20.glGenTextures(1, ids, 0)
+    GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, ids[0])
+    // GL_LINEAR is what makes red and green interpolate in hardware; the default
+    // min filter expects mipmaps that this texture does not have.
+    GLES20.glTexParameteri(
+      GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR
+    )
+    GLES20.glTexParameteri(
+      GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR
+    )
+    GLES20.glTexParameteri(
+      GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE
+    )
+    GLES20.glTexParameteri(
+      GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE
+    )
+    GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
+    Log.d(TAG, "beauty LUT ${bitmap.width}x${bitmap.height}")
+    bitmap.recycle()
+    return ids[0]
+  }
+
+  private fun releaseLut() {
+    if (lutTex != 0) {
+      GLES20.glDeleteTextures(1, intArrayOf(lutTex), 0)
+      lutTex = 0
+    }
   }
 
   /** True when the reduced-resolution targets are ready for this frame size. */
@@ -312,6 +406,7 @@ class BeautyFilterRender(val highPrecision: Boolean) : BaseFilterRender() {
 
   override fun release() {
     releaseFbos()
+    releaseLut()
     for (p in intArrayOf(statsProgram, coeffProgram, compositeProgram, blitProgram)) {
       if (p > 0) GLES20.glDeleteProgram(p)
     }

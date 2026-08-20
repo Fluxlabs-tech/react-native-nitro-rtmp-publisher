@@ -297,6 +297,13 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   // once registered the effect stays until toggled off — no re-apply needed
   // (unlike the Android GL path, which re-attaches on every startPreview).
   let beautyEffect = BeautyVideoEffect()
+
+  // Look parameters from setBeautyParams. Stored only — see the note there.
+  var beautyTemperature: Double = 0.0
+  var beautySaturation: Double = 1.45
+  var beautySkinLift: Double = 0.05
+  var beautyLook: BeautyLook = .warm
+  var beautyLookMix: Double = 0.0
   var cachedBeautyEnabled = false
   // Passive mixer output that keeps the latest composited preview frame so a
   // camera flip can render a freeze-frame over the seam. See `PreviewFrameTap`
