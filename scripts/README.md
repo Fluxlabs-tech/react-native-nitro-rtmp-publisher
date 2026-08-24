@@ -57,3 +57,38 @@ a clapperboard or a millisecond clock with a per-second beep, and compare
 clap-vs-beep alignment at t=0 / 15 / 30 min. For RC-2 specifically, toggle
 `noiseSuppression` (or trigger a phone call) mid-stream and check whether the
 alignment steps.
+
+## `verify-beauty-ios.sh` — verify the iOS beauty pipeline without a device
+
+Compiles `scripts/beauty-ios-check/main.swift` against the **real** iOS sources
+(`BeautyGuidedPipeline`, `BeautyLookCube`, `BeautyLookAtlas`) and runs five
+checks. Requires macOS + Xcode command-line tools and `node`.
+
+```sh
+npm run verify:beauty-ios
+```
+
+Each check guards a failure that is invisible to code review; three of them
+caught real bugs during the iOS port:
+
+| # | check | what it catches |
+|---|---|---|
+| 1 | `CIBoxBlur` footprint | `radius` is **not** the box half-width — taps are `2*floor((r-1)/2)+1`, so radius 1–2 do *nothing*. Passing half-widths (2 and 4) zeroed the narrow variance and made the guided filter a silent noise **amplifier**. Undocumented OS behaviour, so it is asserted. |
+| 2 | `CIColorCube` axis order | A transposed axis returns another colour's grade while check 5 still passes (both sides share an ordering). Primaries are decisive. Also confirms plain `CIColorCube` applies no colour conversion. |
+| 3 | composite fidelity | The three-band reconstruction diffed against Android's `beauty_composite_fragment.glsl`, transcribed independently on the CPU. Catches a mistyped constant — every one was measured, not chosen. |
+| 4 | end-to-end grain | Fails if the pipeline **amplifies** grain instead of suppressing it, at three skin tones, in a CIContext configured like HaishinKit's so fp16 behaves as on device. |
+| 5 | LUT payload | All 65,536 cube entries from the embedded base64 diffed against `lut_looks.png` via a separate Node decoder. Proves iOS and Android grade from identical data. |
+
+Says nothing about GPU cost or how the filter **looks** — both need a device.
+
+### Regenerating the embedded LUT
+
+`ios/BeautyLookAtlas.swift` is **generated** — a base64 payload of the same
+`android/src/main/res/raw/lut_looks.png` Android samples, embedded rather than
+shipped as a pod resource so the two platforms cannot drift and so bundle
+resolution can't fail at runtime. Do not hand-edit it.
+
+```sh
+node scripts/beauty-lut.mjs --emit-swift   # rewrite ios/BeautyLookAtlas.swift
+npm run verify:beauty-ios                  # check 5 proves the round-trip
+```

@@ -32,6 +32,7 @@
     "specs": "tsc --noEmit false && nitrogen --logLevel=\"debug\"",
     "verify:beauty": "node scripts/beauty-guided-box.mjs && node scripts/beauty-lut.mjs",
     "verify:beauty-lut": "node scripts/beauty-lut.mjs",
+    "verify:beauty-ios": "bash scripts/verify-beauty-ios.sh",
     "prepublishOnly": "rm -rf lib tsconfig.tsbuildinfo && tsc && nitrogen"
   },
   "keywords": [

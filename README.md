@@ -588,15 +588,15 @@ ref.setExposure(0)                // EV-compensation step
 
 ### Beauty filter
 
-Skin-smoothing applied per frame, affecting **both the preview and the encoded stream**. Supported on **both platforms** (iOS and Android). Android also provides Warm, Bright, and Cool colour looks.
+Skin-smoothing applied per frame, affecting **both the preview and the encoded stream**. Supported on **both platforms** (iOS and Android), with Warm, Bright, and Cool colour looks.
 
 | Method | Notes |
 |---|---|
 | `setBeautyFilterEnabled(on): void` | Toggle the beauty filter. |
 | `isBeautyFilterEnabled(): boolean` | Current state. |
 | `setBeautyFilterIntensity(value): void` | Continuous overall strength from 0 to 1; safe for a live slider. |
-| `setBeautyLook(look): void` | Android: select `'warm'`, `'bright'`, or `'cool'`. Warm is the exact base filter. |
-| `setBeautyLookIntensity(value): void` | Android: set Bright/Cool strength from 0 to 1. |
+| `setBeautyLook(look): void` | Select `'warm'`, `'bright'`, or `'cool'`. Warm is the exact base filter, not a third table. |
+| `setBeautyLookIntensity(value): void` | Bright/Cool strength from 0 to 1. Safe for a drag gesture on both platforms. |
 
 ```ts
 ref.setBeautyFilterEnabled(true)
@@ -606,7 +606,7 @@ ref.setBeautyLookIntensity(0.5)
 ```
 
 - **Android** — a five-pass Fast Guided Filter: four quarter-resolution analysis passes share two RGBA8 targets, followed by full-resolution three-band reconstruction. Warm bypasses colour grading; Bright and Cool share one preloaded GLES2 LUT atlas. Devices without fragment `highp` use passthrough instead of running numerically invalid packed moments.
-- **iOS** — a CoreImage frequency-separation `VideoEffect`. Android colour-look methods are accepted but have no effect until separately calibrated `CIColorCube` looks are implemented. Under sustained heat, smoothing strength and blur radius are reduced.
+- **iOS** — the same fast guided filter, as a CoreImage `VideoEffect`: quarter-resolution statistics and coefficients via `CIBoxBlur`, then full-resolution three-band reconstruction. Every custom kernel is a `CIColorKernel` reading only its destination pixel and every box filter is an Apple built-in, because a general `CIKernel` doing dependent neighbour reads at 720p30 destabilised the device. The composite is verified against Android's shader to 6 decimal places (`npm run verify:beauty-guided`). Bright and Cool are `CIColorCube` grades built from the *same* LUT atlas Android samples, embedded in the binary rather than shipped as a pod resource, so the two platforms cannot drift apart; the cube data is decoded lazily off the render path on first use. Cost is fixed — there is no thermal lever, by design (see `BeautyVideoEffect`).
 
 ### Local recording
 
@@ -728,7 +728,7 @@ Sustained streaming can throttle the SoC. The library hooks the OS thermal API o
 ```ts
 // Set the trip level via the `thermalWarningThreshold` prop (default 'severe').
 // The OS listener is registered when you subscribe (and, on iOS, also while the
-// beauty filter is on so it can auto-throttle) — zero work otherwise.
+// onThermalWarning is subscribed) — zero work otherwise.
 ref.setOnThermalWarning((status) => {
   // 'none' | 'light' | 'moderate' | 'severe' | 'critical' | 'emergency' | 'shutdown'
   if (status === 'severe') ref.setVideoBitrateOnFly(1_000_000)
@@ -745,7 +745,7 @@ The callback fires twice for a typical heat event:
 
 - **Android**: requires API 29 (Android 10). Older devices always report `'none'`.
 - **iOS**: maps `ProcessInfo.thermalState` (`nominal` / `fair` / `serious` / `critical`) onto our 7-level scale.
-- **Beauty-filter auto-throttle**: when the [beauty filter](#beauty-filter) is on, both platforms automatically lighten it under thermal pressure (Android drops `highp`→`mediump`; iOS reduces smoothing intensity + blur radius), restoring on cooldown. This runs independently of `setOnThermalWarning` — it kicks in even if you never subscribe.
+- **Beauty-filter thermal behaviour**: **Android** drops `highp`→`mediump` under sustained pressure and restores on cooldown — a cost change, invisible in the output, independent of `setOnThermalWarning`. **iOS does not throttle the filter at all.** It previously scaled intensity down (0.5 at `serious`, 0.3 at `critical`), which silently capped `setBeautyFilterIntensity` — a slider at 100% delivered half the effect on any warm device. Neither platform dims the look you asked for; if iOS ever needs thermal relief it will come from reducing cost, not strength.
 
 #### Testing thermal handling without overheating the device
 
@@ -897,7 +897,7 @@ Same JS API, same behavior — but worth knowing exactly where the platforms dif
 | Wake lock | `UIApplication.isIdleTimerDisabled` | `PARTIAL_WAKE_LOCK` |
 | Mirror | Single `AVCaptureConnection` buffer; UIView transform for asymmetric cases | Separate preview / stream flip flags, re-applied on `switchCamera()` |
 | `noiseSuppression` | Apple Voice Processing (NS+AEC, **AGC disabled**) on an owned `AVAudioEngine` capture → `mixer.append` (HaishinKit has no audio-effect hook); voice-isolation, so it also cuts music | Custom spectral denoiser (decision-directed Wiener + noise-floor tracking) on the RootEncoder mic PCM tap; keeps music |
-| Beauty filter | CoreImage `VideoEffect` (frequency-separation skin-smoothing) on the HaishinKit mixer; auto-throttles intensity + blur under thermal pressure | RootEncoder `BeautyFilterRender`; auto `highp`/`mediump` by device tier + thermal downgrade |
+| Beauty filter | CoreImage `VideoEffect` running the same fast guided filter (`BeautyGuidedPipeline`) on the HaishinKit mixer; no thermal throttling (fixed cost) | RootEncoder `BeautyFilterRender`; auto `highp`/`mediump` by device tier + thermal downgrade |
 | Picture-in-Picture | `AVPictureInPictureController` + `AVSampleBufferDisplayLayer` (HaishinKit `PiPHKView`); offered **only on the live tier** — iPhone iOS 18+ (`voip` mode) / M1 iPad, where camera + stream stay live — and disabled (no-op) on older devices (no frozen-frame fallback) | Device-aspect `PictureInPictureParams` + `addOnPictureInPictureModeChangedListener`, `setAutoEnterEnabled` on API 31+; preview + RTMP stream stay live on every device |
 
 When in doubt, **the JS API is the contract**. Where a knob doesn't map to one platform, we either translate (audioSource modes) or silently no-op (forceHardwareCodec on iOS).

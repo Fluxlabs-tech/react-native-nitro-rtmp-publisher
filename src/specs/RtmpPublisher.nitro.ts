@@ -522,10 +522,12 @@ export interface RtmpPublisherViewMethods extends HybridViewMethods {
   setBeautyFilterIntensity(intensity: number): void
 
   /**
-   * Select an Android colour look. Warm is the exact base filter; Bright and
-   * Cool use a preloaded LUT. iOS currently keeps its base beauty look.
+   * Select a colour look. Warm is the exact base filter; Bright and Cool apply
+   * a preloaded LUT. Supported on both platforms, from the same LUT data, so
+   * the grades match.
    *
-   * Switching is a uniform change with no texture upload or frame hitch.
+   * Switching never uploads a texture or decodes anything on the render path,
+   * so it cannot hitch a live stream.
    */
   setBeautyLook(look: BeautyLook): void
 
