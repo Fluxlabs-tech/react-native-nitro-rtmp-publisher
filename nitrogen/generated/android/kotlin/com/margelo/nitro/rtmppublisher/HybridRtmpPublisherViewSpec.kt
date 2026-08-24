@@ -315,6 +315,18 @@ abstract class HybridRtmpPublisherViewSpec: HybridView() {
   
   @DoNotStrip
   @Keep
+  abstract fun setBeautyFilterIntensity(intensity: Double): Unit
+
+  @DoNotStrip
+  @Keep
+  abstract fun setBeautyLook(look: BeautyLook): Unit
+
+  @DoNotStrip
+  @Keep
+  abstract fun setBeautyLookIntensity(intensity: Double): Unit
+
+  @DoNotStrip
+  @Keep
   abstract fun startRecord(path: String): Boolean
   
   @DoNotStrip

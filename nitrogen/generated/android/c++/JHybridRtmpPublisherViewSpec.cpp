@@ -23,6 +23,8 @@ namespace margelo::nitro::rtmppublisher { enum class StreamMode; }
 namespace margelo::nitro::rtmppublisher { enum class RecordStatus; }
 // Forward declaration of `CameraFacing` to properly resolve imports.
 namespace margelo::nitro::rtmppublisher { enum class CameraFacing; }
+// Forward declaration of `BeautyLook` to properly resolve imports.
+namespace margelo::nitro::rtmppublisher { enum class BeautyLook; }
 // Forward declaration of `RtmpConnectionEvent` to properly resolve imports.
 namespace margelo::nitro::rtmppublisher { enum class RtmpConnectionEvent; }
 
@@ -44,6 +46,8 @@ namespace margelo::nitro::rtmppublisher { enum class RtmpConnectionEvent; }
 #include "JRecordStatus.hpp"
 #include "CameraFacing.hpp"
 #include "JCameraFacing.hpp"
+#include "BeautyLook.hpp"
+#include "JBeautyLook.hpp"
 #include "RtmpConnectionEvent.hpp"
 #include <functional>
 #include "JFunc_void_RtmpConnectionEvent_std__string.hpp"
@@ -456,6 +460,18 @@ namespace margelo::nitro::rtmppublisher {
     static const auto method = _javaPart->javaClassStatic()->getMethod<jboolean()>("isBeautyFilterEnabled");
     auto __result = method(_javaPart);
     return static_cast<bool>(__result);
+  }
+  void JHybridRtmpPublisherViewSpec::setBeautyFilterIntensity(double intensity) {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<void(double /* intensity */)>("setBeautyFilterIntensity");
+    method(_javaPart, intensity);
+  }
+  void JHybridRtmpPublisherViewSpec::setBeautyLook(BeautyLook look) {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<void(jni::alias_ref<JBeautyLook> /* look */)>("setBeautyLook");
+    method(_javaPart, JBeautyLook::fromCpp(look));
+  }
+  void JHybridRtmpPublisherViewSpec::setBeautyLookIntensity(double intensity) {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<void(double /* intensity */)>("setBeautyLookIntensity");
+    method(_javaPart, intensity);
   }
   bool JHybridRtmpPublisherViewSpec::startRecord(const std::string& path) {
     static const auto method = _javaPart->javaClassStatic()->getMethod<jboolean(jni::alias_ref<jni::JString> /* path */)>("startRecord");

@@ -22,6 +22,7 @@ export type {
   VideoCodec,
   AudioCodec,
   AspectRatioMode,
+  BeautyLook,
   RecordStatus,
   ThermalStatus,
   AudioSource,

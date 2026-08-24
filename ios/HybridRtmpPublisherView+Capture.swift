@@ -440,39 +440,60 @@ extension HybridRtmpPublisherView {
   // stalls ~2s per toggle. Affects both preview and encoded stream. See
   // `BeautyVideoEffect`.
 
+  /// Colour look. Both platforms read the SAME LUT atlas — Android from
+  /// `res/raw/lut_looks.png`, iOS from the copy embedded in `BeautyLookAtlas`
+  /// (see `scripts/beauty-lut.mjs --emit-swift`) — so the grades match by
+  /// construction rather than by being tuned twice.
+  ///
+  /// Warm is not a table: it is the ungraded base filter on both platforms, so
+  /// selecting it skips the lookup entirely rather than blending toward an
+  /// identity cube.
+  func setBeautyLook(look: BeautyLook) throws {
+    // Slots MUST match the atlas stacking order (see `BeautyLookCube`) and the
+    // `uLookSlot` values Android's composite shader uses.
+    let slot: Int
+    switch look {
+    case .warm: slot = -1
+    case .bright: slot = BeautyLookCube.brightSlot
+    case .cool: slot = BeautyLookCube.coolSlot
+    }
+    let effect = beautyEffect
+    Task { @ScreenActor in effect.setLookSlot(slot) }
+  }
+
+  func setBeautyLookIntensity(intensity: Double) throws {
+    guard intensity.isFinite else { return }
+    let value = Float(min(max(intensity, 0.0), 1.0))
+    let effect = beautyEffect
+    Task { @ScreenActor in effect.setLookMix(value) }
+  }
+
+  func setBeautyFilterIntensity(intensity: Double) throws {
+    // A non-finite value would survive min/max and reach the kernel as NaN.
+    // Android drops it with a warning; do the same rather than render garbage.
+    guard intensity.isFinite else { return }
+    let value = Float(min(max(intensity, 0.0), 1.0))
+    let effect = beautyEffect
+    Task { @ScreenActor in effect.setIntensity(value) }
+  }
+
   func setBeautyFilterEnabled(enabled: Bool) throws {
     guard enabled != cachedBeautyEnabled else { return }
     cachedBeautyEnabled = enabled
     applyBeautyFilter()
-    // Beauty is our biggest GPU add, so keep the thermal observer alive while
-    // it's on (independent of any JS `onThermalWarning` subscription) and start
-    // already-throttled if the device is hot when beauty is switched on.
+    // The thermal observer is no longer kept alive for beauty's sake — beauty no
+    // longer reacts to temperature — so this only reflects a JS subscription now.
     syncThermalObserver()
-    applyBeautyThermalScale()
   }
 
   func isBeautyFilterEnabled() throws -> Bool { return cachedBeautyEnabled }
 
-  /// Map the current thermal state → a beauty headroom scale and push it to the
-  /// effect (mirrors Android's SEVERE highp→mediump downgrade). Like Android, the
-  /// filter stays ON at every level — just progressively lighter + cheaper —
-  /// rather than cutting out. No-op when beauty is off (the effect isn't
-  /// registered, so its scale is moot). The set hops to ScreenActor so it's
-  /// serialized with the effect's per-frame `execute(_:)`.
-  ///   serious  → 0.5 (half intensity + ~half blur radius)
-  ///   critical → 0.3 (lightest + cheapest, still visible)
-  ///   else     → 1.0 (full)
-  func applyBeautyThermalScale() {
-    guard cachedBeautyEnabled else { return }
-    let scale: Float
-    switch ProcessInfo.processInfo.thermalState {
-    case .critical: scale = 0.3
-    case .serious:  scale = 0.5
-    default:        scale = 1.0
-    }
-    let effect = beautyEffect
-    Task { @ScreenActor in effect.setThermalScale(scale) }
-  }
+  // NOTE: `applyBeautyThermalScale()` lived here and multiplied beauty intensity
+  // by 0.5 at `serious` / 0.3 at `critical`. It is gone: Android does not dim the
+  // look under heat (it swaps highp for mediump, which nobody can see), so this
+  // silently capped a user-facing slider — on a small chassis, most of the time.
+  // See the thermal note in `BeautyVideoEffect` for the cost lever to build
+  // instead (skip the narrow band) if a device measurement ever justifies one.
 
   func applyBeautyFilter() {
     let enabled = cachedBeautyEnabled

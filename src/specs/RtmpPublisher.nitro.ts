@@ -35,6 +35,11 @@ export type AudioCodec = 'aac' | 'g711' | 'opus'
  */
 export type AspectRatioMode = 'fill' | 'adjust' | 'none'
 
+/**
+ * Beauty colour looks. Beauty on/off remains `setBeautyFilterEnabled`.
+ */
+export type BeautyLook = 'warm' | 'bright' | 'cool'
+
 /** State of the local file recorder (independent of streaming). */
 export type RecordStatus =
   | 'started'
@@ -501,14 +506,37 @@ export interface RtmpPublisherViewMethods extends HybridViewMethods {
 
   /**
    * Toggle a skin-smoothing "beauty" filter on the camera feed. It affects
-   * BOTH the local preview and the encoded stream. Fixed strength (no
-   * intensity parameter).
+   * both the local preview and the encoded stream.
    *
    * Supported on both platforms — Android uses a RootEncoder GL shader,
    * iOS a HaishinKit CoreImage `VideoEffect`.
    */
   setBeautyFilterEnabled(enabled: boolean): void
   isBeautyFilterEnabled(): boolean
+
+  /**
+   * Overall beauty strength from 0 to 1. This continuously blends the complete
+   * filtered result back toward the original frame and is safe to drive from a
+   * slider while previewing or streaming.
+   */
+  setBeautyFilterIntensity(intensity: number): void
+
+  /**
+   * Select a colour look. Warm is the exact base filter; Bright and Cool apply
+   * a preloaded LUT. Supported on both platforms, from the same LUT data, so
+   * the grades match.
+   *
+   * Switching never uploads a texture or decodes anything on the render path,
+   * so it cannot hitch a live stream.
+   */
+  setBeautyLook(look: BeautyLook): void
+
+  /**
+   * Look strength, 0..1. Cheap enough to drive from a drag gesture: it is a
+   * single uniform, and 0 bypasses the lookup entirely rather than blending to
+   * nothing.
+   */
+  setBeautyLookIntensity(intensity: number): void
 
   // ─── Local recording ─────────────────────────────────────────────────────
 

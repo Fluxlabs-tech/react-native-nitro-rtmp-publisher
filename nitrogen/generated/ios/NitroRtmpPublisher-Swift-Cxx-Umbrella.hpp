@@ -14,6 +14,8 @@ namespace margelo::nitro::rtmppublisher { enum class AspectRatioMode; }
 namespace margelo::nitro::rtmppublisher { enum class AudioCodec; }
 // Forward declaration of `AudioSource` to properly resolve imports.
 namespace margelo::nitro::rtmppublisher { enum class AudioSource; }
+// Forward declaration of `BeautyLook` to properly resolve imports.
+namespace margelo::nitro::rtmppublisher { enum class BeautyLook; }
 // Forward declaration of `CameraFacing` to properly resolve imports.
 namespace margelo::nitro::rtmppublisher { enum class CameraFacing; }
 // Forward declaration of `HybridRtmpPublisherViewSpec` to properly resolve imports.
@@ -33,6 +35,7 @@ namespace margelo::nitro::rtmppublisher { enum class VideoCodec; }
 #include "AspectRatioMode.hpp"
 #include "AudioCodec.hpp"
 #include "AudioSource.hpp"
+#include "BeautyLook.hpp"
 #include "CameraFacing.hpp"
 #include "HybridRtmpPublisherViewSpec.hpp"
 #include "RecordStatus.hpp"

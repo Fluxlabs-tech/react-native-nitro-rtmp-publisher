@@ -315,12 +315,17 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
   // Beauty filter. The render lives in the GL pipeline, which is only alive
   // once preview is up — so we cache the desired on/off state and (re)apply it
   // after each startPreview. `beautyFilter` holds the live render instance
-  // while it's attached (null when detached). It is always our own
-  // [WhiteningBeautyFilterRender] (fair/bright look, not the stock reddish one);
-  // only its shader PRECISION is chosen at attach time — highp on capable GPUs,
-  // mediump on budget GPUs / under thermal pressure (see [applyBeautyFilter]).
+  // after first use and stays attached until preview teardown. It is always our
+  // [BeautyFilterRender] (guided filter + three-band reconstruction, not the
+  // stock fixed blur); only its shader PRECISION is chosen at attach time —
+  // highp on capable GPUs, mediump on budget GPUs / under thermal pressure
+  // (see [applyBeautyFilter]).
+  // Negative is Warm, which is the exact base path and bypasses the LUT.
+  internal var desiredLookSlot = -1.0f
+  internal var desiredLookMix = 1.0f
+  internal var desiredBeautyIntensity = 1.0f
   internal var desiredBeautyFilter = false
-  internal var beautyFilter: WhiteningBeautyFilterRender? = null
+  internal var beautyFilter: BeautyFilterRender? = null
   // Set when thermal pressure (SEVERE+) forces a running highp beauty filter
   // down to the cheaper mediump shader; cleared when the device cools back to
   // LIGHT/NONE. Driven from the thermal observer (onThermalStatusChanged).
@@ -903,7 +908,10 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
         // outliving a fast destroy→create→resume cycle would otherwise pass
         // every guard and queue a spurious reTry against the resumed session.
         stopLiveStreamTracked()
-        if (camera.isOnPreview) camera.stopPreview()
+        if (camera.isOnPreview) {
+          beautyFilter = null
+          camera.stopPreview()
+        }
       } catch (e: Exception) {
         // Drop the throwable (its stack-trace prefix would contain the
         // unscrubbed message) and scrub the message ourselves.
@@ -1239,7 +1247,10 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     }
     var ok = false
     safe("startPreview") {
-      if (camera.isOnPreview) camera.stopPreview()
+      if (camera.isOnPreview) {
+        beautyFilter = null
+        camera.stopPreview()
+      }
       camera.startPreview(helperFacing, width, height)
       // glInterface + camera2 controls are live now — re-apply props that
       // depend on them.
@@ -1834,14 +1845,45 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     applyBeautyFilter()
   }
 
+  override fun setBeautyFilterIntensity(intensity: Double) {
+    if (!intensity.isFinite()) {
+      Log.w(TAG, "setBeautyFilterIntensity ignored non-finite value")
+      return
+    }
+    desiredBeautyIntensity = intensity.toFloat().coerceIn(0f, 1f)
+    beautyFilter?.intensity = desiredBeautyIntensity
+  }
+
+  override fun setBeautyLook(look: BeautyLook) {
+    desiredLookSlot = when (look) {
+      BeautyLook.WARM -> -1.0f
+      BeautyLook.BRIGHT -> 0.0f
+      BeautyLook.COOL -> 1.0f
+    }
+    applyBeautyLook()
+  }
+
+  override fun setBeautyLookIntensity(intensity: Double) {
+    if (!intensity.isFinite()) {
+      Log.w(TAG, "setBeautyLookIntensity ignored non-finite value")
+      return
+    }
+    desiredLookMix = intensity.toFloat().coerceIn(0f, 1f)
+    applyBeautyLook()
+  }
+
+  private fun applyBeautyLook(filter: BeautyFilterRender? = beautyFilter) {
+    filter ?: return
+    filter.lookSlot = desiredLookSlot.coerceAtLeast(0f)
+    filter.lookMix = if (desiredLookSlot < 0f) 0f else desiredLookMix
+  }
+
   override fun isBeautyFilterEnabled(): Boolean = desiredBeautyFilter
 
-  // Add/remove the GL render to match `desiredBeautyFilter`. Idempotent and
-  // safe to call before preview is up (glInterface throws → swallowed by
-  // safe(); startPreview re-runs this once the pipeline is live). Tracks the
-  // live instance in `beautyFilter` so we never double-add or leak it.
-  //
-  // It's always our own [WhiteningBeautyFilterRender] (fair/bright look); only
+  // Attach lazily, then toggle a uniform flag. RootEncoder does not free the
+  // output target on removeFilter, so detaching would leak one full-resolution
+  // target per toggle. Precision changes use setFilter, which reuses that target.
+  // It's always our own [BeautyFilterRender]; only
   // its shader PRECISION is chosen at attach time: budget GPUs (entry Mali /
   // PowerVR / old Adreno) get the mediump build — they run highp at half rate
   // and have the least memory bandwidth to spare while encoding — and capable
@@ -1851,23 +1893,22 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
   // attached precision already matches is a no-op.
   internal fun applyBeautyFilter() {
     safe("applyBeautyFilter") {
-      if (!desiredBeautyFilter) {
-        beautyFilter?.let { camera.glInterface.removeFilter(it) }
-        beautyFilter = null
-        return@safe
-      }
       val wantHighPrecision = !(isLowEndDevice() || beautyThermalDowngrade)
       val current = beautyFilter
+      if (current == null && !desiredBeautyFilter) return@safe
       if (current != null && current.highPrecision == wantHighPrecision) {
-        return@safe // already attached at the right precision
+        current.enabled = desiredBeautyFilter
+        return@safe
       }
-      current?.let { camera.glInterface.removeFilter(it) }
-      val filter = WhiteningBeautyFilterRender(highPrecision = wantHighPrecision)
+      val filter = BeautyFilterRender(highPrecision = wantHighPrecision)
+      filter.enabled = desiredBeautyFilter
+      filter.intensity = desiredBeautyIntensity
+      applyBeautyLook(filter)
       camera.glInterface.setFilter(filter)
       beautyFilter = filter
       Log.i(
         TAG,
-        "beauty filter on (" +
+        "beauty filter attached (" +
           (if (wantHighPrecision) "highp" else "mediump") +
           (if (beautyThermalDowngrade) "/thermal-downgrade" else "") + ")"
       )
@@ -2074,7 +2115,12 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     mainHandler.removeCallbacks(restoreStreamModeRunnable)
     reconnectTuningActive = false
     safe("onDropView/stopStream") { if (camera.isStreaming) camera.stopStream() }
-    safe("onDropView/stopPreview") { if (camera.isOnPreview) camera.stopPreview() }
+    safe("onDropView/stopPreview") {
+      if (camera.isOnPreview) {
+        beautyFilter = null
+        camera.stopPreview()
+      }
+    }
     safe("onDropView/stopRecord") {
       if (camera.recordStatus != RecordController.Status.STOPPED) {
         camera.stopRecord()

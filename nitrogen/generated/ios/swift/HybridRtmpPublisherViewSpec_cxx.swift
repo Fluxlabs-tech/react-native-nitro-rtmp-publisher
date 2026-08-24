@@ -298,7 +298,7 @@ open class HybridRtmpPublisherViewSpec_cxx {
       return bridge.create_Result_bool_(__exceptionPtr)
     }
   }
-  
+
   @inline(__always)
   public final func prepareAudio(bitrate: Double, sampleRate: Double, isStereo: Bool) -> bridge.Result_bool_ {
     do {
@@ -310,7 +310,7 @@ open class HybridRtmpPublisherViewSpec_cxx {
       return bridge.create_Result_bool_(__exceptionPtr)
     }
   }
-  
+
   @inline(__always)
   public final func startPreview(facing: Int32, width: Double, height: Double) -> bridge.Result_void_ {
     do {
@@ -321,7 +321,7 @@ open class HybridRtmpPublisherViewSpec_cxx {
       return bridge.create_Result_void_(__exceptionPtr)
     }
   }
-  
+
   @inline(__always)
   public final func stopPreview() -> bridge.Result_void_ {
     do {
@@ -332,7 +332,7 @@ open class HybridRtmpPublisherViewSpec_cxx {
       return bridge.create_Result_void_(__exceptionPtr)
     }
   }
-  
+
   @inline(__always)
   public final func startStream(url: std.string) -> bridge.Result_void_ {
     do {
@@ -343,7 +343,7 @@ open class HybridRtmpPublisherViewSpec_cxx {
       return bridge.create_Result_void_(__exceptionPtr)
     }
   }
-  
+
   @inline(__always)
   public final func stopStream() -> bridge.Result_void_ {
     do {
@@ -354,7 +354,7 @@ open class HybridRtmpPublisherViewSpec_cxx {
       return bridge.create_Result_void_(__exceptionPtr)
     }
   }
-  
+
   @inline(__always)
   public final func setAuthorization(user: std.string, password: std.string) -> bridge.Result_void_ {
     do {
@@ -862,6 +862,39 @@ open class HybridRtmpPublisherViewSpec_cxx {
     }
   }
   
+  @inline(__always)
+  public final func setBeautyFilterIntensity(intensity: Double) -> bridge.Result_void_ {
+    do {
+      try self.__implementation.setBeautyFilterIntensity(intensity: intensity)
+      return bridge.create_Result_void_()
+    } catch (let __error) {
+      let __exceptionPtr = __error.toCpp()
+      return bridge.create_Result_void_(__exceptionPtr)
+    }
+  }
+
+  @inline(__always)
+  public final func setBeautyLook(look: Int32) -> bridge.Result_void_ {
+    do {
+      try self.__implementation.setBeautyLook(look: margelo.nitro.rtmppublisher.BeautyLook(rawValue: look)!)
+      return bridge.create_Result_void_()
+    } catch (let __error) {
+      let __exceptionPtr = __error.toCpp()
+      return bridge.create_Result_void_(__exceptionPtr)
+    }
+  }
+
+  @inline(__always)
+  public final func setBeautyLookIntensity(intensity: Double) -> bridge.Result_void_ {
+    do {
+      try self.__implementation.setBeautyLookIntensity(intensity: intensity)
+      return bridge.create_Result_void_()
+    } catch (let __error) {
+      let __exceptionPtr = __error.toCpp()
+      return bridge.create_Result_void_(__exceptionPtr)
+    }
+  }
+
   @inline(__always)
   public final func startRecord(path: std.string) -> bridge.Result_bool_ {
     do {
