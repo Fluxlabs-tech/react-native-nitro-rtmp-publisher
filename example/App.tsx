@@ -5,7 +5,7 @@ import {
 } from '@react-navigation/native-stack';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AppState, Platform, View } from 'react-native';
+import { AppState, View } from 'react-native';
 import {
   RtmpPublisherView,
   type CameraFacing,
@@ -194,13 +194,10 @@ function StreamScreen({
     }
   }, [append, publisherRef]);
 
-  // Show the controls only when full-screen. On Android they also hide as soon
-  // as the app leaves the foreground, which pre-empts the PIP shrink so they
-  // don't flash; the pipActive gate keeps them hidden through the exit grow.
-  // iOS has no PIP, so it skips that gate — an open sheet survives a pull-down
-  // of Notification Center.
-  const showControls =
-    !pipActive && (appActive || Platform.OS !== 'android');
+  // Show overlays/controls only when full-screen AND foregrounded. Hiding on
+  // background (Home press) pre-empts the PIP shrink so they don't flash; the
+  // pipActive gate keeps them hidden through the exit grow until we settle.
+  const showControls = !pipActive && appActive;
 
   return (
     // No KeyboardAvoidingView and no text input on this screen: the RTMP URL is
@@ -265,9 +262,10 @@ function StreamScreen({
           foregroundServiceTitle="Live stream"
           foregroundServiceText="Broadcasting"
           foregroundServiceIcon=""
-          // Android-only: arm system PIP. Auto-enters the floating window on
-          // Home/Recents (API 31+) and keeps the window portrait; the "PiP"
-          // chip also triggers it manually (and on Android 8–11).
+          // Arm system PIP: auto-enters the floating window on Home/Recents —
+          // Android API 31+, and iOS on the live tier (iPhone iOS 18+ with the
+          // `voip` background mode, M1+ iPad). The "PiP" button also triggers
+          // it manually (the only path on Android 8–11).
           pictureInPictureEnabled={true}
           hybridRef={hybridRef}
         />
