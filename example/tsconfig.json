@@ -2,7 +2,10 @@
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
     "strict": true,
-    "jsx": "react-native"
+    "jsx": "react-native",
+    // Resolve `./X` to `X.ios.tsx` like Metro does (the `.android.tsx` twins
+    // are still type-checked through `include`).
+    "moduleSuffixes": [".ios", ".android", ""]
   },
   "include": ["App.tsx", "index.ts", "**/*.ts", "**/*.tsx"],
   "exclude": ["node_modules", "android", "ios", ".expo"]

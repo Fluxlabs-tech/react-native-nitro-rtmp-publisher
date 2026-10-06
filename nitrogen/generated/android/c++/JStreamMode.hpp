@@ -15,7 +15,7 @@ namespace margelo::nitro::rtmppublisher {
   using namespace facebook;
 
   /**
-   * The C++ JNI bridge between the C++ enum "StreamMode" and the the Kotlin enum "StreamMode".
+   * The C++ JNI bridge between the C++ enum "StreamMode" and the Kotlin enum "StreamMode".
    */
   struct JStreamMode final: public jni::JavaClass<JStreamMode> {
   public:

@@ -7,14 +7,15 @@
 
 #pragma once
 
-#include <optional>
-#include <NitroModules/NitroDefines.hpp>
-#include <NitroModules/NitroHash.hpp>
-#include <NitroModules/CachedProp.hpp>
-#include <react/renderer/core/ConcreteComponentDescriptor.h>
-#include <react/renderer/core/PropsParserContext.h>
+#include <NitroModules/ReactProp.hpp>
+#include <NitroModules/ViewComponentDescriptor.hpp>
+#include <NitroModules/ViewPropsHolderState.hpp>
 #include <react/renderer/components/view/ConcreteViewShadowNode.h>
 #include <react/renderer/components/view/ViewProps.h>
+#include <react/renderer/core/PropsParserContext.h>
+#include <react/renderer/core/RawProps.h>
+
+#include <string>
 
 #include "VideoCodec.hpp"
 #include "AudioCodec.hpp"
@@ -48,22 +49,62 @@ namespace margelo::nitro::rtmppublisher::views {
                                  const react::RawProps& rawProps);
 
   public:
-    CachedProp<bool> forceHardwareCodec;
-    CachedProp<VideoCodec> videoCodec;
-    CachedProp<AudioCodec> audioCodec;
-    CachedProp<AspectRatioMode> aspectRatioMode;
-    CachedProp<bool> mirrorPreview;
-    CachedProp<bool> mirrorStream;
-    CachedProp<ThermalStatus> thermalWarningThreshold;
-    CachedProp<AudioSource> audioSource;
-    CachedProp<bool> noiseSuppression;
-    CachedProp<bool> autoRotateStream;
-    CachedProp<StreamMode> streamMode;
-    CachedProp<std::string> foregroundServiceTitle;
-    CachedProp<std::string> foregroundServiceText;
-    CachedProp<std::string> foregroundServiceIcon;
-    CachedProp<bool> pictureInPictureEnabled;
-    CachedProp<std::optional<std::function<void(const std::shared_ptr<HybridRtmpPublisherViewSpec>& /* ref */)>>> hybridRef;
+    nitro::ReactProp<bool> forceHardwareCodec;
+    nitro::ReactProp<VideoCodec> videoCodec;
+    nitro::ReactProp<AudioCodec> audioCodec;
+    nitro::ReactProp<AspectRatioMode> aspectRatioMode;
+    nitro::ReactProp<bool> mirrorPreview;
+    nitro::ReactProp<bool> mirrorStream;
+    nitro::ReactProp<ThermalStatus> thermalWarningThreshold;
+    nitro::ReactProp<AudioSource> audioSource;
+    nitro::ReactProp<bool> noiseSuppression;
+    nitro::ReactProp<bool> autoRotateStream;
+    nitro::ReactProp<StreamMode> streamMode;
+    nitro::ReactProp<std::string> foregroundServiceTitle;
+    nitro::ReactProp<std::string> foregroundServiceText;
+    nitro::ReactProp<std::string> foregroundServiceIcon;
+    nitro::ReactProp<bool> pictureInPictureEnabled;
+    nitro::ReactProp<std::optional<std::function<void(const std::shared_ptr<HybridRtmpPublisherViewSpec>& /* ref */)>>> hybridRef;
+
+    [[nodiscard]]
+    bool hasSameProps(const HybridRtmpPublisherViewProps& other) const noexcept {
+      return forceHardwareCodec.hasSameValue(other.forceHardwareCodec) &&
+             videoCodec.hasSameValue(other.videoCodec) &&
+             audioCodec.hasSameValue(other.audioCodec) &&
+             aspectRatioMode.hasSameValue(other.aspectRatioMode) &&
+             mirrorPreview.hasSameValue(other.mirrorPreview) &&
+             mirrorStream.hasSameValue(other.mirrorStream) &&
+             thermalWarningThreshold.hasSameValue(other.thermalWarningThreshold) &&
+             audioSource.hasSameValue(other.audioSource) &&
+             noiseSuppression.hasSameValue(other.noiseSuppression) &&
+             autoRotateStream.hasSameValue(other.autoRotateStream) &&
+             streamMode.hasSameValue(other.streamMode) &&
+             foregroundServiceTitle.hasSameValue(other.foregroundServiceTitle) &&
+             foregroundServiceText.hasSameValue(other.foregroundServiceText) &&
+             foregroundServiceIcon.hasSameValue(other.foregroundServiceIcon) &&
+             pictureInPictureEnabled.hasSameValue(other.pictureInPictureEnabled) &&
+             hybridRef.hasSameValue(other.hybridRef);
+    }
+
+    [[nodiscard]]
+    bool hasAnyProvidedProps() const noexcept {
+      return forceHardwareCodec.isProvided() ||
+             videoCodec.isProvided() ||
+             audioCodec.isProvided() ||
+             aspectRatioMode.isProvided() ||
+             mirrorPreview.isProvided() ||
+             mirrorStream.isProvided() ||
+             thermalWarningThreshold.isProvided() ||
+             audioSource.isProvided() ||
+             noiseSuppression.isProvided() ||
+             autoRotateStream.isProvided() ||
+             streamMode.isProvided() ||
+             foregroundServiceTitle.isProvided() ||
+             foregroundServiceText.isProvided() ||
+             foregroundServiceIcon.isProvided() ||
+             pictureInPictureEnabled.isProvided() ||
+             hybridRef.isProvided();
+    }
 
   private:
     static bool filterObjectKeys(const std::string& propName);
@@ -72,32 +113,7 @@ namespace margelo::nitro::rtmppublisher::views {
   /**
    * State for the "RtmpPublisherView" View.
    */
-  class HybridRtmpPublisherViewState final {
-  public:
-    HybridRtmpPublisherViewState() = default;
-    explicit HybridRtmpPublisherViewState(const std::shared_ptr<HybridRtmpPublisherViewProps>& props):
-      _props(props) {}
-
-  public:
-    [[nodiscard]]
-    const std::shared_ptr<HybridRtmpPublisherViewProps>& getProps() const {
-      return _props;
-    }
-
-  public:
-#ifdef ANDROID
-  HybridRtmpPublisherViewState(const HybridRtmpPublisherViewState& /* previousState */, folly::dynamic /* data */) {}
-  folly::dynamic getDynamic() const {
-    throw std::runtime_error("HybridRtmpPublisherViewState does not support folly!");
-  }
-  react::MapBuffer getMapBuffer() const {
-    throw std::runtime_error("HybridRtmpPublisherViewState does not support MapBuffer!");
-  };
-#endif
-
-  private:
-    std::shared_ptr<HybridRtmpPublisherViewProps> _props;
-  };
+  using HybridRtmpPublisherViewState = nitro::ViewPropsHolderState<HybridRtmpPublisherViewProps>;
 
   /**
    * The Shadow Node for the "RtmpPublisherView" View.
@@ -110,21 +126,7 @@ namespace margelo::nitro::rtmppublisher::views {
   /**
    * The Component Descriptor for the "RtmpPublisherView" View.
    */
-  class HybridRtmpPublisherViewComponentDescriptor final: public react::ConcreteComponentDescriptor<HybridRtmpPublisherViewShadowNode> {
-  public:
-    explicit HybridRtmpPublisherViewComponentDescriptor(const react::ComponentDescriptorParameters& parameters);
-
-  public:
-    /**
-     * A faster path for cloning props - reuses the caching logic from `HybridRtmpPublisherViewProps`.
-     */
-    std::shared_ptr<const react::Props> cloneProps(const react::PropsParserContext& context,
-                                                   const std::shared_ptr<const react::Props>& props,
-                                                   react::RawProps rawProps) const override;
-#ifdef ANDROID
-    void adopt(react::ShadowNode& shadowNode) const override;
-#endif
-  };
+  using HybridRtmpPublisherViewComponentDescriptor = nitro::ViewComponentDescriptor<HybridRtmpPublisherViewShadowNode>;
 
   /* The actual view for "RtmpPublisherView" needs to be implemented in platform-specific code. */
 

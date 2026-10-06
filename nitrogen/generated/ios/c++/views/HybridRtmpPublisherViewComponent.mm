@@ -37,6 +37,7 @@ using namespace margelo::nitro::rtmppublisher::views;
 
 @implementation HybridRtmpPublisherViewComponent {
   std::shared_ptr<HybridRtmpPublisherViewSpecSwift> _hybridView;
+  BOOL _didDropView;
 }
 
 + (void) load {
@@ -50,6 +51,7 @@ using namespace margelo::nitro::rtmppublisher::views;
 
 - (instancetype) init {
   if (self = [super init]) {
+    _props = HybridRtmpPublisherViewShadowNode::defaultSharedProps();
     std::shared_ptr<HybridRtmpPublisherViewSpec> hybridView = NitroRtmpPublisher::NitroRtmpPublisherAutolinking::createRtmpPublisherView();
     _hybridView = std::dynamic_pointer_cast<HybridRtmpPublisherViewSpecSwift>(hybridView);
     [self updateView];
@@ -69,105 +71,139 @@ using namespace margelo::nitro::rtmppublisher::views;
   [self setContentView:view];
 }
 
+- (void) notifyOnDropView {
+  // A recycled component can later be invalidated. Notify only once per mount.
+  if (_didDropView) {
+    return;
+  }
+  NitroRtmpPublisher::HybridRtmpPublisherViewSpec_cxx& swiftPart = _hybridView->getSwiftPart();
+  swiftPart.onDropView();
+  _didDropView = YES;
+}
+
 - (void) updateProps:(const std::shared_ptr<const react::Props>&)props
             oldProps:(const std::shared_ptr<const react::Props>&)oldProps {
+  // A props update marks a newly mounted or still-active component.
+  _didDropView = NO;
+
   // 1. Downcast props
-  const auto& newViewPropsConst = *std::static_pointer_cast<HybridRtmpPublisherViewProps const>(props);
-  auto& newViewProps = const_cast<HybridRtmpPublisherViewProps&>(newViewPropsConst);
+  const auto& newViewProps = *std::static_pointer_cast<const HybridRtmpPublisherViewProps>(props);
+  const auto* oldViewProps = static_cast<const HybridRtmpPublisherViewProps*>(oldProps.get());
   NitroRtmpPublisher::HybridRtmpPublisherViewSpec_cxx& swiftPart = _hybridView->getSwiftPart();
 
-  // 2. Update each prop individually
-  swiftPart.beforeUpdate();
+  // 2. Update only props that differ from the previous Props snapshot.
+  const bool hasTransactionPropChanges = oldViewProps == nullptr
+      ? newViewProps.hasAnyProvidedProps()
+      : !newViewProps.hasSameProps(*oldViewProps);
+  if (hasTransactionPropChanges) {
+    swiftPart.beforeUpdate();
 
-  // forceHardwareCodec: boolean
-  if (newViewProps.forceHardwareCodec.isDirty) {
-    swiftPart.setForceHardwareCodec(newViewProps.forceHardwareCodec.value);
-    newViewProps.forceHardwareCodec.isDirty = false;
-  }
-  // videoCodec: enum
-  if (newViewProps.videoCodec.isDirty) {
-    swiftPart.setVideoCodec(static_cast<int>(newViewProps.videoCodec.value));
-    newViewProps.videoCodec.isDirty = false;
-  }
-  // audioCodec: enum
-  if (newViewProps.audioCodec.isDirty) {
-    swiftPart.setAudioCodec(static_cast<int>(newViewProps.audioCodec.value));
-    newViewProps.audioCodec.isDirty = false;
-  }
-  // aspectRatioMode: enum
-  if (newViewProps.aspectRatioMode.isDirty) {
-    swiftPart.setAspectRatioMode(static_cast<int>(newViewProps.aspectRatioMode.value));
-    newViewProps.aspectRatioMode.isDirty = false;
-  }
-  // mirrorPreview: boolean
-  if (newViewProps.mirrorPreview.isDirty) {
-    swiftPart.setMirrorPreview(newViewProps.mirrorPreview.value);
-    newViewProps.mirrorPreview.isDirty = false;
-  }
-  // mirrorStream: boolean
-  if (newViewProps.mirrorStream.isDirty) {
-    swiftPart.setMirrorStream(newViewProps.mirrorStream.value);
-    newViewProps.mirrorStream.isDirty = false;
-  }
-  // thermalWarningThreshold: enum
-  if (newViewProps.thermalWarningThreshold.isDirty) {
-    swiftPart.setThermalWarningThreshold(static_cast<int>(newViewProps.thermalWarningThreshold.value));
-    newViewProps.thermalWarningThreshold.isDirty = false;
-  }
-  // audioSource: enum
-  if (newViewProps.audioSource.isDirty) {
-    swiftPart.setAudioSource(static_cast<int>(newViewProps.audioSource.value));
-    newViewProps.audioSource.isDirty = false;
-  }
-  // noiseSuppression: boolean
-  if (newViewProps.noiseSuppression.isDirty) {
-    swiftPart.setNoiseSuppression(newViewProps.noiseSuppression.value);
-    newViewProps.noiseSuppression.isDirty = false;
-  }
-  // autoRotateStream: boolean
-  if (newViewProps.autoRotateStream.isDirty) {
-    swiftPart.setAutoRotateStream(newViewProps.autoRotateStream.value);
-    newViewProps.autoRotateStream.isDirty = false;
-  }
-  // streamMode: enum
-  if (newViewProps.streamMode.isDirty) {
-    swiftPart.setStreamMode(static_cast<int>(newViewProps.streamMode.value));
-    newViewProps.streamMode.isDirty = false;
-  }
-  // foregroundServiceTitle: string
-  if (newViewProps.foregroundServiceTitle.isDirty) {
-    swiftPart.setForegroundServiceTitle(newViewProps.foregroundServiceTitle.value);
-    newViewProps.foregroundServiceTitle.isDirty = false;
-  }
-  // foregroundServiceText: string
-  if (newViewProps.foregroundServiceText.isDirty) {
-    swiftPart.setForegroundServiceText(newViewProps.foregroundServiceText.value);
-    newViewProps.foregroundServiceText.isDirty = false;
-  }
-  // foregroundServiceIcon: string
-  if (newViewProps.foregroundServiceIcon.isDirty) {
-    swiftPart.setForegroundServiceIcon(newViewProps.foregroundServiceIcon.value);
-    newViewProps.foregroundServiceIcon.isDirty = false;
-  }
-  // pictureInPictureEnabled: boolean
-  if (newViewProps.pictureInPictureEnabled.isDirty) {
-    swiftPart.setPictureInPictureEnabled(newViewProps.pictureInPictureEnabled.value);
-    newViewProps.pictureInPictureEnabled.isDirty = false;
-  }
-
-  swiftPart.afterUpdate();
-
-  // 3. Update hybridRef if it changed
-  if (newViewProps.hybridRef.isDirty) {
-    // hybridRef changed - call it with new this
-    const auto& maybeFunc = newViewProps.hybridRef.value;
-    if (maybeFunc.has_value()) {
-      maybeFunc.value()(_hybridView);
+    // forceHardwareCodec: boolean
+    if (oldViewProps == nullptr
+          ? newViewProps.forceHardwareCodec.isProvided()
+          : !newViewProps.forceHardwareCodec.hasSameValue(oldViewProps->forceHardwareCodec)) {
+      swiftPart.setForceHardwareCodec(newViewProps.forceHardwareCodec.get());
     }
-    newViewProps.hybridRef.isDirty = false;
+    // videoCodec: enum
+    if (oldViewProps == nullptr
+          ? newViewProps.videoCodec.isProvided()
+          : !newViewProps.videoCodec.hasSameValue(oldViewProps->videoCodec)) {
+      swiftPart.setVideoCodec(static_cast<int>(newViewProps.videoCodec.get()));
+    }
+    // audioCodec: enum
+    if (oldViewProps == nullptr
+          ? newViewProps.audioCodec.isProvided()
+          : !newViewProps.audioCodec.hasSameValue(oldViewProps->audioCodec)) {
+      swiftPart.setAudioCodec(static_cast<int>(newViewProps.audioCodec.get()));
+    }
+    // aspectRatioMode: enum
+    if (oldViewProps == nullptr
+          ? newViewProps.aspectRatioMode.isProvided()
+          : !newViewProps.aspectRatioMode.hasSameValue(oldViewProps->aspectRatioMode)) {
+      swiftPart.setAspectRatioMode(static_cast<int>(newViewProps.aspectRatioMode.get()));
+    }
+    // mirrorPreview: boolean
+    if (oldViewProps == nullptr
+          ? newViewProps.mirrorPreview.isProvided()
+          : !newViewProps.mirrorPreview.hasSameValue(oldViewProps->mirrorPreview)) {
+      swiftPart.setMirrorPreview(newViewProps.mirrorPreview.get());
+    }
+    // mirrorStream: boolean
+    if (oldViewProps == nullptr
+          ? newViewProps.mirrorStream.isProvided()
+          : !newViewProps.mirrorStream.hasSameValue(oldViewProps->mirrorStream)) {
+      swiftPart.setMirrorStream(newViewProps.mirrorStream.get());
+    }
+    // thermalWarningThreshold: enum
+    if (oldViewProps == nullptr
+          ? newViewProps.thermalWarningThreshold.isProvided()
+          : !newViewProps.thermalWarningThreshold.hasSameValue(oldViewProps->thermalWarningThreshold)) {
+      swiftPart.setThermalWarningThreshold(static_cast<int>(newViewProps.thermalWarningThreshold.get()));
+    }
+    // audioSource: enum
+    if (oldViewProps == nullptr
+          ? newViewProps.audioSource.isProvided()
+          : !newViewProps.audioSource.hasSameValue(oldViewProps->audioSource)) {
+      swiftPart.setAudioSource(static_cast<int>(newViewProps.audioSource.get()));
+    }
+    // noiseSuppression: boolean
+    if (oldViewProps == nullptr
+          ? newViewProps.noiseSuppression.isProvided()
+          : !newViewProps.noiseSuppression.hasSameValue(oldViewProps->noiseSuppression)) {
+      swiftPart.setNoiseSuppression(newViewProps.noiseSuppression.get());
+    }
+    // autoRotateStream: boolean
+    if (oldViewProps == nullptr
+          ? newViewProps.autoRotateStream.isProvided()
+          : !newViewProps.autoRotateStream.hasSameValue(oldViewProps->autoRotateStream)) {
+      swiftPart.setAutoRotateStream(newViewProps.autoRotateStream.get());
+    }
+    // streamMode: enum
+    if (oldViewProps == nullptr
+          ? newViewProps.streamMode.isProvided()
+          : !newViewProps.streamMode.hasSameValue(oldViewProps->streamMode)) {
+      swiftPart.setStreamMode(static_cast<int>(newViewProps.streamMode.get()));
+    }
+    // foregroundServiceTitle: string
+    if (oldViewProps == nullptr
+          ? newViewProps.foregroundServiceTitle.isProvided()
+          : !newViewProps.foregroundServiceTitle.hasSameValue(oldViewProps->foregroundServiceTitle)) {
+      swiftPart.setForegroundServiceTitle(newViewProps.foregroundServiceTitle.get());
+    }
+    // foregroundServiceText: string
+    if (oldViewProps == nullptr
+          ? newViewProps.foregroundServiceText.isProvided()
+          : !newViewProps.foregroundServiceText.hasSameValue(oldViewProps->foregroundServiceText)) {
+      swiftPart.setForegroundServiceText(newViewProps.foregroundServiceText.get());
+    }
+    // foregroundServiceIcon: string
+    if (oldViewProps == nullptr
+          ? newViewProps.foregroundServiceIcon.isProvided()
+          : !newViewProps.foregroundServiceIcon.hasSameValue(oldViewProps->foregroundServiceIcon)) {
+      swiftPart.setForegroundServiceIcon(newViewProps.foregroundServiceIcon.get());
+    }
+    // pictureInPictureEnabled: boolean
+    if (oldViewProps == nullptr
+          ? newViewProps.pictureInPictureEnabled.isProvided()
+          : !newViewProps.pictureInPictureEnabled.hasSameValue(oldViewProps->pictureInPictureEnabled)) {
+      swiftPart.setPictureInPictureEnabled(newViewProps.pictureInPictureEnabled.get());
+    }
+
+    // Update hybridRef if it changed
+    if (oldViewProps == nullptr
+          ? newViewProps.hybridRef.isProvided()
+          : !newViewProps.hybridRef.hasSameValue(oldViewProps->hybridRef)) {
+      // hybridRef changed - call it with new this
+      const auto& maybeFunc = newViewProps.hybridRef.get();
+      if (maybeFunc.has_value()) {
+        maybeFunc.value()(_hybridView);
+      }
+    }
+
+    swiftPart.afterUpdate();
   }
 
-  // 4. Continue in base class
+  // 3. Continue in base class
   [super updateProps:props oldProps:oldProps];
 }
 
@@ -176,6 +212,7 @@ using namespace margelo::nitro::rtmppublisher::views;
 }
 
 - (void)prepareForRecycle {
+  [self notifyOnDropView];
   [super prepareForRecycle];
   NitroRtmpPublisher::HybridRtmpPublisherViewSpec_cxx& swiftPart = _hybridView->getSwiftPart();
   swiftPart.maybePrepareForRecycle();
@@ -183,8 +220,7 @@ using namespace margelo::nitro::rtmppublisher::views;
 
 #ifdef ENABLE_RCT_COMPONENT_VIEW_INVALIDATE
 - (void)invalidate {
-  NitroRtmpPublisher::HybridRtmpPublisherViewSpec_cxx& swiftPart = _hybridView->getSwiftPart();
-  swiftPart.onDropView();
+  [self notifyOnDropView];
   [super invalidate];
 }
 #endif

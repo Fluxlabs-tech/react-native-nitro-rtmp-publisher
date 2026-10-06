@@ -1,48 +1,46 @@
 import { NavigationContainer } from '@react-navigation/native';
-import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import {
+  createNativeStackNavigator,
+  type NativeStackScreenProps,
+} from '@react-navigation/native-stack';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AppState, Text, TouchableOpacity, View } from 'react-native';
+import { AppState, Platform, View } from 'react-native';
 import {
   RtmpPublisherView,
   type CameraFacing,
 } from 'react-native-nitro-rtmp-publisher';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 
-import { ControlBar } from './src/components/ControlBar';
-import { EventsModal } from './src/components/EventsModal';
-import { PreviewOverlay } from './src/components/PreviewOverlay';
-import { UrlModal } from './src/components/UrlModal';
 import { DEFAULT_RTMP_URL, errMsg, getDeviceSampleRate } from './src/constants';
 import { useEventLog } from './src/hooks/useEventLog';
 import { usePermissions } from './src/hooks/usePermissions';
 import { usePinchZoom } from './src/hooks/usePinchZoom';
 import { usePublisher } from './src/hooks/usePublisher';
 import { styles } from './src/styles';
+// Platform files: SwiftUI + Liquid Glass on iOS, Jetpack Compose on Android
+// (`@expo/ui`). Metro picks `.ios.tsx` / `.android.tsx`.
+import { SecondScreen } from './src/ui/SecondScreen';
+import { StreamOverlay } from './src/ui/StreamOverlay';
+
+type RootStackParamList = {
+  Stream: undefined;
+  Second: undefined;
+};
 
 function StreamScreen({
   navigation,
-}: {
-  navigation: { navigate: (screen: string) => void };
-}) {
+}: NativeStackScreenProps<RootStackParamList, 'Stream'>) {
   const [url, setUrl] = useState(DEFAULT_RTMP_URL);
-  const [logsOpen, setLogsOpen] = useState(false);
-  // URL is edited in a separate modal (not an inline field) so its keyboard
-  // lives in the modal's own window and can never resize the main preview /
-  // PIP layout.
-  const [urlModalOpen, setUrlModalOpen] = useState(false);
   // Tracks the camera the user is currently shooting with. Used to mirror
   // both preview AND stream on the front camera (selfie convention) and
   // leave the back camera un-mirrored.
   const [facing, setFacing] = useState<CameraFacing>('back');
   const isFront = facing === 'front';
-  // Toggle for the noiseSuppression prop. iOS applies it live by re-running
-  // AVAudioSession.setCategory in the prop setter. Android requires
-  // resetAudioEncoder() to rebuild the AudioRecord pipeline with the new
-  // NoiseSuppressor / AcousticEchoCanceler flags — we trigger that below.
-  // Default OFF — `audioSource="camcorder"` already engages iOS's light
-  // built-in NR via `.videoRecording` mode. Only flip this on (button below)
-  // when you're streaming from a genuinely noisy environment and accept the
-  // tradeoff: AGC will compress your voice in exchange for killing background.
+  // Toggle for the noiseSuppression prop. Applies live on both platforms (see
+  // onToggleNoiseSuppression). Default OFF — `audioSource="camcorder"` already
+  // engages iOS's light built-in NR via `.videoRecording` mode. Only flip this
+  // on when you're streaming from a genuinely noisy environment.
   const [noiseSuppression, setNoiseSuppression] = useState(false);
   // Beauty filter (GPU skin-smoothing). Supported on both platforms.
   const [beauty, setBeauty] = useState(false);
@@ -154,13 +152,6 @@ function StreamScreen({
     });
   }, [append, publisherRef]);
 
-  // Last time a flip was actually dispatched. The native side already
-  // coalesces rapid flips (an in-flight camera attach absorbs extra taps and
-  // reconverges to the latest facing once it finishes), so the freeze is gone
-  // even with the button mashed. This ~250ms throttle is a pure UX nicety: it
-  // drops ultra-rapid double-fires so the LOCAL `facing` state (which drives the
-  // mirror props) stays in lock-step with the native intent — we skip BOTH the
-  // native call and the local toggle together so they never desync.
   const onEnterPip = useCallback(() => {
     try {
       const ok = publisherRef.current?.enterPictureInPicture();
@@ -170,6 +161,20 @@ function StreamScreen({
     }
   }, [append, publisherRef]);
 
+  // DEBUG (iOS, NS on): inject a +400ms A/V desync and watch the self-heal
+  // loop recover it — the `audio-drift` log skew spikes then decays to 0.
+  const onInjectDesync = useCallback(() => {
+    publisherRef.current?.injectAudioDesyncForTesting(400);
+    append('injected +400ms desync — watch audio-drift heal to ~0');
+  }, [append, publisherRef]);
+
+  // Last time a flip was actually dispatched. The native side already
+  // coalesces rapid flips (an in-flight camera attach absorbs extra taps and
+  // reconverges to the latest facing once it finishes), so the freeze is gone
+  // even with the button mashed. This ~250ms throttle is a pure UX nicety: it
+  // drops ultra-rapid double-fires so the LOCAL `facing` state (which drives the
+  // mirror props) stays in lock-step with the native intent — we skip BOTH the
+  // native call and the local toggle together so they never desync.
   const lastSwitchAtRef = useRef(0);
   const onSwitch = useCallback(() => {
     const ref = publisherRef.current;
@@ -189,16 +194,21 @@ function StreamScreen({
     }
   }, [append, publisherRef]);
 
-  // Show overlays/controls only when full-screen AND foregrounded. Hiding on
-  // background (Home press) pre-empts the PIP shrink so they don't flash; the
-  // pipActive gate keeps them hidden through the exit grow until we settle.
-  const showControls = !pipActive && appActive;
+  // Show the controls only when full-screen. On Android they also hide as soon
+  // as the app leaves the foreground, which pre-empts the PIP shrink so they
+  // don't flash; the pipActive gate keeps them hidden through the exit grow.
+  // iOS has no PIP, so it skips that gate — an open sheet survives a pull-down
+  // of Notification Center.
+  const showControls =
+    !pipActive && (appActive || Platform.OS !== 'android');
 
   return (
-    // Plain container — no KeyboardAvoidingView. The streaming screen has no
-    // text input (the RTMP URL is edited in UrlModal), so the keyboard never
-    // appears here and therefore can never resize the preview / PIP layout.
-    <View style={styles.container}>
+    // No KeyboardAvoidingView and no text input on this screen: the RTMP URL is
+    // edited in a native sheet with its own window, so the keyboard can never
+    // resize the preview / PIP layout. `collapsable={false}` keeps the
+    // publisher's parent from being flattened away — re-parenting its
+    // SurfaceView restarts the Android camera surface.
+    <View style={styles.container} collapsable={false}>
       <StatusBar style="light" />
 
       {/*
@@ -217,215 +227,111 @@ function StreamScreen({
        *      and leak HAL state on UNISOC.
        */}
       {permissionsReady && sampleRate != null ? (
-          <RtmpPublisherView
-            style={styles.preview}
-            // Pin both encoders to hardware (Android-critical; iOS no-op).
-            forceHardwareCodec={true}
-            // RTMP servers require H.264 video + AAC audio in 99% of cases.
-            videoCodec="h264"
-            audioCodec="aac"
-            // Letterbox to fit when preview aspect ≠ stream aspect.
-            aspectRatioMode="fill"
-            // Selfie convention: front camera mirrored for both preview AND
-            // stream so the streamer and viewer see the same orientation.
-            mirrorPreview={isFront}
-            mirrorStream={isFront}
-            // Only warn when the device is hot enough that the encoder might
-            // start dropping frames. (`'light'` would also trigger on minor
-            // warm-ups, which is too noisy for production UIs.)
-            thermalWarningThreshold="severe"
-            // Camcorder mic source: gentle AGC, broadband pickup, light
-            // noise reduction built into iOS's `.videoRecording` mode. The
-            // right default for live streaming — natural voice with some
-            // ambient cleanup, no AGC crushing.
-            audioSource="camcorder"
-            // Engage built-in noise suppression + echo cancellation + AGC.
-            // Overlays on top of the camcorder source on Android, and on iOS
-            // forces `AVAudioSession.Mode.voiceChat` (Apple's Voice Processing
-            // IO unit). Toggled live from the "NS" button in the controls.
-            noiseSuppression={noiseSuppression}
-            // Lock orientation to portrait. Flip to `true` if you want the
-            // stream to auto-rotate with the device.
-            autoRotateStream={false}
-            // ~3s glass-to-glass latency — good general-purpose default.
-            // Switch to `'quality'` for >1hr broadcasts, `'lowLatency'` for
-            // interactive/video-call-style streams.
-            streamMode="quality"
-            // Android-only: keeps the process alive during backgrounding
-            // (notification shows these strings). Silently ignored on iOS,
-            // where the `audio` UIBackgroundMode in app.json does the same job.
-            foregroundServiceTitle="Live stream"
-            foregroundServiceText="Broadcasting"
-            foregroundServiceIcon=""
-            // Android-only: arm system PIP. Auto-enters the floating window on
-            // Home/Recents (API 31+) and keeps the window portrait; the "PIP"
-            // button below also triggers it manually (and on Android 8–11).
-            pictureInPictureEnabled={true}
-            hybridRef={hybridRef}
-          />
-        ) : (
-          <View style={styles.preview} />
-        )}
+        <RtmpPublisherView
+          style={styles.preview}
+          // Pin both encoders to hardware (Android-critical; iOS no-op).
+          forceHardwareCodec={true}
+          // RTMP servers require H.264 video + AAC audio in 99% of cases.
+          videoCodec="h264"
+          audioCodec="aac"
+          // Letterbox to fit when preview aspect ≠ stream aspect.
+          aspectRatioMode="fill"
+          // Selfie convention: front camera mirrored for both preview AND
+          // stream so the streamer and viewer see the same orientation.
+          mirrorPreview={isFront}
+          mirrorStream={isFront}
+          // Only warn when the device is hot enough that the encoder might
+          // start dropping frames. (`'light'` would also trigger on minor
+          // warm-ups, which is too noisy for production UIs.)
+          thermalWarningThreshold="severe"
+          // Camcorder mic source: gentle AGC, broadband pickup, light
+          // noise reduction built into iOS's `.videoRecording` mode. The
+          // right default for live streaming — natural voice with some
+          // ambient cleanup, no AGC crushing.
+          audioSource="camcorder"
+          // Spectral noise suppression on Android; Apple Voice Processing on
+          // iOS. Toggled live from the "Denoise" control.
+          noiseSuppression={noiseSuppression}
+          // Lock orientation to portrait. Flip to `true` if you want the
+          // stream to auto-rotate with the device.
+          autoRotateStream={false}
+          // ~3s glass-to-glass latency — good general-purpose default.
+          // Switch to `'quality'` for >1hr broadcasts, `'lowLatency'` for
+          // interactive/video-call-style streams.
+          streamMode="quality"
+          // Android-only: keeps the process alive during backgrounding
+          // (notification shows these strings). Silently ignored on iOS,
+          // where the `audio` UIBackgroundMode in app.json does the same job.
+          foregroundServiceTitle="Live stream"
+          foregroundServiceText="Broadcasting"
+          foregroundServiceIcon=""
+          // Android-only: arm system PIP. Auto-enters the floating window on
+          // Home/Recents (API 31+) and keeps the window portrait; the "PiP"
+          // chip also triggers it manually (and on Android 8–11).
+          pictureInPictureEnabled={true}
+          hybridRef={hybridRef}
+        />
+      ) : (
+        <View style={styles.preview} />
+      )}
 
       {/* Transparent pinch-to-zoom layer over the full-window preview. */}
       <View style={styles.pinchLayer} {...pinchHandlers} pointerEvents="box-only" />
 
-      {/* Overlays + controls are hidden in PIP and absolutely positioned, so
-          mounting/unmounting them never moves the preview underneath (no PIP
-          transition jitter). */}
+      {/* Absolutely positioned and hidden in PIP, so mounting/unmounting them
+          never moves the preview underneath (no PIP transition jitter). */}
       {showControls && (
-        <PreviewOverlay
+        <StreamOverlay
+          url={url}
           streaming={streaming}
+          connecting={connecting}
           previewing={previewing}
           thermal={thermal}
           sampleRate={sampleRate}
+          noiseSuppression={noiseSuppression}
+          beauty={beauty}
+          logs={logs}
+          onChangeUrl={setUrl}
+          onStart={onStart}
+          onStop={onStop}
+          onSwitchCamera={onSwitch}
+          onToggleNoiseSuppression={onToggleNoiseSuppression}
+          onToggleBeauty={onToggleBeauty}
+          onEnterPip={onEnterPip}
+          onInjectDesync={onInjectDesync}
+          onOpenSecondScreen={() => navigation.navigate('Second')}
+          onClearLogs={clear}
         />
       )}
-
-      {/* Navigate to a second (publisher-free) screen. Used to verify PIP is
-          scoped to THIS screen: once on Screen 2, pressing Home must NOT enter
-          Picture-in-Picture. */}
-      {showControls && (
-        <TouchableOpacity
-          style={{
-            position: 'absolute',
-            top: 56,
-            right: 16,
-            backgroundColor: 'rgba(0,0,0,0.55)',
-            paddingHorizontal: 14,
-            paddingVertical: 9,
-            borderRadius: 18,
-          }}
-          onPress={() => navigation.navigate('Second')}
-        >
-          <Text style={{ color: '#fff', fontWeight: '600' }}>Screen 2 →</Text>
-        </TouchableOpacity>
-      )}
-
-      {/* DEBUG: inject a +400ms A/V desync (iOS, NS on) and watch the self-heal
-          loop recover it — the `audio-drift` log skew spikes then decays to 0. */}
-      {showControls && streaming && (
-        <TouchableOpacity
-          style={{
-            position: 'absolute',
-            top: 104,
-            right: 16,
-            backgroundColor: 'rgba(180,40,40,0.7)',
-            paddingHorizontal: 14,
-            paddingVertical: 9,
-            borderRadius: 18,
-          }}
-          onPress={() => {
-            publisherRef.current?.injectAudioDesyncForTesting(400);
-            append('injected +400ms desync — watch audio-drift heal to ~0');
-          }}
-        >
-          <Text style={{ color: '#fff', fontWeight: '600' }}>Inject desync</Text>
-        </TouchableOpacity>
-      )}
-
-      {showControls && (
-        <View style={styles.controlsOverlay}>
-          <ControlBar
-            url={url}
-            onEditUrl={() => setUrlModalOpen(true)}
-            streaming={streaming}
-            connecting={connecting}
-            logCount={logs.length}
-            noiseSuppression={noiseSuppression}
-            beauty={beauty}
-            onStart={onStart}
-            onStop={onStop}
-            onSwitch={onSwitch}
-            onOpenLogs={() => setLogsOpen(true)}
-            onToggleNoiseSuppression={onToggleNoiseSuppression}
-            onToggleBeauty={onToggleBeauty}
-            onEnterPip={onEnterPip}
-          />
-        </View>
-      )}
-
-      <UrlModal
-        visible={urlModalOpen}
-        url={url}
-        onSave={(next) => {
-          setUrl(next);
-          setUrlModalOpen(false);
-        }}
-        onClose={() => setUrlModalOpen(false)}
-      />
-
-      <EventsModal
-        visible={logsOpen}
-        logs={logs}
-        onClose={() => setLogsOpen(false)}
-        onClear={clear}
-      />
     </View>
   );
 }
 
-// A plain, publisher-free screen. The streaming screen stays MOUNTED while we're
-// here (native-stack keeps it in the tree), so this is exactly the case that
-// must NOT auto-enter PIP: with the stream screen off-screen, pressing Home here
-// should do nothing PIP-related. If the app shrinks into a floating window, PIP
-// is leaking app-wide (the bug we're chasing).
-function SecondScreen({
+// A publisher-free screen. The streaming screen stays MOUNTED while we're here
+// (native-stack keeps it in the tree), so on Android this is exactly the case
+// that must NOT auto-enter PIP.
+function SecondRoute({
   navigation,
-}: {
-  navigation: { goBack: () => void };
-}) {
+}: NativeStackScreenProps<RootStackParamList, 'Second'>) {
   return (
-    <View
-      style={{
-        flex: 1,
-        backgroundColor: '#101114',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: 28,
-      }}
-    >
+    <View style={styles.secondScreen}>
       <StatusBar style="light" />
-      <Text style={{ color: '#fff', fontSize: 20, fontWeight: '700', marginBottom: 14 }}>
-        Second screen
-      </Text>
-      <Text
-        style={{
-          color: '#9aa0a6',
-          fontSize: 15,
-          textAlign: 'center',
-          lineHeight: 22,
-          marginBottom: 28,
-        }}
-      >
-        No publisher here. Press <Text style={{ color: '#fff' }}>Home</Text> now:
-        the app should stay normal (NO Picture-in-Picture window). If it shrinks
-        into a floating PIP window, PIP is leaking to non-stream screens.
-      </Text>
-      <TouchableOpacity
-        onPress={() => navigation.goBack()}
-        style={{
-          paddingHorizontal: 20,
-          paddingVertical: 13,
-          backgroundColor: '#0a84ff',
-          borderRadius: 12,
-        }}
-      >
-        <Text style={{ color: '#fff', fontWeight: '600' }}>← Back to stream</Text>
-      </TouchableOpacity>
+      <SecondScreen onBack={() => navigation.goBack()} />
     </View>
   );
 }
 
-const Stack = createNativeStackNavigator();
+const Stack = createNativeStackNavigator<RootStackParamList>();
 
 export default function App() {
   return (
-    <NavigationContainer>
-      <Stack.Navigator screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="Stream" component={StreamScreen} />
-        <Stack.Screen name="Second" component={SecondScreen} />
-      </Stack.Navigator>
-    </NavigationContainer>
+    <SafeAreaProvider>
+      <NavigationContainer>
+        <Stack.Navigator screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="Stream" component={StreamScreen} />
+          <Stack.Screen name="Second" component={SecondRoute} />
+        </Stack.Navigator>
+      </NavigationContainer>
+    </SafeAreaProvider>
   );
 }

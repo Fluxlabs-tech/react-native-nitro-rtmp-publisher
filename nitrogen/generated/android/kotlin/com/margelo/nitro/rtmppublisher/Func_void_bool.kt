@@ -10,7 +10,6 @@ package com.margelo.nitro.rtmppublisher
 import androidx.annotation.Keep
 import com.facebook.jni.HybridData
 import com.facebook.proguard.annotations.DoNotStrip
-import dalvik.annotation.optimization.FastNative
 
 
 /**
@@ -59,7 +58,6 @@ class Func_void_bool_cxx: Func_void_bool {
   override fun invoke(isInPip: Boolean): Unit
     = invoke_cxx(isInPip)
 
-  @FastNative
   private external fun invoke_cxx(isInPip: Boolean): Unit
 }
 

@@ -15,7 +15,7 @@ namespace margelo::nitro::rtmppublisher {
   using namespace facebook;
 
   /**
-   * The C++ JNI bridge between the C++ enum "AspectRatioMode" and the the Kotlin enum "AspectRatioMode".
+   * The C++ JNI bridge between the C++ enum "AspectRatioMode" and the Kotlin enum "AspectRatioMode".
    */
   struct JAspectRatioMode final: public jni::JavaClass<JAspectRatioMode> {
   public:

@@ -41,6 +41,7 @@ Live streaming from a phone is two hard problems entangled — owning the camera
 ## Table of contents
 
 - [Install](#install)
+  - [Requirements](#requirements)
   - [iOS](#ios)
   - [Android](#android)
 - [Quickstart](#quickstart)
@@ -85,6 +86,17 @@ npm install react-native-nitro-rtmp-publisher react-native-nitro-modules
 # or
 yarn add  react-native-nitro-rtmp-publisher react-native-nitro-modules
 ```
+
+### Requirements
+
+| | |
+|---|---|
+| `react-native-nitro-modules` | **0.37 or newer** — the bundled Nitrogen bindings are generated with Nitrogen 0.37 and use View-component headers that older Nitro versions don't ship |
+| React Native | New Architecture (Fabric). Tested on React Native 0.86 / Expo SDK 57 |
+| iOS | 15+ |
+| Android | `minSdkVersion` 21+ |
+
+> **Upgrading from 0.x?** 1.0 has no JS or native API changes. Bump `react-native-nitro-modules` to 0.37+ alongside this package, then rebuild the native app (`npx expo prebuild`, or `pod install` in bare projects). An older Nitro fails at native compile time with missing `NitroModules/ReactProp.hpp` / `ViewComponentDescriptor.hpp`.
 
 ### iOS — Expo (one-liner)
 
@@ -246,7 +258,7 @@ export default function App() {
 
 > **Important** — wrap the `hybridRef` callback in `useMemo([], …)`. If the callback identity changes between renders, the view re-initializes on every render and the camera will thrash open/close.
 
-A fuller example (pinch-to-zoom, event sheet, thermal chip, auto-reconnect) lives in [`example/`](./example).
+A fuller example (pinch-to-zoom, event sheet, thermal chip, auto-reconnect) lives in [`example/`](./example). Its controls are native UI built with [`@expo/ui`](https://docs.expo.dev/versions/latest/sdk/ui/): SwiftUI with Liquid Glass on iOS 26+ (blurred material on older iOS) and Jetpack Compose / Material 3 on Android.
 
 ---
 
@@ -856,7 +868,7 @@ PIP is offered **only on the live tier** — devices where iOS keeps the camera 
 
   > ⚠️ **App Store note:** `voip` is intended for VoIP / video-conferencing apps; declaring it on a one-way broadcaster carries some **Guideline 2.5.4** review scrutiny. If you don't add `voip` (manually or via the plugin option), iOS PIP simply stays disabled — no review risk, and Android PIP still works everywhere.
 
-> **Keep the keyboard off the streaming screen.** A focused `TextInput` under a `KeyboardAvoidingView` (`behavior="height"`) can mis-size the preview while in PIP (it sizes from screen metrics, not the small PIP window). Edit text such as the RTMP URL in a separate modal so its keyboard lives in its own window — see [`example/src/components/UrlModal.tsx`](./example/src/components/UrlModal.tsx) and [example/App.tsx](./example/App.tsx).
+> **Keep the keyboard off the streaming screen.** A focused `TextInput` under a `KeyboardAvoidingView` (`behavior="height"`) can mis-size the preview while in PIP (it sizes from screen metrics, not the small PIP window). Edit text such as the RTMP URL in a separate modal or bottom sheet so its keyboard lives in its own window — see the URL sheet in [`example/src/ui/StreamOverlay.android.tsx`](./example/src/ui/StreamOverlay.android.tsx) and [example/App.tsx](./example/App.tsx).
 
 ```ts
 <RtmpPublisherView ... pictureInPictureEnabled={true} hybridRef={hybridRef} />
@@ -982,7 +994,7 @@ src/permissions.ts # Cross-platform permission helper
 ios/               # Swift implementation
 android/src/       # Kotlin implementation
 nitrogen/generated # COMMITTED — regenerated via `npm run specs`
-example/           # Reference app (Expo SDK 56 / RN 0.85)
+example/           # Reference app (Expo SDK 57 / RN 0.86, @expo/ui controls)
 ```
 
 To work on the library locally:
@@ -1017,11 +1029,11 @@ Yes. Multi-tenant RTMPS ingests like LiveKit Cloud put each tenant on a per-subd
 
 ### Does it work with Expo and EAS Build?
 
-Yes — managed and bare both. Add `"react-native-nitro-rtmp-publisher"` to your `app.json` plugins list and re-run `expo prebuild`; the bundled Expo config plugin idempotently injects the vendored HaishinKit pods into your generated `Podfile`. No need to eject. See [Install → iOS — Expo (one-liner)](#ios--expo-one-liner).
+Yes — managed and bare both (tested on Expo SDK 57). Add `"react-native-nitro-rtmp-publisher"` to your `app.json` plugins list and re-run `expo prebuild`; the bundled Expo config plugin idempotently injects the vendored HaishinKit pods into your generated `Podfile`. No need to eject. See [Install → iOS — Expo (one-liner)](#ios--expo-one-liner).
 
 ### Does this support the React Native New Architecture (Fabric)?
 
-Yes. Nitro Modules require the New Architecture — Fabric and TurboModules must be enabled. The view is a Fabric component end-to-end; legacy Paper is not supported.
+Yes. Nitro Modules require the New Architecture — Fabric and TurboModules must be enabled. The view is a Fabric component end-to-end; legacy Paper is not supported. 1.0 is tested on React Native 0.86 with `react-native-nitro-modules` 0.37.
 
 ### Can I record locally to MP4 while streaming live?
 

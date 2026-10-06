@@ -15,7 +15,7 @@ namespace margelo::nitro::rtmppublisher {
   using namespace facebook;
 
   /**
-   * The C++ JNI bridge between the C++ enum "AudioCodec" and the the Kotlin enum "AudioCodec".
+   * The C++ JNI bridge between the C++ enum "AudioCodec" and the Kotlin enum "AudioCodec".
    */
   struct JAudioCodec final: public jni::JavaClass<JAudioCodec> {
   public:

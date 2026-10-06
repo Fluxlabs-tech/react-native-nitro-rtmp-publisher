@@ -15,7 +15,7 @@ namespace margelo::nitro::rtmppublisher {
   using namespace facebook;
 
   /**
-   * The C++ JNI bridge between the C++ enum "RtmpConnectionEvent" and the the Kotlin enum "RtmpConnectionEvent".
+   * The C++ JNI bridge between the C++ enum "RtmpConnectionEvent" and the Kotlin enum "RtmpConnectionEvent".
    */
   struct JRtmpConnectionEvent final: public jni::JavaClass<JRtmpConnectionEvent> {
   public:
