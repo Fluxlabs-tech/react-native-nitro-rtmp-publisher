@@ -24,7 +24,10 @@ export type StreamOverlayProps = {
   onSwitchCamera: () => void;
   onToggleNoiseSuppression: () => void;
   onToggleBeauty: () => void;
-  /** Android system Picture-in-Picture (the library no-ops it on iOS). */
+  /**
+   * System Picture-in-Picture — Android on every device; iOS on iPhone iOS 18+
+   * (with the `voip` background mode) and M1+ iPad.
+   */
   onEnterPip: () => void;
   /** iOS-only debug hook — the Android implementation is a no-op. */
   onInjectDesync: () => void;

@@ -206,6 +206,7 @@ function ControlPanel({
   onSwitchCamera,
   onToggleNoiseSuppression,
   onToggleBeauty,
+  onEnterPip,
   onClearLogs,
 }: StreamOverlayProps) {
   const [urlOpen, setUrlOpen] = useState(false);
@@ -275,6 +276,16 @@ function ControlPanel({
             onPress={onToggleNoiseSuppression}
           />
           <ToggleButton label="Beauty" symbol="sparkles" on={beauty} onPress={onToggleBeauty} />
+          {/* Live PiP needs an iPhone on iOS 18+ (with the `voip` background
+              mode the config plugin's `enablePictureInPicture` adds) or an M1+
+              iPad; elsewhere `enterPictureInPicture()` returns false. The
+              `pictureInPictureEnabled` prop also arms auto-enter on Home. */}
+          <CircleButton
+            label="Picture in Picture"
+            symbol="pip.enter"
+            size="regular"
+            onPress={onEnterPip}
+          />
         </HStack>
       </VStack>
     </GlassEffectContainer>
@@ -362,10 +373,12 @@ function PrimaryLabel({ symbol, label }: { symbol: SymbolName; label: string }) 
 function CircleButton({
   label,
   symbol,
+  size = 'large',
   onPress,
 }: {
   label: string;
   symbol: SymbolName;
+  size?: 'regular' | 'large';
   onPress: () => void;
 }) {
   return (
@@ -373,7 +386,7 @@ function CircleButton({
       label={label}
       systemImage={symbol}
       onPress={onPress}
-      modifiers={[labelStyle('iconOnly'), ...glassButton(), circleBorder(), controlSize('large')]}
+      modifiers={[labelStyle('iconOnly'), ...glassButton(), circleBorder(), controlSize(size)]}
     />
   );
 }

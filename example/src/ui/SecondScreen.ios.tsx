@@ -24,9 +24,9 @@ export function SecondScreen({ onBack }: SecondScreenProps) {
             foregroundStyle({ type: 'hierarchical', style: 'secondary' }),
           ]}
         >
-          No publisher here; the stream screen stays mounted underneath. Picture-in-Picture is
-          Android-only, so on iOS this just checks that leaving and coming back keeps the stream
-          healthy.
+          No publisher here. Press Home now: the app should stay normal (NO Picture-in-Picture
+          window). If it shrinks into a floating PiP window, PiP is leaking to non-stream screens.
+          (Live PiP on iOS needs an iPhone on iOS 18+ or an M1+ iPad.)
         </Text>
         <Button
           label="Back to stream"

@@ -146,10 +146,11 @@ export function usePublisher(append: (line: string) => void, sampleRate: number)
             setThermal(status);
           });
 
-          // PIP enter/exit — hide overlays in the floating window. Android-only
-          // (no-op on iOS). The `pictureInPictureEnabled` prop arms auto-enter
-          // on Home/Recents (API 31+); the "PIP" button calls
-          // enterPictureInPicture() for the manual path / Android 8–11.
+          // PIP enter/exit — hide overlays in the floating window. Android on
+          // every device; iOS on iPhone iOS 18+ (with the `voip` background
+          // mode) and M1+ iPad. The `pictureInPictureEnabled` prop arms
+          // auto-enter on Home/Recents; the "PiP" button calls
+          // enterPictureInPicture() for the manual path (and Android 8–11).
           ref.setOnPictureInPictureChange((isInPip: boolean) => {
             append(`pip=${isInPip}`);
             setPipActive(isInPip);
