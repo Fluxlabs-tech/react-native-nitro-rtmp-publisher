@@ -15,97 +15,129 @@ namespace margelo::nitro::rtmppublisher::views {
 using namespace facebook;
 using ConcreteStateData = react::ConcreteState<HybridRtmpPublisherViewState>;
 
-void JHybridRtmpPublisherViewStateUpdater::updateViewProps(jni::alias_ref<jni::JClass> /* class */,
-                                           jni::alias_ref<JHybridRtmpPublisherViewSpec::JavaPart> javaView,
-                                           jni::alias_ref<JStateWrapper::javaobject> stateWrapperInterface) {
-  std::shared_ptr<JHybridRtmpPublisherViewSpec> hybridView = javaView->getJHybridRtmpPublisherViewSpec();
-
-  // Get concrete StateWrapperImpl from passed StateWrapper interface object
-  jobject rawStateWrapper = stateWrapperInterface.get();
-  if (!stateWrapperInterface->isInstanceOf(react::StateWrapperImpl::javaClassStatic())) [[unlikely]] {
-      throw std::runtime_error("StateWrapper is not a StateWrapperImpl");
+std::shared_ptr<const HybridRtmpPublisherViewProps> JHybridRtmpPublisherViewStateUpdater::getPropsFromStateWrapper(
+    jni::alias_ref<JStateWrapper::javaobject> stateWrapper) {
+  if (stateWrapper.get() == nullptr) {
+    return nullptr;
   }
-  auto stateWrapper = jni::alias_ref<react::StateWrapperImpl::javaobject>{
-            static_cast<react::StateWrapperImpl::javaobject>(rawStateWrapper)};
-  std::shared_ptr<const react::State> state = stateWrapper->cthis()->getState();
+  // Get concrete StateWrapperImpl from passed StateWrapper interface object
+  jobject rawStateWrapper = stateWrapper.get();
+  if (!stateWrapper->isInstanceOf(react::StateWrapperImpl::javaClassStatic())) [[unlikely]] {
+    throw std::runtime_error("StateWrapper is not a StateWrapperImpl");
+  }
+  auto stateWrapperImpl = jni::alias_ref<react::StateWrapperImpl::javaobject>{
+    static_cast<react::StateWrapperImpl::javaobject>(rawStateWrapper)
+  };
+  std::shared_ptr<const react::State> state = stateWrapperImpl->cthis()->getState();
+  if (state == nullptr) {
+    return nullptr;
+  }
   auto concreteState = std::static_pointer_cast<const ConcreteStateData>(state);
   const HybridRtmpPublisherViewState& data = concreteState->getData();
-  const std::shared_ptr<HybridRtmpPublisherViewProps>& props = data.getProps();
+  const std::shared_ptr<const HybridRtmpPublisherViewProps>& props = data.getProps();
   if (props == nullptr) [[unlikely]] {
-    // Props aren't set yet!
     throw std::runtime_error("HybridRtmpPublisherViewState's data doesn't contain any props!");
   }
+  return props;
+}
 
-  // Update all props if they are dirty
-  if (props->forceHardwareCodec.isDirty) {
-    hybridView->setForceHardwareCodec(props->forceHardwareCodec.value);
-    props->forceHardwareCodec.isDirty = false;
+void JHybridRtmpPublisherViewStateUpdater::updateViewProps(jni::alias_ref<jni::JClass> /* class */,
+                                           jni::alias_ref<JHybridRtmpPublisherViewSpec::JavaPart> javaView,
+                                           jni::alias_ref<JStateWrapper::javaobject> newState,
+                                           jni::alias_ref<JStateWrapper::javaobject> oldState) {
+  std::shared_ptr<JHybridRtmpPublisherViewSpec> hybridView = javaView->getJHybridRtmpPublisherViewSpec();
+  std::shared_ptr<const HybridRtmpPublisherViewProps> newProps = getPropsFromStateWrapper(newState);
+  std::shared_ptr<const HybridRtmpPublisherViewProps> oldProps = getPropsFromStateWrapper(oldState);
+  if (newProps == nullptr) [[unlikely]] {
+    throw std::runtime_error("Current StateWrapper doesn't contain any props!");
   }
-  if (props->videoCodec.isDirty) {
-    hybridView->setVideoCodec(props->videoCodec.value);
-    props->videoCodec.isDirty = false;
+
+  // Update only props that differ from the previous State snapshot.
+  if (oldProps == nullptr
+        ? newProps->forceHardwareCodec.isProvided()
+        : !newProps->forceHardwareCodec.hasSameValue(oldProps->forceHardwareCodec)) {
+    hybridView->setForceHardwareCodec(newProps->forceHardwareCodec.get());
   }
-  if (props->audioCodec.isDirty) {
-    hybridView->setAudioCodec(props->audioCodec.value);
-    props->audioCodec.isDirty = false;
+  if (oldProps == nullptr
+        ? newProps->videoCodec.isProvided()
+        : !newProps->videoCodec.hasSameValue(oldProps->videoCodec)) {
+    hybridView->setVideoCodec(newProps->videoCodec.get());
   }
-  if (props->aspectRatioMode.isDirty) {
-    hybridView->setAspectRatioMode(props->aspectRatioMode.value);
-    props->aspectRatioMode.isDirty = false;
+  if (oldProps == nullptr
+        ? newProps->audioCodec.isProvided()
+        : !newProps->audioCodec.hasSameValue(oldProps->audioCodec)) {
+    hybridView->setAudioCodec(newProps->audioCodec.get());
   }
-  if (props->mirrorPreview.isDirty) {
-    hybridView->setMirrorPreview(props->mirrorPreview.value);
-    props->mirrorPreview.isDirty = false;
+  if (oldProps == nullptr
+        ? newProps->aspectRatioMode.isProvided()
+        : !newProps->aspectRatioMode.hasSameValue(oldProps->aspectRatioMode)) {
+    hybridView->setAspectRatioMode(newProps->aspectRatioMode.get());
   }
-  if (props->mirrorStream.isDirty) {
-    hybridView->setMirrorStream(props->mirrorStream.value);
-    props->mirrorStream.isDirty = false;
+  if (oldProps == nullptr
+        ? newProps->mirrorPreview.isProvided()
+        : !newProps->mirrorPreview.hasSameValue(oldProps->mirrorPreview)) {
+    hybridView->setMirrorPreview(newProps->mirrorPreview.get());
   }
-  if (props->thermalWarningThreshold.isDirty) {
-    hybridView->setThermalWarningThreshold(props->thermalWarningThreshold.value);
-    props->thermalWarningThreshold.isDirty = false;
+  if (oldProps == nullptr
+        ? newProps->mirrorStream.isProvided()
+        : !newProps->mirrorStream.hasSameValue(oldProps->mirrorStream)) {
+    hybridView->setMirrorStream(newProps->mirrorStream.get());
   }
-  if (props->audioSource.isDirty) {
-    hybridView->setAudioSource(props->audioSource.value);
-    props->audioSource.isDirty = false;
+  if (oldProps == nullptr
+        ? newProps->thermalWarningThreshold.isProvided()
+        : !newProps->thermalWarningThreshold.hasSameValue(oldProps->thermalWarningThreshold)) {
+    hybridView->setThermalWarningThreshold(newProps->thermalWarningThreshold.get());
   }
-  if (props->noiseSuppression.isDirty) {
-    hybridView->setNoiseSuppression(props->noiseSuppression.value);
-    props->noiseSuppression.isDirty = false;
+  if (oldProps == nullptr
+        ? newProps->audioSource.isProvided()
+        : !newProps->audioSource.hasSameValue(oldProps->audioSource)) {
+    hybridView->setAudioSource(newProps->audioSource.get());
   }
-  if (props->autoRotateStream.isDirty) {
-    hybridView->setAutoRotateStream(props->autoRotateStream.value);
-    props->autoRotateStream.isDirty = false;
+  if (oldProps == nullptr
+        ? newProps->noiseSuppression.isProvided()
+        : !newProps->noiseSuppression.hasSameValue(oldProps->noiseSuppression)) {
+    hybridView->setNoiseSuppression(newProps->noiseSuppression.get());
   }
-  if (props->streamMode.isDirty) {
-    hybridView->setStreamMode(props->streamMode.value);
-    props->streamMode.isDirty = false;
+  if (oldProps == nullptr
+        ? newProps->autoRotateStream.isProvided()
+        : !newProps->autoRotateStream.hasSameValue(oldProps->autoRotateStream)) {
+    hybridView->setAutoRotateStream(newProps->autoRotateStream.get());
   }
-  if (props->foregroundServiceTitle.isDirty) {
-    hybridView->setForegroundServiceTitle(props->foregroundServiceTitle.value);
-    props->foregroundServiceTitle.isDirty = false;
+  if (oldProps == nullptr
+        ? newProps->streamMode.isProvided()
+        : !newProps->streamMode.hasSameValue(oldProps->streamMode)) {
+    hybridView->setStreamMode(newProps->streamMode.get());
   }
-  if (props->foregroundServiceText.isDirty) {
-    hybridView->setForegroundServiceText(props->foregroundServiceText.value);
-    props->foregroundServiceText.isDirty = false;
+  if (oldProps == nullptr
+        ? newProps->foregroundServiceTitle.isProvided()
+        : !newProps->foregroundServiceTitle.hasSameValue(oldProps->foregroundServiceTitle)) {
+    hybridView->setForegroundServiceTitle(newProps->foregroundServiceTitle.get());
   }
-  if (props->foregroundServiceIcon.isDirty) {
-    hybridView->setForegroundServiceIcon(props->foregroundServiceIcon.value);
-    props->foregroundServiceIcon.isDirty = false;
+  if (oldProps == nullptr
+        ? newProps->foregroundServiceText.isProvided()
+        : !newProps->foregroundServiceText.hasSameValue(oldProps->foregroundServiceText)) {
+    hybridView->setForegroundServiceText(newProps->foregroundServiceText.get());
   }
-  if (props->pictureInPictureEnabled.isDirty) {
-    hybridView->setPictureInPictureEnabled(props->pictureInPictureEnabled.value);
-    props->pictureInPictureEnabled.isDirty = false;
+  if (oldProps == nullptr
+        ? newProps->foregroundServiceIcon.isProvided()
+        : !newProps->foregroundServiceIcon.hasSameValue(oldProps->foregroundServiceIcon)) {
+    hybridView->setForegroundServiceIcon(newProps->foregroundServiceIcon.get());
+  }
+  if (oldProps == nullptr
+        ? newProps->pictureInPictureEnabled.isProvided()
+        : !newProps->pictureInPictureEnabled.hasSameValue(oldProps->pictureInPictureEnabled)) {
+    hybridView->setPictureInPictureEnabled(newProps->pictureInPictureEnabled.get());
   }
 
   // Update hybridRef if it changed
-  if (props->hybridRef.isDirty) {
+  if (oldProps == nullptr
+        ? newProps->hybridRef.isProvided()
+        : !newProps->hybridRef.hasSameValue(oldProps->hybridRef)) {
     // hybridRef changed - call it with new this
-    const auto& maybeFunc = props->hybridRef.value;
+    const auto& maybeFunc = newProps->hybridRef.get();
     if (maybeFunc.has_value()) {
       maybeFunc.value()(hybridView);
     }
-    props->hybridRef.isDirty = false;
   }
 }
 

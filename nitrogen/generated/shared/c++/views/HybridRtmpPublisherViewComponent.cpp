@@ -7,18 +7,12 @@
 
 #include "HybridRtmpPublisherViewComponent.hpp"
 
-#include <string>
-#include <exception>
-#include <utility>
-#include <NitroModules/NitroDefines.hpp>
-#include <NitroModules/JSIConverter.hpp>
-#include <NitroModules/PropNameIDCache.hpp>
-#include <react/renderer/core/RawValue.h>
-#include <react/renderer/core/ShadowNode.h>
-#include <react/renderer/core/ComponentDescriptor.h>
-#include <react/renderer/components/view/ViewProps.h>
+#include <NitroModules/NitroHash.hpp>
+#include <NitroModules/ReactProp.hpp>
 
 namespace margelo::nitro::rtmppublisher::views {
+
+  using namespace facebook;
 
   extern const char HybridRtmpPublisherViewComponentName[] = "RtmpPublisherView";
 
@@ -26,166 +20,22 @@ namespace margelo::nitro::rtmppublisher::views {
                                                              const HybridRtmpPublisherViewProps& sourceProps,
                                                              const react::RawProps& rawProps):
     react::ViewProps(context, sourceProps, rawProps, filterObjectKeys),
-    forceHardwareCodec([&]() -> CachedProp<bool> {
-      try {
-        const react::RawValue* rawValue = rawProps.at("forceHardwareCodec", nullptr, nullptr);
-        if (rawValue == nullptr) return sourceProps.forceHardwareCodec;
-        const auto& [runtime, value] = (std::pair<jsi::Runtime*, jsi::Value>)*rawValue;
-        return CachedProp<bool>::fromRawValue(*runtime, value, sourceProps.forceHardwareCodec);
-      } catch (const std::exception& exc) {
-        throw std::runtime_error(std::string("RtmpPublisherView.forceHardwareCodec: ") + exc.what());
-      }
-    }()),
-    videoCodec([&]() -> CachedProp<VideoCodec> {
-      try {
-        const react::RawValue* rawValue = rawProps.at("videoCodec", nullptr, nullptr);
-        if (rawValue == nullptr) return sourceProps.videoCodec;
-        const auto& [runtime, value] = (std::pair<jsi::Runtime*, jsi::Value>)*rawValue;
-        return CachedProp<VideoCodec>::fromRawValue(*runtime, value, sourceProps.videoCodec);
-      } catch (const std::exception& exc) {
-        throw std::runtime_error(std::string("RtmpPublisherView.videoCodec: ") + exc.what());
-      }
-    }()),
-    audioCodec([&]() -> CachedProp<AudioCodec> {
-      try {
-        const react::RawValue* rawValue = rawProps.at("audioCodec", nullptr, nullptr);
-        if (rawValue == nullptr) return sourceProps.audioCodec;
-        const auto& [runtime, value] = (std::pair<jsi::Runtime*, jsi::Value>)*rawValue;
-        return CachedProp<AudioCodec>::fromRawValue(*runtime, value, sourceProps.audioCodec);
-      } catch (const std::exception& exc) {
-        throw std::runtime_error(std::string("RtmpPublisherView.audioCodec: ") + exc.what());
-      }
-    }()),
-    aspectRatioMode([&]() -> CachedProp<AspectRatioMode> {
-      try {
-        const react::RawValue* rawValue = rawProps.at("aspectRatioMode", nullptr, nullptr);
-        if (rawValue == nullptr) return sourceProps.aspectRatioMode;
-        const auto& [runtime, value] = (std::pair<jsi::Runtime*, jsi::Value>)*rawValue;
-        return CachedProp<AspectRatioMode>::fromRawValue(*runtime, value, sourceProps.aspectRatioMode);
-      } catch (const std::exception& exc) {
-        throw std::runtime_error(std::string("RtmpPublisherView.aspectRatioMode: ") + exc.what());
-      }
-    }()),
-    mirrorPreview([&]() -> CachedProp<bool> {
-      try {
-        const react::RawValue* rawValue = rawProps.at("mirrorPreview", nullptr, nullptr);
-        if (rawValue == nullptr) return sourceProps.mirrorPreview;
-        const auto& [runtime, value] = (std::pair<jsi::Runtime*, jsi::Value>)*rawValue;
-        return CachedProp<bool>::fromRawValue(*runtime, value, sourceProps.mirrorPreview);
-      } catch (const std::exception& exc) {
-        throw std::runtime_error(std::string("RtmpPublisherView.mirrorPreview: ") + exc.what());
-      }
-    }()),
-    mirrorStream([&]() -> CachedProp<bool> {
-      try {
-        const react::RawValue* rawValue = rawProps.at("mirrorStream", nullptr, nullptr);
-        if (rawValue == nullptr) return sourceProps.mirrorStream;
-        const auto& [runtime, value] = (std::pair<jsi::Runtime*, jsi::Value>)*rawValue;
-        return CachedProp<bool>::fromRawValue(*runtime, value, sourceProps.mirrorStream);
-      } catch (const std::exception& exc) {
-        throw std::runtime_error(std::string("RtmpPublisherView.mirrorStream: ") + exc.what());
-      }
-    }()),
-    thermalWarningThreshold([&]() -> CachedProp<ThermalStatus> {
-      try {
-        const react::RawValue* rawValue = rawProps.at("thermalWarningThreshold", nullptr, nullptr);
-        if (rawValue == nullptr) return sourceProps.thermalWarningThreshold;
-        const auto& [runtime, value] = (std::pair<jsi::Runtime*, jsi::Value>)*rawValue;
-        return CachedProp<ThermalStatus>::fromRawValue(*runtime, value, sourceProps.thermalWarningThreshold);
-      } catch (const std::exception& exc) {
-        throw std::runtime_error(std::string("RtmpPublisherView.thermalWarningThreshold: ") + exc.what());
-      }
-    }()),
-    audioSource([&]() -> CachedProp<AudioSource> {
-      try {
-        const react::RawValue* rawValue = rawProps.at("audioSource", nullptr, nullptr);
-        if (rawValue == nullptr) return sourceProps.audioSource;
-        const auto& [runtime, value] = (std::pair<jsi::Runtime*, jsi::Value>)*rawValue;
-        return CachedProp<AudioSource>::fromRawValue(*runtime, value, sourceProps.audioSource);
-      } catch (const std::exception& exc) {
-        throw std::runtime_error(std::string("RtmpPublisherView.audioSource: ") + exc.what());
-      }
-    }()),
-    noiseSuppression([&]() -> CachedProp<bool> {
-      try {
-        const react::RawValue* rawValue = rawProps.at("noiseSuppression", nullptr, nullptr);
-        if (rawValue == nullptr) return sourceProps.noiseSuppression;
-        const auto& [runtime, value] = (std::pair<jsi::Runtime*, jsi::Value>)*rawValue;
-        return CachedProp<bool>::fromRawValue(*runtime, value, sourceProps.noiseSuppression);
-      } catch (const std::exception& exc) {
-        throw std::runtime_error(std::string("RtmpPublisherView.noiseSuppression: ") + exc.what());
-      }
-    }()),
-    autoRotateStream([&]() -> CachedProp<bool> {
-      try {
-        const react::RawValue* rawValue = rawProps.at("autoRotateStream", nullptr, nullptr);
-        if (rawValue == nullptr) return sourceProps.autoRotateStream;
-        const auto& [runtime, value] = (std::pair<jsi::Runtime*, jsi::Value>)*rawValue;
-        return CachedProp<bool>::fromRawValue(*runtime, value, sourceProps.autoRotateStream);
-      } catch (const std::exception& exc) {
-        throw std::runtime_error(std::string("RtmpPublisherView.autoRotateStream: ") + exc.what());
-      }
-    }()),
-    streamMode([&]() -> CachedProp<StreamMode> {
-      try {
-        const react::RawValue* rawValue = rawProps.at("streamMode", nullptr, nullptr);
-        if (rawValue == nullptr) return sourceProps.streamMode;
-        const auto& [runtime, value] = (std::pair<jsi::Runtime*, jsi::Value>)*rawValue;
-        return CachedProp<StreamMode>::fromRawValue(*runtime, value, sourceProps.streamMode);
-      } catch (const std::exception& exc) {
-        throw std::runtime_error(std::string("RtmpPublisherView.streamMode: ") + exc.what());
-      }
-    }()),
-    foregroundServiceTitle([&]() -> CachedProp<std::string> {
-      try {
-        const react::RawValue* rawValue = rawProps.at("foregroundServiceTitle", nullptr, nullptr);
-        if (rawValue == nullptr) return sourceProps.foregroundServiceTitle;
-        const auto& [runtime, value] = (std::pair<jsi::Runtime*, jsi::Value>)*rawValue;
-        return CachedProp<std::string>::fromRawValue(*runtime, value, sourceProps.foregroundServiceTitle);
-      } catch (const std::exception& exc) {
-        throw std::runtime_error(std::string("RtmpPublisherView.foregroundServiceTitle: ") + exc.what());
-      }
-    }()),
-    foregroundServiceText([&]() -> CachedProp<std::string> {
-      try {
-        const react::RawValue* rawValue = rawProps.at("foregroundServiceText", nullptr, nullptr);
-        if (rawValue == nullptr) return sourceProps.foregroundServiceText;
-        const auto& [runtime, value] = (std::pair<jsi::Runtime*, jsi::Value>)*rawValue;
-        return CachedProp<std::string>::fromRawValue(*runtime, value, sourceProps.foregroundServiceText);
-      } catch (const std::exception& exc) {
-        throw std::runtime_error(std::string("RtmpPublisherView.foregroundServiceText: ") + exc.what());
-      }
-    }()),
-    foregroundServiceIcon([&]() -> CachedProp<std::string> {
-      try {
-        const react::RawValue* rawValue = rawProps.at("foregroundServiceIcon", nullptr, nullptr);
-        if (rawValue == nullptr) return sourceProps.foregroundServiceIcon;
-        const auto& [runtime, value] = (std::pair<jsi::Runtime*, jsi::Value>)*rawValue;
-        return CachedProp<std::string>::fromRawValue(*runtime, value, sourceProps.foregroundServiceIcon);
-      } catch (const std::exception& exc) {
-        throw std::runtime_error(std::string("RtmpPublisherView.foregroundServiceIcon: ") + exc.what());
-      }
-    }()),
-    pictureInPictureEnabled([&]() -> CachedProp<bool> {
-      try {
-        const react::RawValue* rawValue = rawProps.at("pictureInPictureEnabled", nullptr, nullptr);
-        if (rawValue == nullptr) return sourceProps.pictureInPictureEnabled;
-        const auto& [runtime, value] = (std::pair<jsi::Runtime*, jsi::Value>)*rawValue;
-        return CachedProp<bool>::fromRawValue(*runtime, value, sourceProps.pictureInPictureEnabled);
-      } catch (const std::exception& exc) {
-        throw std::runtime_error(std::string("RtmpPublisherView.pictureInPictureEnabled: ") + exc.what());
-      }
-    }()),
-    hybridRef([&]() -> CachedProp<std::optional<std::function<void(const std::shared_ptr<HybridRtmpPublisherViewSpec>& /* ref */)>>> {
-      try {
-        const react::RawValue* rawValue = rawProps.at("hybridRef", nullptr, nullptr);
-        if (rawValue == nullptr) return sourceProps.hybridRef;
-        const auto& [runtime, value] = (std::pair<jsi::Runtime*, jsi::Value>)*rawValue;
-        return CachedProp<std::optional<std::function<void(const std::shared_ptr<HybridRtmpPublisherViewSpec>& /* ref */)>>>::fromRawValue(*runtime, value.asObject(*runtime).getProperty(*runtime, PropNameIDCache::get(*runtime, "f")), sourceProps.hybridRef);
-      } catch (const std::exception& exc) {
-        throw std::runtime_error(std::string("RtmpPublisherView.hybridRef: ") + exc.what());
-      }
-    }()) { }
+    forceHardwareCodec(nitro::ReactProp<bool>::fromRawValue("RtmpPublisherView", "forceHardwareCodec", rawProps, sourceProps.forceHardwareCodec)),
+    videoCodec(nitro::ReactProp<VideoCodec>::fromRawValue("RtmpPublisherView", "videoCodec", rawProps, sourceProps.videoCodec)),
+    audioCodec(nitro::ReactProp<AudioCodec>::fromRawValue("RtmpPublisherView", "audioCodec", rawProps, sourceProps.audioCodec)),
+    aspectRatioMode(nitro::ReactProp<AspectRatioMode>::fromRawValue("RtmpPublisherView", "aspectRatioMode", rawProps, sourceProps.aspectRatioMode)),
+    mirrorPreview(nitro::ReactProp<bool>::fromRawValue("RtmpPublisherView", "mirrorPreview", rawProps, sourceProps.mirrorPreview)),
+    mirrorStream(nitro::ReactProp<bool>::fromRawValue("RtmpPublisherView", "mirrorStream", rawProps, sourceProps.mirrorStream)),
+    thermalWarningThreshold(nitro::ReactProp<ThermalStatus>::fromRawValue("RtmpPublisherView", "thermalWarningThreshold", rawProps, sourceProps.thermalWarningThreshold)),
+    audioSource(nitro::ReactProp<AudioSource>::fromRawValue("RtmpPublisherView", "audioSource", rawProps, sourceProps.audioSource)),
+    noiseSuppression(nitro::ReactProp<bool>::fromRawValue("RtmpPublisherView", "noiseSuppression", rawProps, sourceProps.noiseSuppression)),
+    autoRotateStream(nitro::ReactProp<bool>::fromRawValue("RtmpPublisherView", "autoRotateStream", rawProps, sourceProps.autoRotateStream)),
+    streamMode(nitro::ReactProp<StreamMode>::fromRawValue("RtmpPublisherView", "streamMode", rawProps, sourceProps.streamMode)),
+    foregroundServiceTitle(nitro::ReactProp<std::string>::fromRawValue("RtmpPublisherView", "foregroundServiceTitle", rawProps, sourceProps.foregroundServiceTitle)),
+    foregroundServiceText(nitro::ReactProp<std::string>::fromRawValue("RtmpPublisherView", "foregroundServiceText", rawProps, sourceProps.foregroundServiceText)),
+    foregroundServiceIcon(nitro::ReactProp<std::string>::fromRawValue("RtmpPublisherView", "foregroundServiceIcon", rawProps, sourceProps.foregroundServiceIcon)),
+    pictureInPictureEnabled(nitro::ReactProp<bool>::fromRawValue("RtmpPublisherView", "pictureInPictureEnabled", rawProps, sourceProps.pictureInPictureEnabled)),
+    hybridRef(nitro::ReactProp<std::optional<std::function<void(const std::shared_ptr<HybridRtmpPublisherViewSpec>& /* ref */)>>>::fromRawValue("RtmpPublisherView", "hybridRef", rawProps, sourceProps.hybridRef)) { }
 
   bool HybridRtmpPublisherViewProps::filterObjectKeys(const std::string& propName) {
     switch (hashString(propName)) {
@@ -208,30 +58,5 @@ namespace margelo::nitro::rtmppublisher::views {
       default: return false;
     }
   }
-
-  HybridRtmpPublisherViewComponentDescriptor::HybridRtmpPublisherViewComponentDescriptor(const react::ComponentDescriptorParameters& parameters)
-    : ConcreteComponentDescriptor(parameters,
-                                  react::RawPropsParser(/* enableJsiParser */ true)) {}
-
-  std::shared_ptr<const react::Props> HybridRtmpPublisherViewComponentDescriptor::cloneProps(const react::PropsParserContext& context,
-                                                                                             const std::shared_ptr<const react::Props>& props,
-                                                                                             react::RawProps rawProps) const {
-    // 1. Prepare raw props parser
-    rawProps.parse(rawPropsParser_);
-    // 2. Copy props with Nitro's cached copy constructor
-    return HybridRtmpPublisherViewShadowNode::Props(context, /* & */ rawProps, props);
-  }
-
-#ifdef ANDROID
-  void HybridRtmpPublisherViewComponentDescriptor::adopt(react::ShadowNode& shadowNode) const {
-    // This is called immediately after `ShadowNode` is created, cloned or in progress.
-    // On Android, we need to wrap props in our state, which gets routed through Java and later unwrapped in JNI/C++.
-    auto& concreteShadowNode = static_cast<HybridRtmpPublisherViewShadowNode&>(shadowNode);
-    const std::shared_ptr<const HybridRtmpPublisherViewProps>& constProps = concreteShadowNode.getConcreteSharedProps();
-    const std::shared_ptr<HybridRtmpPublisherViewProps>& props = std::const_pointer_cast<HybridRtmpPublisherViewProps>(constProps);
-    HybridRtmpPublisherViewState state{props};
-    concreteShadowNode.setStateData(std::move(state));
-  }
-#endif
 
 } // namespace margelo::nitro::rtmppublisher::views

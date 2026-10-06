@@ -15,7 +15,7 @@ namespace margelo::nitro::rtmppublisher {
   using namespace facebook;
 
   /**
-   * The C++ JNI bridge between the C++ enum "ThermalStatus" and the the Kotlin enum "ThermalStatus".
+   * The C++ JNI bridge between the C++ enum "ThermalStatus" and the Kotlin enum "ThermalStatus".
    */
   struct JThermalStatus final: public jni::JavaClass<JThermalStatus> {
   public:

@@ -15,7 +15,7 @@ namespace margelo::nitro::rtmppublisher {
   using namespace facebook;
 
   /**
-   * The C++ JNI bridge between the C++ enum "CameraFacing" and the the Kotlin enum "CameraFacing".
+   * The C++ JNI bridge between the C++ enum "CameraFacing" and the Kotlin enum "CameraFacing".
    */
   struct JCameraFacing final: public jni::JavaClass<JCameraFacing> {
   public:

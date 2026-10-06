@@ -10,7 +10,6 @@ package com.margelo.nitro.rtmppublisher
 import androidx.annotation.Keep
 import com.facebook.jni.HybridData
 import com.facebook.proguard.annotations.DoNotStrip
-import dalvik.annotation.optimization.FastNative
 
 
 /**
@@ -59,7 +58,6 @@ class Func_void_RtmpConnectionEvent_std__string_cxx: Func_void_RtmpConnectionEve
   override fun invoke(event: RtmpConnectionEvent, message: String): Unit
     = invoke_cxx(event,message)
 
-  @FastNative
   private external fun invoke_cxx(event: RtmpConnectionEvent, message: String): Unit
 }
 

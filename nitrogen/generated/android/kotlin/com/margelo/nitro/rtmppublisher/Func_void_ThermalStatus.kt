@@ -10,7 +10,6 @@ package com.margelo.nitro.rtmppublisher
 import androidx.annotation.Keep
 import com.facebook.jni.HybridData
 import com.facebook.proguard.annotations.DoNotStrip
-import dalvik.annotation.optimization.FastNative
 
 
 /**
@@ -59,7 +58,6 @@ class Func_void_ThermalStatus_cxx: Func_void_ThermalStatus {
   override fun invoke(status: ThermalStatus): Unit
     = invoke_cxx(status)
 
-  @FastNative
   private external fun invoke_cxx(status: ThermalStatus): Unit
 }
 

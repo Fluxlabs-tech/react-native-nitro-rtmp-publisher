@@ -15,7 +15,7 @@ namespace margelo::nitro::rtmppublisher {
   using namespace facebook;
 
   /**
-   * The C++ JNI bridge between the C++ enum "RecordStatus" and the the Kotlin enum "RecordStatus".
+   * The C++ JNI bridge between the C++ enum "RecordStatus" and the Kotlin enum "RecordStatus".
    */
   struct JRecordStatus final: public jni::JavaClass<JRecordStatus> {
   public:
