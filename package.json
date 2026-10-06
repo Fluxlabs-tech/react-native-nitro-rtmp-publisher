@@ -103,5 +103,10 @@
     "react": "*",
     "react-native": "*",
     "react-native-nitro-modules": "*"
+  },
+  "overrides": {
+    "xcode": {
+      "uuid": "^11.1.1"
+    }
   }
 }
