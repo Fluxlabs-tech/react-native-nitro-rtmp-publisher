@@ -1,0 +1,80 @@
+name: CodeQL
+
+# Advanced setup, replacing GitHub's default setup: Kotlin has no build-free
+# extraction (default setup failed with "No Java/Kotlin code found"), so the
+# java-kotlin job compiles the Android library as a module of the example app.
+# JavaScript/TypeScript and C/C++ are analyzed without a build.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '30 2 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: javascript-typescript
+            build-mode: none
+          - language: c-cpp
+            build-mode: none
+          - language: java-kotlin
+            build-mode: manual
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      - if: matrix.build-mode == 'manual'
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            example/package-lock.json
+
+      - if: matrix.build-mode == 'manual'
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - if: matrix.build-mode == 'manual'
+        name: Build the Android library (Kotlin)
+        run: |
+          npm ci
+          npm ci --prefix example
+          (cd example && npx expo prebuild --platform android --no-install)
+          # CodeQL traces the Kotlin compiler, so compile in-process (no
+          # Kotlin or Gradle daemon) and without the build cache.
+          cd example/android
+          ./gradlew --no-daemon --no-build-cache \
+            -Pkotlin.compiler.execution.strategy=in-process \
+            -PreactNativeArchitectures=arm64-v8a \
+            :react-native-nitro-rtmp-publisher:compileDebugKotlin
+
+      - uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:${{ matrix.language }}
