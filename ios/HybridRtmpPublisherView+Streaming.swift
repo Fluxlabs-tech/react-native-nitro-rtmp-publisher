@@ -638,6 +638,11 @@ extension HybridRtmpPublisherView {
       }
       settings.bitRate = bitrate
       settings.maxKeyFrameIntervalDuration = Int32(cfg.iFrameInterval)
+      // The frame rate, so VideoToolbox need not estimate it. With only the 2 s
+      // cap set, iOS 27 keyed every 32-33 frames (~1.1 s) at 30 fps where iOS 26
+      // keyed every 59, and iOS viewers dropped frames in twice as many
+      // sessions (Zoop lives, 2-3 Nov 2026).
+      settings.expectedFrameRate = Double(cfg.fps)
       settings.scalingMode = .trim
       if self.videoCodec == .h265 {
         settings.profileLevel = kVTProfileLevel_HEVC_Main_AutoLevel as String
