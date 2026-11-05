@@ -1,11 +1,12 @@
 name: Release
 
-# Publishes the package when main's package.json has a version that isn't on
-# npm yet and the commit builds: the package itself, the Android example and the
-# iOS example. Then tags the commit and creates the GitHub release. npm accepts
-# the publish through trusted publishing (OIDC): the package's settings on
-# npmjs.com trust this file, release.yml, in the npm environment, so no npm
-# token is stored.
+# Stages the package on npm when main's package.json has a version that isn't
+# on npm yet and the commit builds: the package itself, the Android example and
+# the iOS example. The version goes live when a maintainer approves it on
+# npmjs.com, in the package's Staged Packages tab, with 2FA. This workflow then
+# tags the commit and creates the GitHub release. npm accepts the staging
+# through trusted publishing (OIDC): the package's settings on npmjs.com trust
+# this file, release.yml, in the npm environment, so no npm token is stored.
 
 on:
   push:
@@ -112,17 +113,17 @@ jobs:
       contents: read
     uses: ./.github/workflows/ios_ci.yml
 
-  publish:
-    name: Publish to npm
+  stage:
+    name: Stage on npm
     needs: [ check, build, android, ios ]
     runs-on: ubuntu-latest
     environment:
       name: npm
-      url: https://www.npmjs.com/package/react-native-nitro-rtmp-publisher/v/${{ needs.check.outputs.version }}
+      url: https://www.npmjs.com/package/react-native-nitro-rtmp-publisher
     permissions:
       id-token: write
     steps:
-    # Trusted publishing needs npm 11.5.1 or later, and Node 22 comes with npm 10.
+    # Staged publishing needs npm 11.15.0 or later, and Node 22 comes with npm 10.
     - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
       with:
         node-version: 24
@@ -130,7 +131,9 @@ jobs:
       with:
         name: package
 
-    - name: Publish
+    # The trusted publisher doesn't allow npm publish, only staging, so that no
+    # version goes live without a maintainer's 2FA.
+    - name: Stage
       env:
         VERSION: ${{ needs.check.outputs.version }}
       run: |
@@ -140,16 +143,33 @@ jobs:
           *-*) tag=next ;;
           *) tag=latest ;;
         esac
-        npm publish ./*.tgz --access public --provenance --tag "$tag"
+        npm stage publish ./*.tgz --access public --provenance --tag "$tag"
+        echo "::notice::$VERSION is staged. Approve it on npmjs.com, in the package's Staged Packages tab, to publish it."
 
   release:
     name: Create the GitHub release
-    needs: [ check, publish ]
+    needs: [ check, stage ]
     runs-on: ubuntu-latest
+    timeout-minutes: 75
     permissions:
       contents: write
       pull-requests: read
     steps:
+    # The release follows the approval on npmjs.com, waiting up to an hour for
+    # it. After a later approval, re-run this job.
+    - name: Wait for the version on npm
+      env:
+        VERSION: ${{ needs.check.outputs.version }}
+      run: |
+        for _ in $(seq 60); do
+          if [ "$(npm view "react-native-nitro-rtmp-publisher@$VERSION" version 2>/dev/null)" = "$VERSION" ]; then
+            exit 0
+          fi
+          sleep 60
+        done
+        echo "::error::$VERSION is still staged: approve it on npmjs.com, then re-run this job."
+        exit 1
+
     - name: Tag and release
       env:
         GH_TOKEN: ${{ github.token }}
