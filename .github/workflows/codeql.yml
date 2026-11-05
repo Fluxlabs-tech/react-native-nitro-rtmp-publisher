@@ -1,9 +1,11 @@
 name: CodeQL
 
-# Advanced setup, replacing GitHub's default setup: Kotlin has no build-free
-# extraction (default setup failed with "No Java/Kotlin code found"), so the
-# java-kotlin job compiles the Android library as a module of the example app.
-# JavaScript/TypeScript and C/C++ are analyzed without a build.
+# Advanced setup, replacing GitHub's default setup, which can't analyze this
+# repository's compiled code: Kotlin and Swift have no build-free extraction
+# (default setup failed on both). The java-kotlin job compiles the Android
+# library as a module of the example app, and the swift job builds the example
+# app for iOS on macOS. JavaScript/TypeScript, C/C++ and the GitHub Actions
+# workflows are analyzed without a build.
 on:
   push:
     branches: [main]
@@ -22,8 +24,8 @@ concurrency:
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     permissions:
       actions: read
       contents: read
@@ -34,10 +36,19 @@ jobs:
         include:
           - language: javascript-typescript
             build-mode: none
+            os: ubuntu-latest
           - language: c-cpp
             build-mode: none
+            os: ubuntu-latest
+          - language: actions
+            build-mode: none
+            os: ubuntu-latest
           - language: java-kotlin
             build-mode: manual
+            os: ubuntu-latest
+          - language: swift
+            build-mode: manual
+            os: macos-26
     steps:
       - uses: actions/checkout@v7
 
@@ -55,13 +66,13 @@ jobs:
             package-lock.json
             example/package-lock.json
 
-      - if: matrix.build-mode == 'manual'
+      - if: matrix.language == 'java-kotlin'
         uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: 17
 
-      - if: matrix.build-mode == 'manual'
+      - if: matrix.language == 'java-kotlin'
         name: Build the Android library (Kotlin)
         run: |
           npm ci
@@ -74,6 +85,32 @@ jobs:
             -Pkotlin.compiler.execution.strategy=in-process \
             -PreactNativeArchitectures=arm64-v8a \
             :react-native-nitro-rtmp-publisher:compileDebugKotlin
+
+      - if: matrix.language == 'swift'
+        name: Build the iOS library (Swift)
+        run: |
+          npm ci
+          npm ci --prefix example
+          (cd example && npx expo prebuild --platform ios --no-install)
+          cd example/ios
+          pod install
+          # CodeQL traces the Swift compiler through this build of the example
+          # app, which compiles the library: Debug, for a device, unsigned.
+          # The JavaScript bundle, the index and explicit modules aren't needed
+          # for the analysis.
+          xcodebuild -workspace example.xcworkspace \
+            -scheme example \
+            -configuration Debug \
+            -destination generic/platform=iOS \
+            -quiet \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_ENTITLEMENTS="" \
+            CODE_SIGNING_ALLOWED=NO \
+            SKIP_BUNDLING=1 \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            SWIFT_ENABLE_EXPLICIT_MODULES=NO \
+            build
 
       - uses: github/codeql-action/analyze@v4
         with:
