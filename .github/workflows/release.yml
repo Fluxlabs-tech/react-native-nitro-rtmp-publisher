@@ -1,0 +1,198 @@
+name: Release
+
+# Publishes the package when main's package.json has a version that isn't on
+# npm yet and the commit builds: the package itself, the Android example and the
+# iOS example. Then tags the commit and creates the GitHub release. npm accepts
+# the publish through trusted publishing (OIDC): the package's settings on
+# npmjs.com trust this file, release.yml, in the npm environment, so no npm
+# token is stored.
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'package.json'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    name: Check npm for the version
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    - id: version
+      name: Look the version up
+      run: |
+        version=$(jq -r .version package.json)
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        if [ "$(npm view "$(jq -r .name package.json)@$version" version 2>/dev/null)" = "$version" ]; then
+          echo "::notice::$version is on npm already, nothing to publish."
+          echo "publish=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+        fi
+
+  build:
+    name: Build
+    needs: check
+    if: needs.check.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version-file: '.nvmrc'
+        package-manager-cache: false
+
+    - name: Install node modules
+      run: npm ci --ignore-scripts
+
+    # tsc typechecks and builds lib/, and nitrogen regenerates nitrogen/. npm
+    # pack doesn't run prepublishOnly, and publishing a tarball runs no
+    # scripts, so the build runs here.
+    - name: Build
+      run: npm run build
+
+    # The package must be what's committed: the bindings in nitrogen/ have to
+    # be the ones the specs generate.
+    - name: Check the build left the tree clean
+      run: |
+        if [ -n "$(git status --porcelain)" ]; then
+          echo "::error::The build changed committed files. Run 'npm run build' and commit nitrogen/."
+          git status --short
+          exit 1
+        fi
+
+    - name: Pack
+      run: npm pack
+
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: package
+        path: '*.tgz'
+        if-no-files-found: error
+
+  # Android CI and iOS CI, run again on this commit, so that nothing is published
+  # from a commit whose example app doesn't build.
+  android:
+    name: Android CI
+    needs: check
+    if: needs.check.outputs.publish == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/android_ci.yml
+
+  ios:
+    name: iOS CI
+    needs: check
+    if: needs.check.outputs.publish == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ios_ci.yml
+
+  publish:
+    name: Publish to npm
+    needs: [ check, build, android, ios ]
+    runs-on: ubuntu-latest
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/react-native-nitro-rtmp-publisher/v/${{ needs.check.outputs.version }}
+    permissions:
+      id-token: write
+    steps:
+    # Trusted publishing needs npm 11.5.1 or later, and Node 22 comes with npm 10.
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: 24
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: package
+
+    - name: Publish
+      env:
+        VERSION: ${{ needs.check.outputs.version }}
+      run: |
+        # A prerelease such as 1.1.0-beta.0 goes out as "next", so that an install
+        # without a version keeps getting the latest stable release.
+        case "$VERSION" in
+          *-*) tag=next ;;
+          *) tag=latest ;;
+        esac
+        npm publish ./*.tgz --access public --provenance --tag "$tag"
+
+  release:
+    name: Create the GitHub release
+    needs: [ check, publish ]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+    - name: Tag and release
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+        VERSION: ${{ needs.check.outputs.version }}
+      run: |
+        tag="v$VERSION"
+        if gh release view "$tag" > /dev/null 2>&1; then
+          echo "::notice::$tag has a release already."
+          exit 0
+        fi
+
+        # The latest release so far, for the changelog link.
+        previous=$(gh release view --json tagName --jq .tagName 2> /dev/null || true)
+
+        title="$tag"
+        flags=(--target "$GITHUB_SHA")
+        case "$VERSION" in
+          *-*) flags+=(--prerelease) ;;
+        esac
+
+        # The pull request that changed the version gives the release its title,
+        # when that starts with the tag ("v1.2.3: ..."), and its notes: the
+        # description up to its test plan, then links to the pull request and
+        # to the changes since the previous release.
+        commit=$(gh api "repos/$GH_REPO/commits?sha=$GITHUB_SHA&path=package.json&per_page=1" --jq '.[0].sha')
+        pr=$(gh api "repos/$GH_REPO/commits/$commit/pulls" --jq '.[0].number // empty')
+        if [ -n "$pr" ]; then
+          pr_title=$(gh pr view "$pr" --json title --jq .title)
+          case "$pr_title" in
+            "$tag"[!0-9]*) title=$pr_title ;;
+          esac
+          body=$(gh pr view "$pr" --json body --jq .body | awk '{ sub(/\r$/, "") } /^## Test/ || /^🤖 Generated with/ { done = 1 } !done')
+          {
+            printf '%s\n\n**Pull request:** #%s' "$body" "$pr"
+            if [ -n "$previous" ]; then
+              printf ' · **Full changelog:** https://github.com/%s/compare/%s...%s' "$GH_REPO" "$previous" "$tag"
+            fi
+            printf '\n'
+          } > notes.md
+          flags+=(--notes-file notes.md)
+        else
+          flags+=(--generate-notes)
+        fi
+
+        gh release create "$tag" "${flags[@]}" --title "$title"
