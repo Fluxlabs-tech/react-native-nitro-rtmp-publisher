@@ -1,0 +1,55 @@
+name: CI
+
+# Builds the package on every pull request, checks that the Nitrogen bindings
+# committed in nitrogen/ are the ones the specs in src/ generate, and
+# typechecks the example app.
+
+on:
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Typecheck and build
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        persist-credentials: false
+    - uses: actions/setup-node@v7
+      with:
+        node-version-file: '.nvmrc'
+        cache: 'npm'
+        cache-dependency-path: |
+          package-lock.json
+          example/package-lock.json
+
+    - name: Install node modules
+      run: npm ci
+
+    # tsc typechecks and builds lib/, and nitrogen regenerates nitrogen/.
+    - name: Build
+      run: npm run build
+
+    # lib/ is ignored by git, so the build only changes the tree when the
+    # committed bindings are stale: a spec in src/ changed without them.
+    - name: Check the build left the tree clean
+      run: |
+        if [ -n "$(git status --porcelain)" ]; then
+          echo "::error::The build changed committed files. Run 'npm run build' and commit nitrogen/."
+          git status --short
+          git diff
+          exit 1
+        fi
+
+    - name: Install example node modules
+      run: npm ci
+      working-directory: example
+
+    # The example takes the library's types from lib/, built above.
+    - name: Typecheck the example
+      run: npx tsc --noEmit
+      working-directory: example

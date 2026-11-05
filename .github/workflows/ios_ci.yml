@@ -1,0 +1,69 @@
+name: iOS CI
+
+# Builds the example app for iOS, which compiles the library's Swift and C++
+# and HaishinKit with it. Release calls this workflow too, on the commit it
+# publishes.
+
+on:
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - '**.md'
+  pull_request:
+    branches: [ main ]
+    paths-ignore:
+      - '**.md'
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  ios-compile:
+    name: Build the example
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        persist-credentials: false
+    - uses: actions/setup-node@v7
+      with:
+        node-version-file: '.nvmrc'
+        cache: 'npm'
+        cache-dependency-path: |
+          package-lock.json
+          example/package-lock.json
+
+    - name: Install node modules
+      run: npm ci
+
+    - name: Install example node modules
+      run: npm ci
+      working-directory: example
+
+    # example/ios isn't committed. Prebuild generates it, and the library's
+    # config plugin adds the vendored HaishinKit podspecs to its Podfile.
+    - name: Generate the example's native project
+      run: npx expo prebuild --platform ios --no-install
+      working-directory: example
+
+    - name: Pod install
+      run: pod install
+      working-directory: example/ios
+
+    # Debug, for a device, without signing. A build for a device also bundles
+    # the JavaScript with Metro.
+    - name: Compile the example
+      working-directory: example/ios
+      run: |
+        xcodebuild -workspace example.xcworkspace \
+          -scheme example \
+          -configuration Debug \
+          -destination generic/platform=iOS \
+          -quiet \
+          CODE_SIGN_IDENTITY="" \
+          CODE_SIGNING_REQUIRED=NO \
+          CODE_SIGN_ENTITLEMENTS="" \
+          CODE_SIGNING_ALLOWED=NO \
+          build
