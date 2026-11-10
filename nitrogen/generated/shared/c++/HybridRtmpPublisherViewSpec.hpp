@@ -33,6 +33,7 @@ namespace margelo::nitro::rtmppublisher { enum class RecordStatus; }
 namespace margelo::nitro::rtmppublisher { enum class RtmpConnectionEvent; }
 
 #include "VideoCodec.hpp"
+#include <optional>
 #include "AudioCodec.hpp"
 #include "AspectRatioMode.hpp"
 #include "ThermalStatus.hpp"
@@ -76,6 +77,8 @@ namespace margelo::nitro::rtmppublisher {
       virtual void setForceHardwareCodec(bool forceHardwareCodec) = 0;
       virtual VideoCodec getVideoCodec() = 0;
       virtual void setVideoCodec(VideoCodec videoCodec) = 0;
+      virtual std::optional<bool> getLowLatencyRateControl() = 0;
+      virtual void setLowLatencyRateControl(std::optional<bool> lowLatencyRateControl) = 0;
       virtual AudioCodec getAudioCodec() = 0;
       virtual void setAudioCodec(AudioCodec audioCodec) = 0;
       virtual AspectRatioMode getAspectRatioMode() = 0;

@@ -110,6 +110,12 @@ using namespace margelo::nitro::rtmppublisher::views;
           : !newViewProps.videoCodec.hasSameValue(oldViewProps->videoCodec)) {
       swiftPart.setVideoCodec(static_cast<int>(newViewProps.videoCodec.get()));
     }
+    // lowLatencyRateControl: optional
+    if (oldViewProps == nullptr
+          ? newViewProps.lowLatencyRateControl.isProvided()
+          : !newViewProps.lowLatencyRateControl.hasSameValue(oldViewProps->lowLatencyRateControl)) {
+      swiftPart.setLowLatencyRateControl(newViewProps.lowLatencyRateControl.get());
+    }
     // audioCodec: enum
     if (oldViewProps == nullptr
           ? newViewProps.audioCodec.isProvided()

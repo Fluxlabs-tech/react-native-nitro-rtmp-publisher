@@ -638,21 +638,99 @@ extension HybridRtmpPublisherView {
       }
       settings.bitRate = bitrate
       settings.maxKeyFrameIntervalDuration = Int32(cfg.iFrameInterval)
-      // The frame rate, so VideoToolbox need not estimate it. With only the 2 s
-      // cap set, iOS 27 keyed every 32-33 frames (~1.1 s) at 30 fps where iOS 26
-      // keyed every 59, and iOS viewers dropped frames in twice as many
-      // sessions (Zoop lives, 2-3 Nov 2026).
+      // A rate-control and power hint. It doesn't change where iOS 27 puts
+      // keyframes (1.0.3 set it for that; see the low-latency note below).
       settings.expectedFrameRate = Double(cfg.fps)
       settings.scalingMode = .trim
       if self.videoCodec == .h265 {
         settings.profileLevel = kVTProfileLevel_HEVC_Main_AutoLevel as String
+        settings.isLowLatencyRateControlEnabled = false
       } else {
         settings.profileLevel = kVTProfileLevel_H264_Baseline_AutoLevel as String
+        // Low-latency rate control, unless JS turned it off. In the normal
+        // mode the SPS allows 32 frame numbers, and iOS 27 starts a keyframe
+        // each time they wrap: every 32 frames (~1.07 s at 30 fps), where iOS
+        // 26 keeps the 2 s cap. Zoop lives of 2-10 Nov 2026 from iOS 27 iPhones
+        // carried 56 keyframes a minute instead of 30, and iOS viewers dropped
+        // frames in 75-91% of sessions instead of 38-51%. Low-latency mode
+        // allows 4096 frame numbers, so frame_num never wraps inside a GOP and
+        // the cap holds again; its keyframes are about half the size too.
+        var lowLatency = false
+        if self.lowLatencyRateControl ?? true {
+          let status = Self.lowLatencyH264Status(
+            width: encodedWidth,
+            height: encodedHeight,
+            bitRate: bitrate,
+            maxKeyFrameIntervalDuration: Int32(cfg.iFrameInterval)
+          )
+          lowLatency = status == noErr
+          if !lowLatency {
+            self.log("low-latency H.264 encoder unavailable (\(status)), using normal rate control")
+          }
+        }
+        settings.isLowLatencyRateControlEnabled = lowLatency
       }
       try? await self.stream.setVideoSettings(settings)
       try? await self.mixer.setFrameRate(Float64(cfg.fps))
       await self.mixer.setVideoOrientation(orientation)
     }
+  }
+
+  /// Sizes ("WxH") where a low-latency H.264 session was built and prepared.
+  /// Read and written only under `lowLatencyH264Lock`.
+  private static var lowLatencyH264Sizes = Set<String>()
+  private static let lowLatencyH264Lock = NSLock()
+
+  /// Builds a throwaway low-latency H.264 session, configured the way
+  /// HaishinKit 2.2.5 configures the stream's (its internal
+  /// `VideoCodecSettings.makeOptions`), and returns `noErr` or the first
+  /// failure. HaishinKit has no fallback: a session it can't build or prepare
+  /// fails again on every frame and the stream goes out with no video. So the
+  /// publisher turns the mode on only where this check passes. A pass is kept
+  /// per size. A failure is retried at the next configure, in case it was
+  /// transient (an app in the background, say).
+  static func lowLatencyH264Status(
+    width: Int, height: Int, bitRate: Int, maxKeyFrameIntervalDuration: Int32
+  ) -> OSStatus {
+    let size = "\(width)x\(height)"
+    lowLatencyH264Lock.lock()
+    defer { lowLatencyH264Lock.unlock() }
+    if lowLatencyH264Sizes.contains(size) { return noErr }
+
+    var session: VTCompressionSession?
+    var status = VTCompressionSessionCreate(
+      allocator: kCFAllocatorDefault,
+      width: Int32(width),
+      height: Int32(height),
+      codecType: kCMVideoCodecType_H264,
+      encoderSpecification: [
+        kVTVideoEncoderSpecification_EnableLowLatencyRateControl: true
+      ] as CFDictionary,
+      imageBufferAttributes: nil,
+      compressedDataAllocator: nil,
+      outputCallback: nil,
+      refcon: nil,
+      compressionSessionOut: &session
+    )
+    guard status == noErr, let session else { return status }
+    defer { VTCompressionSessionInvalidate(session) }
+    let properties: [CFString: Any] = [
+      kVTCompressionPropertyKey_RealTime: true,
+      kVTCompressionPropertyKey_ProfileLevel: kVTProfileLevel_H264_Baseline_AutoLevel,
+      kVTCompressionPropertyKey_AverageBitRate: bitRate,
+      kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration: maxKeyFrameIntervalDuration,
+      kVTCompressionPropertyKey_AllowFrameReordering: false,
+      kVTCompressionPropertyKey_PixelTransferProperties: [
+        kVTPixelTransferPropertyKey_ScalingMode: kVTScalingMode_Trim
+      ],
+      kVTCompressionPropertyKey_DataRateLimits: [Double(bitRate) / 8 * 1.5, 1.0],
+    ]
+    status = VTSessionSetProperties(session, propertyDictionary: properties as CFDictionary)
+    guard status == noErr else { return status }
+    status = VTCompressionSessionPrepareToEncodeFrames(session)
+    guard status == noErr else { return status }
+    lowLatencyH264Sizes.insert(size)
+    return noErr
   }
 
   func applyAudioSettings() {

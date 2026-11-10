@@ -109,6 +109,25 @@ export interface RtmpPublisherViewProps extends HybridViewProps {
   videoCodec: VideoCodec
 
   /**
+   * **iOS only.** Encode H.264 with VideoToolbox's low-latency rate control
+   * (`kVTVideoEncoderSpecification_EnableLowLatencyRateControl`).
+   *
+   * In the normal mode, iOS 27 starts a keyframe every time the H.264 frame
+   * counter wraps, which it does every 32 frames (about once a second at
+   * 30 fps), whatever `iFrameInterval` asks for. Each keyframe is about 4× a
+   * normal frame. Low-latency mode counts to 4096, so the `iFrameInterval`
+   * from `prepareVideo` holds again, and its keyframes are about half the
+   * size.
+   *
+   * If the device can't build a low-latency encoder for the stream's size and
+   * bitrate, the publisher keeps the normal mode. H.265 always uses the normal
+   * mode. A change made while streaming applies the next time the encoder is
+   * configured (`prepareVideo`, `resetVideoEncoder`, a reconnect).
+   * @default true
+   */
+  lowLatencyRateControl?: boolean
+
+  /**
    * Audio codec used by the encoder. RTMP requires AAC.
    * @default 'aac'
    */

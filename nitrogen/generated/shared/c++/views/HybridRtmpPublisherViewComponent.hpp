@@ -18,6 +18,7 @@
 #include <string>
 
 #include "VideoCodec.hpp"
+#include <optional>
 #include "AudioCodec.hpp"
 #include "AspectRatioMode.hpp"
 #include "ThermalStatus.hpp"
@@ -27,7 +28,6 @@
 #include <memory>
 #include "HybridRtmpPublisherViewSpec.hpp"
 #include <functional>
-#include <optional>
 
 namespace margelo::nitro::rtmppublisher::views {
 
@@ -51,6 +51,7 @@ namespace margelo::nitro::rtmppublisher::views {
   public:
     nitro::ReactProp<bool> forceHardwareCodec;
     nitro::ReactProp<VideoCodec> videoCodec;
+    nitro::ReactProp<std::optional<bool>> lowLatencyRateControl;
     nitro::ReactProp<AudioCodec> audioCodec;
     nitro::ReactProp<AspectRatioMode> aspectRatioMode;
     nitro::ReactProp<bool> mirrorPreview;
@@ -70,6 +71,7 @@ namespace margelo::nitro::rtmppublisher::views {
     bool hasSameProps(const HybridRtmpPublisherViewProps& other) const noexcept {
       return forceHardwareCodec.hasSameValue(other.forceHardwareCodec) &&
              videoCodec.hasSameValue(other.videoCodec) &&
+             lowLatencyRateControl.hasSameValue(other.lowLatencyRateControl) &&
              audioCodec.hasSameValue(other.audioCodec) &&
              aspectRatioMode.hasSameValue(other.aspectRatioMode) &&
              mirrorPreview.hasSameValue(other.mirrorPreview) &&
@@ -90,6 +92,7 @@ namespace margelo::nitro::rtmppublisher::views {
     bool hasAnyProvidedProps() const noexcept {
       return forceHardwareCodec.isProvided() ||
              videoCodec.isProvided() ||
+             lowLatencyRateControl.isProvided() ||
              audioCodec.isProvided() ||
              aspectRatioMode.isProvided() ||
              mirrorPreview.isProvided() ||

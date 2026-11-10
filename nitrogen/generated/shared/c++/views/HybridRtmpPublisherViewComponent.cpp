@@ -22,6 +22,7 @@ namespace margelo::nitro::rtmppublisher::views {
     react::ViewProps(context, sourceProps, rawProps, filterObjectKeys),
     forceHardwareCodec(nitro::ReactProp<bool>::fromRawValue("RtmpPublisherView", "forceHardwareCodec", rawProps, sourceProps.forceHardwareCodec)),
     videoCodec(nitro::ReactProp<VideoCodec>::fromRawValue("RtmpPublisherView", "videoCodec", rawProps, sourceProps.videoCodec)),
+    lowLatencyRateControl(nitro::ReactProp<std::optional<bool>>::fromRawValue("RtmpPublisherView", "lowLatencyRateControl", rawProps, sourceProps.lowLatencyRateControl)),
     audioCodec(nitro::ReactProp<AudioCodec>::fromRawValue("RtmpPublisherView", "audioCodec", rawProps, sourceProps.audioCodec)),
     aspectRatioMode(nitro::ReactProp<AspectRatioMode>::fromRawValue("RtmpPublisherView", "aspectRatioMode", rawProps, sourceProps.aspectRatioMode)),
     mirrorPreview(nitro::ReactProp<bool>::fromRawValue("RtmpPublisherView", "mirrorPreview", rawProps, sourceProps.mirrorPreview)),
@@ -41,6 +42,7 @@ namespace margelo::nitro::rtmppublisher::views {
     switch (hashString(propName)) {
       case hashString("forceHardwareCodec"): return true;
       case hashString("videoCodec"): return true;
+      case hashString("lowLatencyRateControl"): return true;
       case hashString("audioCodec"): return true;
       case hashString("aspectRatioMode"): return true;
       case hashString("mirrorPreview"): return true;

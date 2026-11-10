@@ -423,12 +423,13 @@ end
 
 ## Props
 
-All props are required (set them once in JSX; runtime mutations are honored where the underlying platform supports it).
+All props except `lowLatencyRateControl` are required (set them once in JSX; runtime mutations are honored where the underlying platform supports it).
 
 | Prop                  | Type                                  | Default     | Description |
 |-----------------------|---------------------------------------|-------------|-------------|
 | `forceHardwareCodec`  | `boolean`                             | `true`      | **Android-meaningful** — pin both `MediaCodec` encoders to HARDWARE. Silent no-op on iOS (always uses VideoToolbox HW). |
 | `videoCodec`          | `'h264' \| 'h265' \| 'av1'`           | `'h264'`    | RTMP servers almost always require H.264. iOS supports `h264`/`h265`; Android adds `av1`. |
+| `lowLatencyRateControl` | `boolean` (optional)                | `true`      | **iOS-only.** Encode H.264 with VideoToolbox's low-latency rate control. In the normal mode iOS 27 adds a keyframe every 32 frames (about once a second at 30 fps), whatever `iFrameInterval` asks for; low-latency mode keeps `iFrameInterval` and makes keyframes about half the size. Falls back to the normal mode where the device can't build the encoder. H.265 always uses the normal mode. Ignored on Android. |
 | `audioCodec`          | `'aac' \| 'g711' \| 'opus'`           | `'aac'`     | RTMP standard is AAC. Other values are accepted for API parity but only AAC actually publishes over RTMP on iOS. |
 | `aspectRatioMode`     | `'fill' \| 'adjust' \| 'none'`        | `'adjust'`  | How the preview maps onto the view bounds. |
 | `mirrorPreview`       | `boolean`                             | `false`     | Controls the **publisher (on-screen) view only**. On front camera, `true` = "viewer's perspective" (raise left → see right side of screen), `false` = selfie-mirror view. On back camera, the value applies literally as a horizontal flip. |

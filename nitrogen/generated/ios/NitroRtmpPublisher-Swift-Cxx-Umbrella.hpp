@@ -44,6 +44,7 @@ namespace margelo::nitro::rtmppublisher { enum class VideoCodec; }
 #include <exception>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 

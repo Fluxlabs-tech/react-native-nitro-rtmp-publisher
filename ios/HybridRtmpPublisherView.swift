@@ -575,6 +575,14 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     }
   }
 
+  /// `nil` (not passed from JS) means on. See `applyVideoSettings`.
+  var lowLatencyRateControl: Bool? {
+    didSet {
+      guard lowLatencyRateControl != oldValue, !cachedIsStreaming else { return }
+      applyVideoSettings()
+    }
+  }
+
   var audioCodec: AudioCodec = .aac {
     didSet {
       guard audioCodec != oldValue, !cachedIsStreaming else { return }
