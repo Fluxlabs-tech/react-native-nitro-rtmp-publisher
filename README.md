@@ -94,7 +94,7 @@ yarn add  react-native-nitro-rtmp-publisher react-native-nitro-modules
 | `react-native-nitro-modules` | **0.37 or newer** — the bundled Nitrogen bindings are generated with Nitrogen 0.37 and use View-component headers that older Nitro versions don't ship |
 | React Native | New Architecture (Fabric). Tested on React Native 0.88 / Expo SDK 58, which the example app runs on |
 | iOS | 15+ |
-| Android | `minSdkVersion` 21+, Kotlin 2.2+ (React Native 0.88 or later) |
+| Android | React Native 0.88 or later, which brings Kotlin 2.2 and `minSdkVersion` 24 |
 
 > **Upgrading from 1.x?** 2.0 changes how iOS links HaishinKit. Read [How HaishinKit is linked](#how-haishinkit-is-linked) first: an app built with static frameworks can't use 2.0. The `VideoCodec` type is now `RtmpVideoCodec`; the old name still works as an alias. `legacyRtmpCompatibility` moved from a config-plugin option to a prop on the view. On Android, 2.0 needs a Kotlin 2.2 compiler (React Native 0.88 or later).
 
@@ -169,7 +169,7 @@ If you want streaming to continue while the user briefly backgrounds the app, al
 </array>
 ```
 
-**Minimum**: iOS 15 (HaishinKit 2.x requirement). **Xcode**: 15+ recommended. If you need iOS 13/14 support, pin to v0.3.x of this package (HaishinKit 1.9.x).
+**Minimum**: iOS 15 (HaishinKit 2.x requirement); an app on React Native 0.88 targets iOS 15.1 or later. **Xcode**: 16.1 or later, which React Native 0.88 requires. If you need iOS 13/14 support, pin to v0.3.x of this package (HaishinKit 1.9.x).
 
 ### How HaishinKit is linked
 
@@ -197,7 +197,7 @@ The library declares `CAMERA`, `RECORD_AUDIO`, `INTERNET`, `ACCESS_NETWORK_STATE
 
 You still need to request runtime permissions before mounting the view (see [Permissions](#permissions)).
 
-**Minimum**: `minSdkVersion` 21. **Kotlin**: 2.2 or later, which React Native 0.88 ships. RootEncoder 2.8 brings in a Kotlin 2.3 standard library, and an older compiler stops with "Module was compiled with an incompatible version of Kotlin".
+**Minimum**: `minSdkVersion` 24, which is React Native 0.88's own minimum. **Kotlin**: 2.2 or later, which React Native 0.88 ships. RootEncoder 2.8 brings in a Kotlin 2.3 standard library, and an older compiler stops with "Module was compiled with an incompatible version of Kotlin".
 
 ---
 
@@ -1027,7 +1027,7 @@ On iOS, audio continues if you declare `UIBackgroundModes: ["audio"]`; the video
 
 ### What's the minimum iOS and Android version?
 
-iOS 15+ (HaishinKit 2.x requirement) and Android `minSdkVersion` 21 with Kotlin 2.2+. For iOS 13 / 14, pin to `v0.3.x` of this package (HaishinKit 1.9.x).
+iOS 15+ (HaishinKit 2.x requirement), and on Android `minSdkVersion` 24 with Kotlin 2.2+, which is what React Native 0.88 sets. For iOS 13 / 14, pin to `v0.3.x` of this package (HaishinKit 1.9.x).
 
 ### How does this compare to other React Native RTMP libraries?
 
