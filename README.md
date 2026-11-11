@@ -1042,8 +1042,8 @@ Video: H.264 (AVC) and H.265 (HEVC) — both hardware-encoded via `VideoToolbox`
 ## Acknowledgements
 
 - [Nitro Modules](https://github.com/mrousavy/nitro) by Marc Rousavy — the JSI codegen that makes the typed bridge possible
-- [RootEncoder](https://github.com/pedroSG94/RootEncoder) by Pedro Sánchez — Android RTMP runtime (2.8.2, straight from upstream; 1.x used a Fluxlabs-tech fork of 2.6.1 that added TLS SNI, which upstream has sent since 2.7.3)
-- [HaishinKit.swift](https://github.com/HaishinKit/HaishinKit.swift) by Shogo Endo — iOS RTMP runtime
+- [RootEncoder](https://github.com/pedroSG94/RootEncoder) by Pedro Sánchez — Android RTMP runtime (2.8.2, the upstream release)
+- [HaishinKit.swift](https://github.com/HaishinKit/HaishinKit.swift) by Shogo Endo — iOS RTMP runtime (2.3.0, as a Swift package)
 
 ---
 
