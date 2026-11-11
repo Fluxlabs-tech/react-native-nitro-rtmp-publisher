@@ -777,7 +777,15 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     }
   }
 
-  internal val camera: RtmpCamera2 = RtmpCamera2(openGlView, connectChecker)
+  internal val camera: RtmpCamera2 = RtmpCamera2(openGlView, connectChecker).apply {
+    // RTMPS: also check that the certificate was issued for the host in the URL.
+    // RootEncoder's Java sockets check the certificate chain, but leave this
+    // second check off unless asked. Without it, anyone on the network path
+    // holding a valid certificate for any other host could accept the stream
+    // and read its stream key. The Fluxlabs fork this replaced did check (Ktor
+    // does once it is given the server name), and so does iOS.
+    streamClient.setTlsHostVerification(true)
+  }
 
   // ─── Picture-in-Picture ───────────────────────────────────────────────────
   // System PIP is a per-Activity concept, so the library observes the host

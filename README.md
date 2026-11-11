@@ -870,6 +870,7 @@ Same JS API, same behavior — but worth knowing exactly where the platforms dif
 | Encoder | VideoToolbox | MediaCodec |
 | Preview | HaishinKit MTHKView (Metal) | OpenGlView (OpenGL ES) |
 | RTMP transport | HaishinKit | RootEncoder |
+| RTMPS certificate | Chain and host name checked (Network.framework defaults) | Chain and host name checked (RootEncoder's Java sockets; the library switches the host-name check on) |
 | Video codecs | H.264, HEVC | H.264, HEVC, AV1 |
 | Audio codec | AAC only (RTMP) | AAC (G.711, Opus accepted but RTMP-incompatible) |
 | Adaptive bitrate signal | Send-queue backlog (`queueBytesOut`, bytes) | Send-queue backlog (queued frames → seconds) |
@@ -955,6 +956,7 @@ Knobs that move CPU/GPU usage:
 | Android: `surface destroyed` → reconnect loop (0 fps), happens in your app but not the example | The preview is a native `SurfaceView`, and **React Native view-flattening reparents it** when a layout-only `<View>` ancestor re-flattens on re-render (common in frequently re-rendering screens, e.g. a MobX `observer`). Reparenting a SurfaceView destroys its surface, which the library reports as `surface destroyed` and auto-resumes — looping. | Add **`collapsable={false}`** to every layout-only `<View>` wrapping the publisher (or keep the publisher high and flat in the tree, like the example). iOS is unaffected (its preview isn't a SurfaceView). |
 | Output stream lands in landscape after a few seconds | `prepareVideo` called after `startPreview`; encoder rotation latched late | Call `prepareVideo` + `prepareAudio` **before** `startPreview` |
 | Output is upside down | Rotation applied twice | Pick one source of truth: either pass `rotation` to `prepareVideo` OR drive `setStreamRotation` from an orientation observer, not both |
+| `rtmps://` never connects; the event message mentions the certificate (Android: `No subjectAltNames on the certificate match`) | The server's certificate isn't issued for the host in the URL, for example the URL uses an IP address or an internal name | Use the host name the certificate lists, or reissue the certificate with that name or IP address as a subject alternative name |
 | Audio missing from stream (Android) | `prepareAudio` ran without `RECORD_AUDIO` permission granted | Call `requestRtmpPermissions()` and only mount the view after `granted === true` |
 | White screen on real iOS device with embedded JS bundle | Hermes inspector tries to open devtools WebSocket in `__DEV__` mode | Build with `--dev false` for the embedded bundle, or use Metro over Wi-Fi |
 | `Unable to resolve module ./index` from Metro | The package symlink resolves recursively into `example/` | Use `metro.config.js` with a `blockList` regex for the example path |
@@ -996,6 +998,8 @@ After changing the spec, run `npm run specs` from the repo root to regenerate th
 ### Does this support RTMPS for Facebook Live and Instagram Live?
 
 Yes. RTMPS (RTMP over TLS) works out of the box — Facebook Live's `rtmps://…fbcdn.net:443/rtmp/…` URLs and Instagram Live's signed `rtmps://` ingest URLs both connect and publish without extra configuration. Just pass the URL to `startStream`.
+
+On both platforms the server's certificate has to be valid **and** issued for the host name in the URL, as in a browser. A certificate for another host is refused, so an `rtmps://` URL that uses a bare IP address only works when the certificate lists that address.
 
 ### Can I stream to YouTube Live, Twitch, or any custom RTMP server?
 
