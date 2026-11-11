@@ -91,11 +91,11 @@
     "node": ">=18"
   },
   "devDependencies": {
-    "@expo/config-plugins": "~57.0.10",
+    "@expo/config-plugins": "~58.0.13",
     "@types/react": "^19.1.0",
     "nitrogen": "*",
-    "react": "19.2.3",
-    "react-native": "0.86.3",
+    "react": "19.3.0",
+    "react-native": "0.88.1",
     "react-native-nitro-modules": "*",
     "typescript": "^5.8.3"
   },

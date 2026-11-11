@@ -92,7 +92,7 @@ yarn add  react-native-nitro-rtmp-publisher react-native-nitro-modules
 | | |
 |---|---|
 | `react-native-nitro-modules` | **0.37 or newer** — the bundled Nitrogen bindings are generated with Nitrogen 0.37 and use View-component headers that older Nitro versions don't ship |
-| React Native | New Architecture (Fabric). Tested on React Native 0.86 / Expo SDK 57 and on React Native 0.88 / Expo SDK 58 |
+| React Native | New Architecture (Fabric). Tested on React Native 0.88 / Expo SDK 58, which the example app runs on |
 | iOS | 15+ |
 | Android | `minSdkVersion` 21+, Kotlin 2.2+ (React Native 0.88 or later) |
 
@@ -182,7 +182,7 @@ What your app needs:
 
 | App setup | Status |
 |---|---|
-| No `use_frameworks!` (static libraries, the React Native default) | Works. Tested with React Native 0.86 (Expo SDK 57); not yet tested on 0.88. |
+| No `use_frameworks!` (static libraries, the React Native default) | Works. The example app is built this way, on React Native 0.88 (Expo SDK 58). |
 | Dynamic frameworks: `use_frameworks! :linkage => :dynamic`, or `ios.useFrameworks: "dynamic"` in `expo-build-properties` | Works. Tested with React Native 0.88 (Expo SDK 58). On Expo SDK 58, also set `ios.usePrecompiledModules: false` if the app has other Nitro modules. |
 | Static frameworks on Expo SDK 58 (`ios.useFrameworks: "static"`) | Doesn't build. Stay on 1.x, which vendors HaishinKit podspecs instead. |
 
@@ -974,7 +974,7 @@ src/permissions.ts # Cross-platform permission helper
 ios/               # Swift implementation
 android/src/       # Kotlin implementation
 nitrogen/generated # COMMITTED — regenerated via `npm run specs`
-example/           # Reference app (Expo SDK 57 / RN 0.86, @expo/ui controls)
+example/           # Reference app (Expo SDK 58 / RN 0.88, @expo/ui controls)
 ```
 
 To work on the library locally:
@@ -1011,11 +1011,11 @@ Yes. Multi-tenant RTMPS ingests like LiveKit Cloud put each tenant on a per-subd
 
 ### Does it work with Expo and EAS Build?
 
-Yes — managed and bare both (tested on Expo SDK 57). Add `"react-native-nitro-rtmp-publisher"` to your `app.json` plugins list and re-run `expo prebuild`; the bundled Expo config plugin handles the native setup. No need to eject. See [Install → iOS — Expo (one-liner)](#ios--expo-one-liner).
+Yes — managed and bare both (tested on Expo SDK 58). Add `"react-native-nitro-rtmp-publisher"` to your `app.json` plugins list and re-run `expo prebuild`; the bundled Expo config plugin handles the native setup. No need to eject. See [Install → iOS — Expo (one-liner)](#ios--expo-one-liner).
 
 ### Does this support the React Native New Architecture (Fabric)?
 
-Yes. Nitro Modules require the New Architecture — Fabric and TurboModules must be enabled. The view is a Fabric component end-to-end; legacy Paper is not supported. 1.0 is tested on React Native 0.86 with `react-native-nitro-modules` 0.37.
+Yes. Nitro Modules require the New Architecture — Fabric and TurboModules must be enabled. The view is a Fabric component end-to-end; legacy Paper is not supported. 2.0 is tested on React Native 0.88 with `react-native-nitro-modules` 0.37.
 
 ### Can I record locally to MP4 while streaming live?
 

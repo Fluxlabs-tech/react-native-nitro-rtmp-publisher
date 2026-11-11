@@ -328,7 +328,9 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <NavigationContainer>
-        <Stack.Navigator screenOptions={{ headerShown: false }}>
+        {/* On React Native 0.88 the top view controller sets the iOS status bar
+            style, and that is the native-stack screen: say it here. */}
+        <Stack.Navigator screenOptions={{ headerShown: false, statusBarStyle: 'light' }}>
           <Stack.Screen name="Stream" component={StreamScreen} />
           <Stack.Screen name="Second" component={SecondRoute} />
         </Stack.Navigator>
