@@ -92,7 +92,7 @@ yarn add  react-native-nitro-rtmp-publisher react-native-nitro-modules
 | | |
 |---|---|
 | `react-native-nitro-modules` | **0.37 or newer** — the bundled Nitrogen bindings are generated with Nitrogen 0.37 and use View-component headers that older Nitro versions don't ship |
-| React Native | New Architecture (Fabric). Tested on React Native 0.86 / Expo SDK 57 |
+| React Native | New Architecture (Fabric). Tested on React Native 0.86 / Expo SDK 57 and on React Native 0.88 / Expo SDK 58 |
 | iOS | 15+ |
 | Android | `minSdkVersion` 21+, Kotlin 2.2+ (React Native 0.88 or later) |
 
