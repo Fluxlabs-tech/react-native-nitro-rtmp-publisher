@@ -380,7 +380,7 @@ One difference from HaishinKit's own sequence: the two commands now follow `crea
 
 **Why it's opt-in / off by default.** Most ingests connect fine with HaishinKit's own sequence, so the publisher keeps it unless you ask. Enable it **only** if you publish to Agora RTLS or another legacy FMS/FMLE-style server that's slow to connect on iOS.
 
-> In 1.x this was a config-plugin option, `ios.legacyRtmpCompatibility`, that patched HaishinKit's source at `pod install`. That option does nothing now, and the plugin warns if it is still set.
+> In 1.x this was a config-plugin option, `ios.legacyRtmpCompatibility`, that patched HaishinKit's source at `pod install`. That option is gone: the plugin ignores it, so move it to the prop.
 
 ### How to enable it
 

@@ -68,20 +68,12 @@
 // the "Foreground services" form. The trade-off is that streams cannot
 // survive backgrounding on Android 14+. See README.md.
 //
-// `legacyRtmpCompatibility` is no longer a plugin option: since 2.0 it is a
-// prop on RtmpPublisherView, and passing it here only prints a warning. With
-// the prop on, the publisher sends the FMLE releaseStream/FCPublish commands
-// itself, without waiting for replies. Without it, publishing to legacy Flash-Media-
-// Server-style ingests (e.g. Agora RTLS, fmsVer FMS/3,0,1,123) stalls ~15s
-// because those servers never reply to those commands and HaishinKit awaits
-// them before sending createStream. Most ingests (YouTube, Twitch,
-// Facebook/Instagram, OBS-relay, Wowza) don't need it, so it's off by
-// default. Harmless when enabled against modern servers. See README.md.
+// `legacyRtmpCompatibility` is not a plugin option any more. Since 2.0 it is a
+// prop on RtmpPublisherView (see README.md), and the plugin ignores it here.
 //
 
 const {
   AndroidConfig,
-  WarningAggregator,
   withAndroidManifest,
   withDangerousMod,
   withGradleProperties,
@@ -238,23 +230,6 @@ const withAndroidPictureInPicture = (config, { enablePictureInPicture } = {}) =>
   });
 };
 
-// `legacyRtmpCompatibility` was a plugin option in 1.x, where it patched
-// HaishinKit's source at pod install. Since 2.0 it is a prop on
-// RtmpPublisherView, read when a stream starts. An app that still passes the
-// option would silently lose the behaviour, so say so at prebuild.
-const withLegacyRtmpCompatibility = (
-  config,
-  { legacyRtmpCompatibility } = {}
-) => {
-  if (legacyRtmpCompatibility !== undefined) {
-    WarningAggregator.addWarningIOS(
-      PKG_NAME,
-      'The "legacyRtmpCompatibility" plugin option does nothing since 2.0. Pass the legacyRtmpCompatibility prop to RtmpPublisherView instead.'
-    );
-  }
-  return config;
-};
-
 const withRtmpPublisher = (config, props = {}) => {
   const { ios = {}, android = {}, ...common } = props;
   const iosProps = { ...common, ...ios };
@@ -265,7 +240,6 @@ const withRtmpPublisher = (config, props = {}) => {
   config = withIosPictureInPicture(config, iosProps);
   config = withFgsOptOut(config, androidProps);
   config = withAndroidPictureInPicture(config, androidProps);
-  config = withLegacyRtmpCompatibility(config, iosProps);
   return config;
 };
 
