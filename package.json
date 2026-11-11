@@ -1,6 +1,6 @@
 {
   "name": "react-native-nitro-rtmp-publisher",
-  "version": "1.0.4",
+  "version": "2.0.0",
   "description": "RTMP/RTMPS live streaming camera for React Native (iOS, Android, Expo). Hardware-accelerated H.264/HEVC, adaptive bitrate, auto-reconnect. Stream to YouTube Live, Facebook Live, Twitch, Instagram.",
   "main": "lib/index",
   "module": "lib/index",
@@ -19,7 +19,6 @@
     "android/src",
     "ios",
     "NitroRtmpPublisher.podspec",
-    "podspecs",
     "app.plugin.js",
     "plugin",
     "nitro.json",
@@ -92,11 +91,11 @@
     "node": ">=18"
   },
   "devDependencies": {
-    "@expo/config-plugins": "~57.0.10",
+    "@expo/config-plugins": "~58.0.13",
     "@types/react": "^19.1.0",
     "nitrogen": "*",
-    "react": "19.2.3",
-    "react-native": "0.86.3",
+    "react": "19.3.0",
+    "react-native": "0.88.1",
     "react-native-nitro-modules": "*",
     "typescript": "^5.8.3"
   },

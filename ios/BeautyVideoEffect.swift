@@ -38,7 +38,7 @@
 //   HaishinKit's SDR CIContext uses workingFormat = RGBAh (half-float) and
 //   workingColorSpace = ITU-R 709 — i.e. a LINEAR-light working space — and it
 //   color-manages the camera input into that space (see DynamicRangeMode +
-//   VideoTrackScreenObject in HaishinKit 2.2.5). The Android GLSL math, by
+//   VideoScreenObject in HaishinKit 2.3.0). The Android GLSL math, by
 //   contrast, runs on GAMMA-ENCODED display values. Running the pow()/hardLight/
 //   screen/softLight math directly on linear-light values drifts the look
 //   (darker, contrastier) vs Android.

@@ -20,6 +20,8 @@ namespace margelo::nitro::rtmppublisher {
       prototype.registerHybridSetter("videoCodec", &HybridRtmpPublisherViewSpec::setVideoCodec);
       prototype.registerHybridGetter("lowLatencyRateControl", &HybridRtmpPublisherViewSpec::getLowLatencyRateControl);
       prototype.registerHybridSetter("lowLatencyRateControl", &HybridRtmpPublisherViewSpec::setLowLatencyRateControl);
+      prototype.registerHybridGetter("legacyRtmpCompatibility", &HybridRtmpPublisherViewSpec::getLegacyRtmpCompatibility);
+      prototype.registerHybridSetter("legacyRtmpCompatibility", &HybridRtmpPublisherViewSpec::setLegacyRtmpCompatibility);
       prototype.registerHybridGetter("audioCodec", &HybridRtmpPublisherViewSpec::getAudioCodec);
       prototype.registerHybridSetter("audioCodec", &HybridRtmpPublisherViewSpec::setAudioCodec);
       prototype.registerHybridGetter("aspectRatioMode", &HybridRtmpPublisherViewSpec::getAspectRatioMode);

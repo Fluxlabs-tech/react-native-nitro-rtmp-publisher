@@ -15,10 +15,10 @@ import com.pedro.library.base.recording.RecordController
  * lines of lifecycle code.
  */
 
-internal fun VideoCodec.toPedro(): PedroVideoCodec = when (this) {
-  VideoCodec.H264 -> PedroVideoCodec.H264
-  VideoCodec.H265 -> PedroVideoCodec.H265
-  VideoCodec.AV1  -> PedroVideoCodec.AV1
+internal fun RtmpVideoCodec.toPedro(): PedroVideoCodec = when (this) {
+  RtmpVideoCodec.H264 -> PedroVideoCodec.H264
+  RtmpVideoCodec.H265 -> PedroVideoCodec.H265
+  RtmpVideoCodec.AV1  -> PedroVideoCodec.AV1
 }
 
 internal fun AudioCodec.toPedro(): PedroAudioCodec = when (this) {

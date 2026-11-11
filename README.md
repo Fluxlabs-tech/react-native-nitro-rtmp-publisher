@@ -92,9 +92,11 @@ yarn add  react-native-nitro-rtmp-publisher react-native-nitro-modules
 | | |
 |---|---|
 | `react-native-nitro-modules` | **0.37 or newer** — the bundled Nitrogen bindings are generated with Nitrogen 0.37 and use View-component headers that older Nitro versions don't ship |
-| React Native | New Architecture (Fabric). Tested on React Native 0.86 / Expo SDK 57 |
+| React Native | New Architecture (Fabric). Tested on React Native 0.88 / Expo SDK 58, which the example app runs on |
 | iOS | 15+ |
-| Android | `minSdkVersion` 21+ |
+| Android | React Native 0.88 or later, which brings Kotlin 2.2 and `minSdkVersion` 24 |
+
+> **Upgrading from 1.x?** 2.0 changes how iOS links HaishinKit. Read [How HaishinKit is linked](#how-haishinkit-is-linked) first: an app built with static frameworks can't use 2.0. The `VideoCodec` type is now `RtmpVideoCodec`; the old name still works as an alias. `legacyRtmpCompatibility` moved from a config-plugin option to a prop on the view. On Android, 2.0 needs a Kotlin 2.2 compiler (React Native 0.88 or later).
 
 > **Upgrading from 0.x?** 1.0 has no JS or native API changes. Bump `react-native-nitro-modules` to 0.37+ alongside this package, then rebuild the native app (`npx expo prebuild`, or `pod install` in bare projects). An older Nitro fails at native compile time with missing `NitroModules/ReactProp.hpp` / `ViewComponentDescriptor.hpp`.
 
@@ -110,7 +112,9 @@ Add the package's Expo config plugin to your `app.json` (or `app.config.js`) and
 }
 ```
 
-That's it. The plugin will inject the two vendored `HaishinKit` + `RTMPHaishinKit` pod entries into your generated `ios/Podfile` (idempotent — re-running prebuild won't duplicate them). It will **not** touch your `Info.plist` unless you opt in explicitly.
+That's it. HaishinKit comes in as a Swift package (see [How HaishinKit is linked](#how-haishinkit-is-linked)), so the plugin leaves your `ios/Podfile` alone. It will **not** touch your `Info.plist` unless you opt in explicitly.
+
+> **Upgrading from 1.x?** The next `expo prebuild` removes the two HaishinKit pod lines and the legacy-RTMP hook that 1.x injected into the Podfile.
 
 You still need to declare camera + mic usage strings yourself. The usual place is `expo.ios.infoPlist` in `app.json`:
 
@@ -139,22 +143,13 @@ If you'd rather the plugin set the camera / mic strings (handy when this library
 
 If neither prop is passed, Info.plist is left untouched.
 
-> **Plugin options are grouped by platform.** Pass an `ios` and/or `android` sub-object for platform-specific options; any key at the top level is treated as common and applied to both platforms (a platform key overrides a common key of the same name). Available options: `ios.cameraUsage`, `ios.microphoneUsage`, `ios.legacyRtmpCompatibility` (see [iOS: Agora & legacy RTMP servers](#ios-streaming-to-agora-or-other-servers-with-a-legacy-rtmp-architecture)), `enablePictureInPicture` (common — arms system Picture-in-Picture on **iOS and Android** in one key: adds the `voip`+`audio` `UIBackgroundModes` on iOS and the activity manifest flags on Android; see [Picture-in-Picture](#picture-in-picture)), and `android.disableForegroundService` (see [Android: opting out of the foreground service](#android-opting-out-of-the-foreground-service)).
+> **Plugin options are grouped by platform.** Pass an `ios` and/or `android` sub-object for platform-specific options; any key at the top level is treated as common and applied to both platforms (a platform key overrides a common key of the same name). Available options: `ios.cameraUsage`, `ios.microphoneUsage`, `enablePictureInPicture` (common — arms system Picture-in-Picture on **iOS and Android** in one key: adds the `voip`+`audio` `UIBackgroundModes` on iOS and the activity manifest flags on Android; see [Picture-in-Picture](#picture-in-picture)), and `android.disableForegroundService` (see [Android: opting out of the foreground service](#android-opting-out-of-the-foreground-service)).
 
-### iOS — bare React Native (manual Podfile)
+### iOS — bare React Native
 
-If you're not on Expo, add the two vendored HaishinKit podspecs to your `ios/Podfile` (inside your `target` block), then `pod install`:
+Run `pod install`. The Podfile needs no extra lines.
 
-```ruby
-target 'YourApp' do
-  # … your existing config …
-
-  pod 'HaishinKit',     :podspec => '../node_modules/react-native-nitro-rtmp-publisher/podspecs/HaishinKit.podspec'
-  pod 'RTMPHaishinKit', :podspec => '../node_modules/react-native-nitro-rtmp-publisher/podspecs/RTMPHaishinKit.podspec'
-end
-```
-
-> **Why two extra lines?** Upstream HaishinKit stopped publishing podspecs to CocoaPods after 2.0.9 (they moved fully to SPM). This package vendors podspecs that point at the current 2.2.x GitHub tag so CocoaPods consumers can still get the latest HaishinKit without forking. We pin both pods at the same version so cross-module `package`-level symbols resolve.
+> **Upgrading from 1.x?** First delete the two `pod 'HaishinKit', :podspec => …` and `pod 'RTMPHaishinKit', :podspec => …` lines from your Podfile. If you added the legacy-RTMP `post_install` block, delete that too and pass the `legacyRtmpCompatibility` prop instead (see [iOS: Agora & legacy RTMP servers](#ios-streaming-to-agora-or-other-servers-with-a-legacy-rtmp-architecture)).
 
 Add the privacy descriptions to your `Info.plist` so iOS can prompt the user the first time the publisher accesses the camera / microphone:
 
@@ -174,7 +169,27 @@ If you want streaming to continue while the user briefly backgrounds the app, al
 </array>
 ```
 
-**Minimum**: iOS 15 (HaishinKit 2.2.x requirement). **Xcode**: 15+ recommended. If you need iOS 13/14 support, pin to v0.3.x of this package (HaishinKit 1.9.x).
+**Minimum**: iOS 15 (HaishinKit 2.x requirement); an app on React Native 0.88 targets iOS 15.1 or later. **Xcode**: 16.1 or later, which React Native 0.88 requires. If you need iOS 13/14 support, pin to v0.3.x of this package (HaishinKit 1.9.x).
+
+### How HaishinKit is linked
+
+HaishinKit ships through Swift Package Manager only; its last CocoaPods release was 2.0.9. This package's podspec declares HaishinKit 2.3.0 with React Native's `spm_dependency`, which adds the Swift package to the Pods project. Xcode resolves the package when it builds, so a clean build needs network access to github.com.
+
+What your app needs:
+
+- **React Native 0.75 or later**, the first version with `spm_dependency`.
+- **A linkage that works with Swift packages in pods:**
+
+| App setup | Status |
+|---|---|
+| No `use_frameworks!` (static libraries, the React Native default) | Works. The example app is built this way, on React Native 0.88 (Expo SDK 58). |
+| Dynamic frameworks: `use_frameworks! :linkage => :dynamic`, or `ios.useFrameworks: "dynamic"` in `expo-build-properties` | Works. Tested with React Native 0.88 (Expo SDK 58). On Expo SDK 58, also set `ios.usePrecompiledModules: false` if the app has other Nitro modules. |
+| Static frameworks on Expo SDK 58 (`ios.useFrameworks: "static"`) | Doesn't build. Stay on 1.x, which vendors HaishinKit podspecs instead. |
+
+Why, on Expo SDK 58 / React Native 0.88:
+
+- **Static frameworks.** Expo builds pods that depend on React as static libraries. For a static-library pod with a Swift package, React Native 0.88 puts the pod's umbrella header in the shared build products folder, and Clang then treats every header under that folder as part of this pod's module. An Objective-C import of such a header fails with `'cstddef' file not found` and `could not build module 'NitroRtmpPublisher'`, because the module contains Nitro's C++ headers.
+- **Dynamic frameworks with precompiled Expo modules.** Expo keeps this pod and NitroModules as dynamic frameworks but builds other Nitro modules as static libraries. Their Swift/C++ interop headers then clash (`reference to 'isUsableInGenericContext' is ambiguous`). With `usePrecompiledModules: false`, every pod is a dynamic framework.
 
 ### Android
 
@@ -182,7 +197,7 @@ The library declares `CAMERA`, `RECORD_AUDIO`, `INTERNET`, `ACCESS_NETWORK_STATE
 
 You still need to request runtime permissions before mounting the view (see [Permissions](#permissions)).
 
-**Minimum**: `minSdkVersion` 21. **Kotlin**: 1.9+.
+**Minimum**: `minSdkVersion` 24, which is React Native 0.88's own minimum. **Kotlin**: 2.2 or later, which React Native 0.88 ships. RootEncoder 2.8 brings in a Kotlin 2.3 standard library, and an older compiler stops with "Module was compiled with an incompatible version of Kotlin".
 
 ---
 
@@ -342,7 +357,7 @@ The flag is **build-time only.** If you later need background streaming, you hav
 
 ## iOS: streaming to Agora or other servers with a legacy RTMP architecture
 
-> **TL;DR** — If your iOS stream takes ~15–17 s to connect to **Agora** (or any ingest built on a **legacy RTMP / Adobe Flash Media Server architecture**) while the same app connects in 2–4 s everywhere else, set `ios.legacyRtmpCompatibility: true` in the config plugin. It's **off by default**; most servers don't need it.
+> **TL;DR** — If your iOS stream takes ~15–17 s to connect to **Agora** (or any ingest built on a **legacy RTMP / Adobe Flash Media Server architecture**) while the same app connects in 2–4 s everywhere else, pass `legacyRtmpCompatibility` to `RtmpPublisherView`. It's **off by default**; most servers don't need it.
 
 **Symptom (iOS only).** Publishing takes **~15–17 seconds** to fire `connectionSuccess`, while the *same* app reaches the same event in 2–4 s on YouTube, Twitch, Facebook/Instagram Live, and OBS relays — and Android connects to the *same* URL in ~4 s. Once connected the stream is perfectly healthy; only the *start* is slow. The most common place this shows up is **Agora's RTLS ingest** (`rtmp://rtls-ingress-*.agoramdn.com/live/…`), but it can happen with any server that presents an old Flash-Media-Server-style RTMP front end.
 
@@ -350,86 +365,48 @@ The flag is **build-time only.** If you later need background streaming, you hav
 
 ### What this option changes, and why it's safe
 
-When you enable `ios.legacyRtmpCompatibility`, the library applies a one-line-per-statement patch to HaishinKit's `RTMPStream.createStream()`:
+By default the publisher gives HaishinKit the stream key as its FMLE publish name. HaishinKit then sends `releaseStream` and `FCPublish` before `createStream`, and waits for both replies.
 
-```diff
-- async let _ = connection?.call("releaseStream", arguments: fcPublishName)
-- async let _ = connection?.call("FCPublish",     arguments: fcPublishName)
-+ Task { _ = try? await connection?.call("releaseStream", arguments: fcPublishName) }
-+ Task { _ = try? await connection?.call("FCPublish",     arguments: fcPublishName) }
+With the `legacyRtmpCompatibility` prop on, the publisher leaves that name out and sends the two commands itself, right after the connection opens, without waiting for replies:
+
+```swift
+Task { _ = try? await connection.call("releaseStream", arguments: streamKey) }
+Task { _ = try? await connection.call("FCPublish", arguments: streamKey) }
 ```
 
-The original `async let _` bindings look fire-and-forget but aren't: Swift **implicitly awaits** an `async let` at the end of its enclosing scope, so `createStream()` couldn't proceed until both calls returned (or timed out). Wrapping each call in a detached `Task` makes it *genuinely* fire-and-forget — `releaseStream`/`FCPublish` are still sent (legacy servers that do care about them still receive them, in order, on the same RTMP chunk stream), but `createStream`/`publish` no longer block waiting on a reply. This is the same behavior OBS and the Android engine already use, and it drops the connect time from ~17 s to ~2–3 s. Against modern servers it's a no-op in practice: they were replying instantly anyway, so not awaiting the reply changes nothing observable.
+Legacy servers that care about these commands still receive them, and `publish` no longer waits ~15 s for replies that never come. OBS and the Android engine already behave this way. Against modern servers nothing observable changes: they reply at once either way.
 
-**Why it's opt-in / off by default.** It's a source patch of a third-party dependency (HaishinKit), and the overwhelming majority of ingests connect fine without it. So we don't apply it unless you explicitly ask for it — enable it **only** if you publish to Agora RTLS or another legacy FMS/FMLE-style server that's slow to connect on iOS.
+One difference from HaishinKit's own sequence: the two commands now follow `createStream` instead of preceding it (`connect → createStream → releaseStream → FCPublish → publish`).
+
+**Why it's opt-in / off by default.** Most ingests connect fine with HaishinKit's own sequence, so the publisher keeps it unless you ask. Enable it **only** if you publish to Agora RTLS or another legacy FMS/FMLE-style server that's slow to connect on iOS.
+
+> In 1.x this was a config-plugin option, `ios.legacyRtmpCompatibility`, that patched HaishinKit's source at `pod install`. That option is gone: the plugin ignores it, so move it to the prop.
 
 ### How to enable it
 
-#### Expo (managed)
+Pass the prop to the view:
 
-```jsonc
-{
-  "plugins": [
-    ["react-native-nitro-rtmp-publisher", {
-      "ios": {
-        "legacyRtmpCompatibility": true
-      }
-    }]
-  ]
-}
+```tsx
+<RtmpPublisherView
+  legacyRtmpCompatibility={true}
+  // …
+/>
 ```
 
-Re-run `expo prebuild` and `pod install` after toggling. The plugin injects a `post_install` hook into `ios/Podfile` that applies the patch on every install. (It runs against the freshly-installed `Pods/` tree, so unlike a podspec `prepare_command` it isn't affected by the CocoaPods download cache and stays per-app.)
-
-#### Bare React Native (manual Podfile)
-
-Add this inside the `post_install do |installer|` block of your `ios/Podfile`, then `pod install`:
-
-```ruby
-post_install do |installer|
-  # … your existing react_native_post_install(…) call …
-
-  # Legacy-RTMP fix (Agora RTLS or any legacy FMS-style server): send
-  # releaseStream/FCPublish fire-and-forget so createStream isn't blocked
-  # ~15s on servers that never reply to them. Idempotent; no-op if upstream
-  # renames the lines.
-  rtmp_hk_stream = File.join(__dir__, 'Pods', 'RTMPHaishinKit', 'RTMPHaishinKit', 'Sources', 'RTMP', 'RTMPStream.swift')
-  if File.exist?(rtmp_hk_stream)
-    rtmp_src = File.read(rtmp_hk_stream)
-    rtmp_orig = rtmp_src.dup
-    {
-      'async let _ = connection?.call("releaseStream", arguments: fcPublishName)' =>
-        'Task { _ = try? await connection?.call("releaseStream", arguments: fcPublishName) }',
-      'async let _ = connection?.call("FCPublish", arguments: fcPublishName)' =>
-        'Task { _ = try? await connection?.call("FCPublish", arguments: fcPublishName) }',
-    }.each do |rtmp_from, rtmp_to|
-      next if rtmp_src.include?(rtmp_to)
-      rtmp_src = rtmp_src.sub(rtmp_from, rtmp_to) if rtmp_src.include?(rtmp_from)
-    end
-    # Only write when changed, and make the file writable first — CocoaPods
-    # lays pod sources down read-only on CI (e.g. EAS Build), so an
-    # unconditional File.write fails with EACCES.
-    if rtmp_src != rtmp_orig
-      File.chmod(0644, rtmp_hk_stream) rescue nil
-      File.write(rtmp_hk_stream, rtmp_src)
-    end
-  end
-end
-```
-
-> If you change the patch state, run `pod cache clean RTMPHaishinKit --all && rm -rf ios/Pods/RTMPHaishinKit` before `pod install` so CocoaPods re-lays-down the source the hook runs against.
+It is read each time a stream starts or reconnects, so an app that publishes to different servers can turn it on only for the ones that need it, and an over-the-air update can change it. Android never waits for these answers and ignores the prop.
 
 ---
 
 ## Props
 
-All props except `lowLatencyRateControl` are required (set them once in JSX; runtime mutations are honored where the underlying platform supports it).
+All props except `lowLatencyRateControl` and `legacyRtmpCompatibility` are required (set them once in JSX; runtime mutations are honored where the underlying platform supports it).
 
 | Prop                  | Type                                  | Default     | Description |
 |-----------------------|---------------------------------------|-------------|-------------|
 | `forceHardwareCodec`  | `boolean`                             | `true`      | **Android-meaningful** — pin both `MediaCodec` encoders to HARDWARE. Silent no-op on iOS (always uses VideoToolbox HW). |
 | `videoCodec`          | `'h264' \| 'h265' \| 'av1'`           | `'h264'`    | RTMP servers almost always require H.264. iOS supports `h264`/`h265`; Android adds `av1`. |
 | `lowLatencyRateControl` | `boolean` (optional)                | `true`      | **iOS-only.** Encode H.264 with VideoToolbox's low-latency rate control. In the normal mode iOS 27 adds a keyframe every 32 frames (about once a second at 30 fps), whatever `iFrameInterval` asks for; low-latency mode keeps `iFrameInterval` and makes keyframes about half the size. Falls back to the normal mode where the device can't build the encoder. H.265 always uses the normal mode. Ignored on Android. |
+| `legacyRtmpCompatibility` | `boolean` (optional)             | `false`     | **iOS-only.** Send the FMLE `releaseStream` / `FCPublish` commands without waiting for the server's answers. Needed for ingests that never answer them, such as Agora's RTMP gateway, where publishing otherwise stalls ~15 s. Read each time a stream starts or reconnects. See [iOS: Agora & legacy RTMP servers](#ios-streaming-to-agora-or-other-servers-with-a-legacy-rtmp-architecture). Android ignores it. |
 | `audioCodec`          | `'aac' \| 'g711' \| 'opus'`           | `'aac'`     | RTMP standard is AAC. Other values are accepted for API parity but only AAC actually publishes over RTMP on iOS. |
 | `aspectRatioMode`     | `'fill' \| 'adjust' \| 'none'`        | `'adjust'`  | How the preview maps onto the view bounds. |
 | `mirrorPreview`       | `boolean`                             | `false`     | Controls the **publisher (on-screen) view only**. On front camera, `true` = "viewer's perspective" (raise left → see right side of screen), `false` = selfie-mirror view. On back camera, the value applies literally as a horizontal flip. |
@@ -893,6 +870,7 @@ Same JS API, same behavior — but worth knowing exactly where the platforms dif
 | Encoder | VideoToolbox | MediaCodec |
 | Preview | HaishinKit MTHKView (Metal) | OpenGlView (OpenGL ES) |
 | RTMP transport | HaishinKit | RootEncoder |
+| RTMPS certificate | Chain and host name checked (Network.framework defaults) | Chain and host name checked (RootEncoder's Java sockets; the library switches the host-name check on) |
 | Video codecs | H.264, HEVC | H.264, HEVC, AV1 |
 | Audio codec | AAC only (RTMP) | AAC (G.711, Opus accepted but RTMP-incompatible) |
 | Adaptive bitrate signal | Send-queue backlog (`queueBytesOut`, bytes) | Send-queue backlog (queued frames → seconds) |
@@ -978,6 +956,7 @@ Knobs that move CPU/GPU usage:
 | Android: `surface destroyed` → reconnect loop (0 fps), happens in your app but not the example | The preview is a native `SurfaceView`, and **React Native view-flattening reparents it** when a layout-only `<View>` ancestor re-flattens on re-render (common in frequently re-rendering screens, e.g. a MobX `observer`). Reparenting a SurfaceView destroys its surface, which the library reports as `surface destroyed` and auto-resumes — looping. | Add **`collapsable={false}`** to every layout-only `<View>` wrapping the publisher (or keep the publisher high and flat in the tree, like the example). iOS is unaffected (its preview isn't a SurfaceView). |
 | Output stream lands in landscape after a few seconds | `prepareVideo` called after `startPreview`; encoder rotation latched late | Call `prepareVideo` + `prepareAudio` **before** `startPreview` |
 | Output is upside down | Rotation applied twice | Pick one source of truth: either pass `rotation` to `prepareVideo` OR drive `setStreamRotation` from an orientation observer, not both |
+| `rtmps://` never connects; the event message mentions the certificate (Android: `No subjectAltNames on the certificate match`) | The server's certificate isn't issued for the host in the URL, for example the URL uses an IP address or an internal name | Use the host name the certificate lists, or reissue the certificate with that name or IP address as a subject alternative name |
 | Audio missing from stream (Android) | `prepareAudio` ran without `RECORD_AUDIO` permission granted | Call `requestRtmpPermissions()` and only mount the view after `granted === true` |
 | White screen on real iOS device with embedded JS bundle | Hermes inspector tries to open devtools WebSocket in `__DEV__` mode | Build with `--dev false` for the embedded bundle, or use Metro over Wi-Fi |
 | `Unable to resolve module ./index` from Metro | The package symlink resolves recursively into `example/` | Use `metro.config.js` with a `blockList` regex for the example path |
@@ -995,7 +974,7 @@ src/permissions.ts # Cross-platform permission helper
 ios/               # Swift implementation
 android/src/       # Kotlin implementation
 nitrogen/generated # COMMITTED — regenerated via `npm run specs`
-example/           # Reference app (Expo SDK 57 / RN 0.86, @expo/ui controls)
+example/           # Reference app (Expo SDK 58 / RN 0.88, @expo/ui controls)
 ```
 
 To work on the library locally:
@@ -1020,6 +999,8 @@ After changing the spec, run `npm run specs` from the repo root to regenerate th
 
 Yes. RTMPS (RTMP over TLS) works out of the box — Facebook Live's `rtmps://…fbcdn.net:443/rtmp/…` URLs and Instagram Live's signed `rtmps://` ingest URLs both connect and publish without extra configuration. Just pass the URL to `startStream`.
 
+On both platforms the server's certificate has to be valid **and** issued for the host name in the URL, as in a browser. A certificate for another host is refused, so an `rtmps://` URL that uses a bare IP address only works when the certificate lists that address.
+
 ### Can I stream to YouTube Live, Twitch, or any custom RTMP server?
 
 Yes. The library is server-agnostic. Anything that speaks RTMP / RTMPS works: YouTube Live (`rtmp://a.rtmp.youtube.com/live2`), Twitch (`rtmp://live.twitch.tv/app`), LiveKit Cloud ingress (`rtmps://<tenant>.rtmp.livekit.cloud/x/<key>`), Wowza, Nimble, Ant Media Server, Red5, MediaMTX, or your own Nginx-RTMP / Node-Media-Server. FMLE-style handshake (`releaseStream` + `FCPublish`) is sent on connect so strict ingests (FB Live, YouTube Live, Wowza) accept the publish without timing out.
@@ -1030,11 +1011,11 @@ Yes. Multi-tenant RTMPS ingests like LiveKit Cloud put each tenant on a per-subd
 
 ### Does it work with Expo and EAS Build?
 
-Yes — managed and bare both (tested on Expo SDK 57). Add `"react-native-nitro-rtmp-publisher"` to your `app.json` plugins list and re-run `expo prebuild`; the bundled Expo config plugin idempotently injects the vendored HaishinKit pods into your generated `Podfile`. No need to eject. See [Install → iOS — Expo (one-liner)](#ios--expo-one-liner).
+Yes — managed and bare both (tested on Expo SDK 58). Add `"react-native-nitro-rtmp-publisher"` to your `app.json` plugins list and re-run `expo prebuild`; the bundled Expo config plugin handles the native setup. No need to eject. See [Install → iOS — Expo (one-liner)](#ios--expo-one-liner).
 
 ### Does this support the React Native New Architecture (Fabric)?
 
-Yes. Nitro Modules require the New Architecture — Fabric and TurboModules must be enabled. The view is a Fabric component end-to-end; legacy Paper is not supported. 1.0 is tested on React Native 0.86 with `react-native-nitro-modules` 0.37.
+Yes. Nitro Modules require the New Architecture — Fabric and TurboModules must be enabled. The view is a Fabric component end-to-end; legacy Paper is not supported. 2.0 is tested on React Native 0.88 with `react-native-nitro-modules` 0.37.
 
 ### Can I record locally to MP4 while streaming live?
 
@@ -1046,7 +1027,7 @@ On iOS, audio continues if you declare `UIBackgroundModes: ["audio"]`; the video
 
 ### What's the minimum iOS and Android version?
 
-iOS 15+ (HaishinKit 2.2.x requirement) and Android `minSdkVersion` 21. For iOS 13 / 14, pin to `v0.3.x` of this package (HaishinKit 1.9.x).
+iOS 15+ (HaishinKit 2.x requirement), and on Android `minSdkVersion` 24 with Kotlin 2.2+, which is what React Native 0.88 sets. For iOS 13 / 14, pin to `v0.3.x` of this package (HaishinKit 1.9.x).
 
 ### How does this compare to other React Native RTMP libraries?
 
@@ -1061,7 +1042,7 @@ Video: H.264 (AVC) and H.265 (HEVC) — both hardware-encoded via `VideoToolbox`
 ## Acknowledgements
 
 - [Nitro Modules](https://github.com/mrousavy/nitro) by Marc Rousavy — the JSI codegen that makes the typed bridge possible
-- [RootEncoder](https://github.com/pedroSG94/RootEncoder) by Pedro Sánchez — Android RTMP runtime (consumed via the [Fluxlabs-tech fork](https://github.com/Fluxlabs-tech/RootEncoder/tree/2.6.1-zoop), 2.6.1 + a one-line TLS-SNI patch for SNI-routed RTMPS ingests)
+- [RootEncoder](https://github.com/pedroSG94/RootEncoder) by Pedro Sánchez — Android RTMP runtime (2.8.2, straight from upstream; 1.x used a Fluxlabs-tech fork of 2.6.1 that added TLS SNI, which upstream has sent since 2.7.3)
 - [HaishinKit.swift](https://github.com/HaishinKit/HaishinKit.swift) by Shogo Endo — iOS RTMP runtime
 
 ---

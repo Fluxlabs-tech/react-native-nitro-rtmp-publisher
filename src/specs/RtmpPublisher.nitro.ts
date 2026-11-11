@@ -21,8 +21,14 @@ export type RtmpConnectionEvent =
 
 export type CameraFacing = 'front' | 'back'
 
-/** Video codecs supported by RootEncoder. RTMP servers usually require H264. */
-export type VideoCodec = 'h264' | 'h265' | 'av1'
+/**
+ * Video codecs supported by RootEncoder. RTMP servers usually require H264.
+ *
+ * Named `RtmpVideoCodec`, not `VideoCodec`, because the name becomes a generated
+ * C++ header. react-native-vision-camera generates a `VideoCodec.hpp` too, and in
+ * an app built with frameworks Xcode resolves that bare name to only one of them.
+ */
+export type RtmpVideoCodec = 'h264' | 'h265' | 'av1'
 
 /** Audio codecs supported by RootEncoder. RTMP requires AAC. */
 export type AudioCodec = 'aac' | 'g711' | 'opus'
@@ -106,7 +112,7 @@ export interface RtmpPublisherViewProps extends HybridViewProps {
    * Video codec used by the encoder. Most RTMP ingest only supports H264.
    * @default 'h264'
    */
-  videoCodec: VideoCodec
+  videoCodec: RtmpVideoCodec
 
   /**
    * **iOS only.** Encode H.264 with VideoToolbox's low-latency rate control
@@ -126,6 +132,22 @@ export interface RtmpPublisherViewProps extends HybridViewProps {
    * @default true
    */
   lowLatencyRateControl?: boolean
+  /**
+   * iOS only. Send the FMLE `releaseStream` / `FCPublish` commands without
+   * waiting for the server's answers.
+   *
+   * Legacy Flash-Media-Server-style ingests, Agora's RTMP gateway among them,
+   * never answer those two commands. HaishinKit waits for both answers before
+   * it creates the stream, so against such a server publishing stalls for the
+   * request timeout (15 s). With this on, the publisher sends both commands
+   * itself and goes straight on to `publish`.
+   *
+   * Most ingests answer them, and work either way. The value is read each time
+   * a stream starts or reconnects, so it can differ from one `startStream` to
+   * the next. Android never waits for these answers and ignores it.
+   * @default false
+   */
+  legacyRtmpCompatibility?: boolean
 
   /**
    * Audio codec used by the encoder. RTMP requires AAC.

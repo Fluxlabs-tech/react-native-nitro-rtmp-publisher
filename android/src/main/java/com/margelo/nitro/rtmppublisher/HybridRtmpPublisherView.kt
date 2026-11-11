@@ -18,6 +18,7 @@ import com.pedro.common.ConnectChecker
 import com.pedro.encoder.input.video.CameraHelper
 import com.pedro.library.base.recording.RecordController
 import com.pedro.library.rtmp.RtmpCamera2
+import com.pedro.library.util.AndroidMuxerRecordController
 import com.pedro.library.view.OpenGlView
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -238,6 +239,10 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
   // jitter cache (chunk stays 4096). Scheduled in onConnectionSuccess, cancelled
   // / re-applied on every fresh disconnect→reconnect.
   @Volatile internal var reconnectTuningActive = false
+  // The RTMP write-chunk size the next stream should use: RECONNECT_CHUNK_SIZE
+  // for a reconnect-safe resume, the stream mode's size for a fresh start. Set
+  // while the start is being prepared, applied in launchEncoder.
+  @Volatile internal var pendingWriteChunkSize: Int? = null
   internal val restoreStreamModeRunnable = Runnable {
     if (reconnectTuningActive && shouldBeStreaming && camera.isStreaming) {
       safe("restoreStreamMode/resizeCache") {
@@ -773,7 +778,18 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     }
   }
 
-  internal val camera: RtmpCamera2 = RtmpCamera2(openGlView, connectChecker)
+  internal val camera: RtmpCamera2 = RtmpCamera2(openGlView, connectChecker).apply {
+    // RTMPS: also check that the certificate was issued for the host in the URL.
+    // RootEncoder's Java sockets check the certificate chain, but leave this
+    // second check off unless asked. Without it, anyone on the network path
+    // holding a valid certificate for any other host could accept the stream
+    // and read its stream key. The Fluxlabs fork this replaced did check (Ktor
+    // does once it is given the server name), and so does iOS.
+    streamClient.setTlsHostVerification(true)
+    // Recording: RootEncoder 2.8 can start a recording that writes nothing when
+    // a keyframe arrives while startRecord is still running. See RecordStartGate.
+    setRecordController(RecordStartGate(AndroidMuxerRecordController()))
+  }
 
   // ─── Picture-in-Picture ───────────────────────────────────────────────────
   // System PIP is a per-Activity concept, so the library observes the host
@@ -964,7 +980,7 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
       safe("applyCodecType") { applyCodecType() }
     }
 
-  override var videoCodec: VideoCodec = VideoCodec.H264
+  override var videoCodec: RtmpVideoCodec = RtmpVideoCodec.H264
     set(value) {
       if (field == value) return
       if (camera.isStreaming) {
@@ -979,6 +995,10 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
   // on every frame_num wrap. RootEncoder has no counterpart, so Android keeps
   // the value and does nothing with it.
   override var lowLatencyRateControl: Boolean? = null
+
+  // iOS only: RootEncoder already sends releaseStream/FCPublish without
+  // waiting for the answers, so Android keeps the value and does nothing.
+  override var legacyRtmpCompatibility: Boolean? = null
 
   override var audioCodec: AudioCodec = AudioCodec.AAC
     set(value) {
@@ -1373,10 +1393,10 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
       // backlog into the ingest (Agora-MDN broken-pipe fix). Restored on success.
       applyReconnectSafeTuning()
     } else {
-      // Fresh full-quality start — drop any stale reconnect-tuning state and force
-      // the chunk size back to the mode's value. A prior reconnect may have pinned
-      // the RtmpConfig global at 4096; applyStreamMode's setWriteChunkSize no-ops
-      // while a previous session is still isStreaming, so restore the global here.
+      // Fresh full-quality start — drop any stale reconnect-tuning state and ask
+      // for the mode's chunk size again. A prior reconnect may have left it at
+      // 4096, and applyStreamMode's setWriteChunkSize is ignored while a previous
+      // session is still isStreaming.
       mainHandler.removeCallbacks(restoreStreamModeRunnable)
       reconnectTuningActive = false
       restoreStreamModeChunkSize()
@@ -1467,6 +1487,7 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     }
     pipelineGeneration++
     try {
+      applyPendingWriteChunkSize()
       camera.startStream(url)
       // Backstop for a connect Pedro silently dropped (its gate raced a
       // settling teardown despite the wait — possible after a settle-timeout

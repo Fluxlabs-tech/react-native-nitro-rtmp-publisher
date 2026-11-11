@@ -19,7 +19,7 @@ export type {
   RtmpPublisherViewMethods,
   RtmpConnectionEvent,
   CameraFacing,
-  VideoCodec,
+  RtmpVideoCodec,
   AudioCodec,
   AspectRatioMode,
   RecordStatus,
@@ -27,3 +27,8 @@ export type {
   AudioSource,
   StreamMode,
 } from './specs/RtmpPublisher.nitro'
+
+import type { RtmpVideoCodec } from './specs/RtmpPublisher.nitro'
+
+/** @deprecated Renamed to `RtmpVideoCodec`. */
+export type VideoCodec = RtmpVideoCodec

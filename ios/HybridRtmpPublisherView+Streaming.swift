@@ -76,6 +76,7 @@ extension HybridRtmpPublisherView {
         try Task.checkCancellation()
         _ = try await self.connection.connect(connectUrl)
         try Task.checkCancellation()
+        await self.sendLegacyFmleCommandsIfEnabled(streamKey)
         _ = try await self.stream.publish(streamKey, type: .live)
         try Task.checkCancellation()
         self.cachedIsStreaming = true
@@ -401,6 +402,7 @@ extension HybridRtmpPublisherView {
         try Task.checkCancellation()
         _ = try await self.connection.connect(url)
         try Task.checkCancellation()
+        await self.sendLegacyFmleCommandsIfEnabled(key)
         _ = try await self.stream.publish(key, type: .live)
         try Task.checkCancellation()
         self.cachedIsStreaming = true
@@ -676,13 +678,27 @@ extension HybridRtmpPublisherView {
     }
   }
 
+  /// The `legacyRtmpCompatibility` prop. Legacy Flash-Media-Server-style
+  /// ingests never answer `releaseStream` / `FCPublish`, and HaishinKit waits
+  /// for those answers before `createStream` (one request timeout, 15 s). With
+  /// the prop on, the stream gets no `fcPublishName`, and this sends both
+  /// commands between `connect` and `publish` without waiting for a reply.
+  /// HaishinKit sends `createStream` during `connect`, so the pair follows it
+  /// instead of preceding it.
+  func sendLegacyFmleCommandsIfEnabled(_ streamKey: String) async {
+    guard sendsFmleCommandsItself else { return }
+    let connection = self.connection
+    await connection.sendIgnoringReply("releaseStream", argument: streamKey)
+    await connection.sendIgnoringReply("FCPublish", argument: streamKey)
+  }
+
   /// Sizes ("WxH") where a low-latency H.264 session was built and prepared.
   /// Read and written only under `lowLatencyH264Lock`.
   private static var lowLatencyH264Sizes = Set<String>()
   private static let lowLatencyH264Lock = NSLock()
 
   /// Builds a throwaway low-latency H.264 session, configured the way
-  /// HaishinKit 2.2.5 configures the stream's (its internal
+  /// HaishinKit 2.3.0 configures the stream's (its internal
   /// `VideoCodecSettings.makeOptions`), and returns `noErr` or the first
   /// failure. HaishinKit has no fallback: a session it can't build or prepare
   /// fails again on every frame and the stream goes out with no video. So the
@@ -1077,7 +1093,12 @@ extension HybridRtmpPublisherView {
     Task { try? await oldConnection.close() }
 
     let newConnection = RTMPConnection(requestTimeout: 15_000)
-    let newStream = RTMPStream(connection: newConnection, fcPublishName: streamKey)
+    let legacyFmle = self.legacyRtmpCompatibility ?? false
+    self.sendsFmleCommandsItself = legacyFmle
+    let newStream = RTMPStream(
+      connection: newConnection,
+      fcPublishName: legacyFmle ? nil : streamKey
+    )
     self.connection = newConnection
     self.stream = newStream
 
@@ -1087,5 +1108,17 @@ extension HybridRtmpPublisherView {
     await installBitrateStrategy(on: newStream)
     applyVideoSettings()
     applyAudioSettings()
+  }
+}
+
+extension RTMPConnection {
+  /// Sends a command and returns without waiting for the server's reply.
+  ///
+  /// The task starts on this actor, and `call` hands the command to the socket
+  /// before it first suspends. So commands leave in the order this is called,
+  /// ahead of anything the caller sends afterwards. The reply, or the timeout
+  /// that stands in for one, is dropped.
+  func sendIgnoringReply(_ commandName: String, argument: String) {
+    Task { _ = try? await self.call(commandName, arguments: argument) }
   }
 }

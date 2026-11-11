@@ -3,7 +3,7 @@
 //  NitroRtmpPublisher
 //
 //  iOS implementation of the Nitro view. Mirrors the Android
-//  RootEncoder-backed publisher; uses HaishinKit 2.2.x under the hood
+//  RootEncoder-backed publisher; uses HaishinKit 2.3.x under the hood
 //  (MediaMixer + RTMPConnection/Stream actors).
 //
 //  This file holds the class declaration, all stored state, the Nitro
@@ -568,7 +568,7 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
 
   var forceHardwareCodec: Bool = true
 
-  var videoCodec: VideoCodec = .h264 {
+  var videoCodec: RtmpVideoCodec = .h264 {
     didSet {
       guard videoCodec != oldValue, !cachedIsStreaming else { return }
       applyVideoSettings()
@@ -582,6 +582,15 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
       applyVideoSettings()
     }
   }
+
+  /// `nil` (not passed from JS) means off. Read when a stream is built; see
+  /// `rebuildPipeline`.
+  var legacyRtmpCompatibility: Bool?
+
+  /// Whether the stream built by the last `rebuildPipeline` sends the FMLE
+  /// commands itself. Decided once per stream, so the stream and the commands
+  /// sent after `connect` agree even if the prop changes in between.
+  var sendsFmleCommandsItself = false
 
   var audioCodec: AudioCodec = .aac {
     didSet {

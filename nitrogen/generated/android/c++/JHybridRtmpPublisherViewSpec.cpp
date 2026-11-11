@@ -7,8 +7,8 @@
 
 #include "JHybridRtmpPublisherViewSpec.hpp"
 
-// Forward declaration of `VideoCodec` to properly resolve imports.
-namespace margelo::nitro::rtmppublisher { enum class VideoCodec; }
+// Forward declaration of `RtmpVideoCodec` to properly resolve imports.
+namespace margelo::nitro::rtmppublisher { enum class RtmpVideoCodec; }
 // Forward declaration of `AudioCodec` to properly resolve imports.
 namespace margelo::nitro::rtmppublisher { enum class AudioCodec; }
 // Forward declaration of `AspectRatioMode` to properly resolve imports.
@@ -26,8 +26,8 @@ namespace margelo::nitro::rtmppublisher { enum class CameraFacing; }
 // Forward declaration of `RtmpConnectionEvent` to properly resolve imports.
 namespace margelo::nitro::rtmppublisher { enum class RtmpConnectionEvent; }
 
-#include "VideoCodec.hpp"
-#include "JVideoCodec.hpp"
+#include "RtmpVideoCodec.hpp"
+#include "JRtmpVideoCodec.hpp"
 #include <optional>
 #include "AudioCodec.hpp"
 #include "JAudioCodec.hpp"
@@ -95,14 +95,14 @@ namespace margelo::nitro::rtmppublisher {
     static const auto method = _javaPart->javaClassStatic()->getMethod<void(jboolean /* forceHardwareCodec */)>("setForceHardwareCodec");
     method(_javaPart, forceHardwareCodec);
   }
-  VideoCodec JHybridRtmpPublisherViewSpec::getVideoCodec() {
-    static const auto method = _javaPart->javaClassStatic()->getMethod<jni::local_ref<JVideoCodec>()>("getVideoCodec");
+  RtmpVideoCodec JHybridRtmpPublisherViewSpec::getVideoCodec() {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<jni::local_ref<JRtmpVideoCodec>()>("getVideoCodec");
     auto __result = method(_javaPart);
     return __result->toCpp();
   }
-  void JHybridRtmpPublisherViewSpec::setVideoCodec(VideoCodec videoCodec) {
-    static const auto method = _javaPart->javaClassStatic()->getMethod<void(jni::alias_ref<JVideoCodec> /* videoCodec */)>("setVideoCodec");
-    method(_javaPart, JVideoCodec::fromCpp(videoCodec));
+  void JHybridRtmpPublisherViewSpec::setVideoCodec(RtmpVideoCodec videoCodec) {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<void(jni::alias_ref<JRtmpVideoCodec> /* videoCodec */)>("setVideoCodec");
+    method(_javaPart, JRtmpVideoCodec::fromCpp(videoCodec));
   }
   std::optional<bool> JHybridRtmpPublisherViewSpec::getLowLatencyRateControl() {
     static const auto method = _javaPart->javaClassStatic()->getMethod<jni::local_ref<jni::JBoolean>()>("getLowLatencyRateControl");
@@ -112,6 +112,15 @@ namespace margelo::nitro::rtmppublisher {
   void JHybridRtmpPublisherViewSpec::setLowLatencyRateControl(std::optional<bool> lowLatencyRateControl) {
     static const auto method = _javaPart->javaClassStatic()->getMethod<void(jni::alias_ref<jni::JBoolean> /* lowLatencyRateControl */)>("setLowLatencyRateControl");
     method(_javaPart, lowLatencyRateControl.has_value() ? jni::JBoolean::valueOf(lowLatencyRateControl.value()) : nullptr);
+  }
+  std::optional<bool> JHybridRtmpPublisherViewSpec::getLegacyRtmpCompatibility() {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<jni::local_ref<jni::JBoolean>()>("getLegacyRtmpCompatibility");
+    auto __result = method(_javaPart);
+    return __result != nullptr ? std::make_optional(static_cast<bool>(__result->value())) : std::nullopt;
+  }
+  void JHybridRtmpPublisherViewSpec::setLegacyRtmpCompatibility(std::optional<bool> legacyRtmpCompatibility) {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<void(jni::alias_ref<jni::JBoolean> /* legacyRtmpCompatibility */)>("setLegacyRtmpCompatibility");
+    method(_javaPart, legacyRtmpCompatibility.has_value() ? jni::JBoolean::valueOf(legacyRtmpCompatibility.value()) : nullptr);
   }
   AudioCodec JHybridRtmpPublisherViewSpec::getAudioCodec() {
     static const auto method = _javaPart->javaClassStatic()->getMethod<jni::local_ref<JAudioCodec>()>("getAudioCodec");

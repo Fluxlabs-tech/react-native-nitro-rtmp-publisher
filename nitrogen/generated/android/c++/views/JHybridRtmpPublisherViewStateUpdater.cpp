@@ -69,6 +69,11 @@ void JHybridRtmpPublisherViewStateUpdater::updateViewProps(jni::alias_ref<jni::J
     hybridView->setLowLatencyRateControl(newProps->lowLatencyRateControl.get());
   }
   if (oldProps == nullptr
+        ? newProps->legacyRtmpCompatibility.isProvided()
+        : !newProps->legacyRtmpCompatibility.hasSameValue(oldProps->legacyRtmpCompatibility)) {
+    hybridView->setLegacyRtmpCompatibility(newProps->legacyRtmpCompatibility.get());
+  }
+  if (oldProps == nullptr
         ? newProps->audioCodec.isProvided()
         : !newProps->audioCodec.hasSameValue(oldProps->audioCodec)) {
     hybridView->setAudioCodec(newProps->audioCodec.get());

@@ -10,7 +10,6 @@ import com.pedro.encoder.TimestampMode
 import com.pedro.encoder.input.audio.NoAudioEffect
 import com.pedro.encoder.input.video.CameraHelper
 import com.pedro.encoder.utils.CodecUtil
-import com.pedro.rtmp.utils.RtmpConfig
 
 /**
  * OEMs whose ENTIRE lineup is budget single-mic and exposes multiple
@@ -374,8 +373,9 @@ internal fun HybridRtmpPublisherView.streamModeCacheSize(): Int = when (streamMo
 //                     instead of bursting,
 //  2. resizeCache(RECONNECT_CACHE_SIZE) — cap re-growth during the backoff window
 //                     so any residual burst stays small,
-//  3. RtmpConfig.writeChunkSize = RECONNECT_CHUNK_SIZE — the 4096-byte chunk
+//  3. write chunk size = RECONNECT_CHUNK_SIZE — the 4096-byte chunk
 //                     balanced/low-latency use, which Agora accepts (RTMP framing).
+//                     Applied in launchEncoder, see pendingWriteChunkSize.
 // `restoreStreamModeRunnable` restores the mode's full cache once the reconnected
 // stream has been healthy for STREAM_MODE_RESTORE_DELAY_MS; the chunk size stays
 // at 4096 (≈free, and avoids re-introducing the Agora-hostile 8192).
@@ -385,16 +385,10 @@ internal fun HybridRtmpPublisherView.applyReconnectSafeTuning() {
   // clearCache first so resizeCache can't throw "can't fit current cache".
   safe("reconnectSafe/clearCache") { client.clearCache() }
   safe("reconnectSafe/resizeCache") { client.resizeCache(RECONNECT_CACHE_SIZE) }
-  // Set the global RtmpConfig.writeChunkSize directly rather than
-  // client.setWriteChunkSize(): the latter is a no-op while isStreaming==true
-  // (decompiled: `if (!isStreaming) RtmpConfig.writeChunkSize = size`), and on
-  // the auto-reconnect (reTry) path the prior session is still "streaming" when
-  // this runs — so the cap would silently not apply and the reconnect would go
-  // out at 8192 again. The chunk size lives in this global (read at each connect
-  // handshake; survives reConnect's CommandsManager.reset, which only touches
-  // readChunkSize), so setting it here applies to the very next reconnect on
-  // BOTH paths. Restored to the mode's size by a fresh startStream/applyStreamMode.
-  safe("reconnectSafe/chunkSize") { RtmpConfig.writeChunkSize = RECONNECT_CHUNK_SIZE }
+  // Not client.setWriteChunkSize() here: RootEncoder ignores it while its
+  // client is still streaming, and the previous session often is when this
+  // runs. launchEncoder applies it once that session's teardown has settled.
+  pendingWriteChunkSize = RECONNECT_CHUNK_SIZE
 }
 
 // The write-chunk size each stream mode uses (quality 8192, balanced/low-latency
@@ -402,12 +396,19 @@ internal fun HybridRtmpPublisherView.applyReconnectSafeTuning() {
 internal fun HybridRtmpPublisherView.streamModeChunkSize(): Int =
   if (streamMode == StreamMode.QUALITY) 8192 else 4096
 
-// Force the global write-chunk size to the current mode's value, bypassing
-// setWriteChunkSize()'s `!isStreaming` guard. Called on a FRESH start so a prior
-// reconnect's 4096 cap (written straight to the RtmpConfig global) can't persist
-// into a new quality session if the previous session is still flagged streaming
-// (applyStreamMode's setWriteChunkSize would no-op in that window). The global is
-// read at the next connect handshake, so forcing it here is safe and correct.
+// Ask for the current mode's write-chunk size on the next stream. Called on a
+// FRESH start, so a prior reconnect's 4096 cap can't persist into a new quality
+// session: applyStreamMode's setWriteChunkSize is ignored while the previous
+// session is still flagged streaming. launchEncoder applies it.
 internal fun HybridRtmpPublisherView.restoreStreamModeChunkSize() {
-  safe("restoreStreamModeChunkSize") { RtmpConfig.writeChunkSize = streamModeChunkSize() }
+  pendingWriteChunkSize = streamModeChunkSize()
+}
+
+// Hand the write-chunk size chosen for this session to RootEncoder. It is sent
+// in the connect handshake. RootEncoder (2.8+) keeps the size per connection
+// and only accepts it while its client isn't streaming, which the
+// teardown-settle wait before launchEncoder provides.
+internal fun HybridRtmpPublisherView.applyPendingWriteChunkSize() {
+  val size = pendingWriteChunkSize ?: return
+  safe("launchEncoder/chunkSize") { camera.streamClient.setWriteChunkSize(size) }
 }

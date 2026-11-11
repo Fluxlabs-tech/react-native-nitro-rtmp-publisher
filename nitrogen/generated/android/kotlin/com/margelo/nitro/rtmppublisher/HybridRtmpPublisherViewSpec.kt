@@ -37,13 +37,19 @@ abstract class HybridRtmpPublisherViewSpec: HybridView() {
   @get:Keep
   @set:DoNotStrip
   @set:Keep
-  abstract var videoCodec: VideoCodec
+  abstract var videoCodec: RtmpVideoCodec
   
   @get:DoNotStrip
   @get:Keep
   @set:DoNotStrip
   @set:Keep
   abstract var lowLatencyRateControl: Boolean?
+  
+  @get:DoNotStrip
+  @get:Keep
+  @set:DoNotStrip
+  @set:Keep
+  abstract var legacyRtmpCompatibility: Boolean?
   
   @get:DoNotStrip
   @get:Keep
