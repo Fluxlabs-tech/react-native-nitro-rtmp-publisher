@@ -32,6 +32,7 @@ namespace margelo::nitro::rtmppublisher { enum class RecordStatus; }
 namespace margelo::nitro::rtmppublisher { enum class RtmpConnectionEvent; }
 
 #include "VideoCodec.hpp"
+#include <optional>
 #include "AudioCodec.hpp"
 #include "AspectRatioMode.hpp"
 #include "ThermalStatus.hpp"
@@ -102,6 +103,13 @@ namespace margelo::nitro::rtmppublisher {
     }
     inline void setVideoCodec(VideoCodec videoCodec) noexcept override {
       _swiftPart.setVideoCodec(static_cast<int>(videoCodec));
+    }
+    inline std::optional<bool> getLowLatencyRateControl() noexcept override {
+      auto __result = _swiftPart.getLowLatencyRateControl();
+      return __result;
+    }
+    inline void setLowLatencyRateControl(std::optional<bool> lowLatencyRateControl) noexcept override {
+      _swiftPart.setLowLatencyRateControl(lowLatencyRateControl);
     }
     inline AudioCodec getAudioCodec() noexcept override {
       auto __result = _swiftPart.getAudioCodec();

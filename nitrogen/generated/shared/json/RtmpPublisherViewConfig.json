@@ -6,6 +6,7 @@
   "validAttributes": {
     "forceHardwareCodec": true,
     "videoCodec": true,
+    "lowLatencyRateControl": true,
     "audioCodec": true,
     "aspectRatioMode": true,
     "mirrorPreview": true,

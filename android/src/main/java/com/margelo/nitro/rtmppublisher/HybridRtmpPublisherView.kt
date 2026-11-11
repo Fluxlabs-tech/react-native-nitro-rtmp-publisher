@@ -975,6 +975,11 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
       safe("setVideoCodec") { camera.setVideoCodec(value.toPedro()) }
     }
 
+  // iOS only: VideoToolbox's low-latency rate control, for iOS 27's keyframe
+  // on every frame_num wrap. RootEncoder has no counterpart, so Android keeps
+  // the value and does nothing with it.
+  override var lowLatencyRateControl: Boolean? = null
+
   override var audioCodec: AudioCodec = AudioCodec.AAC
     set(value) {
       if (field == value) return

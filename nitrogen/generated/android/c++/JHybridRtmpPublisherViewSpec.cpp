@@ -28,6 +28,7 @@ namespace margelo::nitro::rtmppublisher { enum class RtmpConnectionEvent; }
 
 #include "VideoCodec.hpp"
 #include "JVideoCodec.hpp"
+#include <optional>
 #include "AudioCodec.hpp"
 #include "JAudioCodec.hpp"
 #include "AspectRatioMode.hpp"
@@ -102,6 +103,15 @@ namespace margelo::nitro::rtmppublisher {
   void JHybridRtmpPublisherViewSpec::setVideoCodec(VideoCodec videoCodec) {
     static const auto method = _javaPart->javaClassStatic()->getMethod<void(jni::alias_ref<JVideoCodec> /* videoCodec */)>("setVideoCodec");
     method(_javaPart, JVideoCodec::fromCpp(videoCodec));
+  }
+  std::optional<bool> JHybridRtmpPublisherViewSpec::getLowLatencyRateControl() {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<jni::local_ref<jni::JBoolean>()>("getLowLatencyRateControl");
+    auto __result = method(_javaPart);
+    return __result != nullptr ? std::make_optional(static_cast<bool>(__result->value())) : std::nullopt;
+  }
+  void JHybridRtmpPublisherViewSpec::setLowLatencyRateControl(std::optional<bool> lowLatencyRateControl) {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<void(jni::alias_ref<jni::JBoolean> /* lowLatencyRateControl */)>("setLowLatencyRateControl");
+    method(_javaPart, lowLatencyRateControl.has_value() ? jni::JBoolean::valueOf(lowLatencyRateControl.value()) : nullptr);
   }
   AudioCodec JHybridRtmpPublisherViewSpec::getAudioCodec() {
     static const auto method = _javaPart->javaClassStatic()->getMethod<jni::local_ref<JAudioCodec>()>("getAudioCodec");

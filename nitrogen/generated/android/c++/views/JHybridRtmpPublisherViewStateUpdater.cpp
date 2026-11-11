@@ -64,6 +64,11 @@ void JHybridRtmpPublisherViewStateUpdater::updateViewProps(jni::alias_ref<jni::J
     hybridView->setVideoCodec(newProps->videoCodec.get());
   }
   if (oldProps == nullptr
+        ? newProps->lowLatencyRateControl.isProvided()
+        : !newProps->lowLatencyRateControl.hasSameValue(oldProps->lowLatencyRateControl)) {
+    hybridView->setLowLatencyRateControl(newProps->lowLatencyRateControl.get());
+  }
+  if (oldProps == nullptr
         ? newProps->audioCodec.isProvided()
         : !newProps->audioCodec.hasSameValue(oldProps->audioCodec)) {
     hybridView->setAudioCodec(newProps->audioCodec.get());
