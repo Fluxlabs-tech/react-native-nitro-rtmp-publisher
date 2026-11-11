@@ -18,6 +18,7 @@ import com.pedro.common.ConnectChecker
 import com.pedro.encoder.input.video.CameraHelper
 import com.pedro.library.base.recording.RecordController
 import com.pedro.library.rtmp.RtmpCamera2
+import com.pedro.library.util.AndroidMuxerRecordController
 import com.pedro.library.view.OpenGlView
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -785,6 +786,9 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     // and read its stream key. The Fluxlabs fork this replaced did check (Ktor
     // does once it is given the server name), and so does iOS.
     streamClient.setTlsHostVerification(true)
+    // Recording: RootEncoder 2.8 can start a recording that writes nothing when
+    // a keyframe arrives while startRecord is still running. See RecordStartGate.
+    setRecordController(RecordStartGate(AndroidMuxerRecordController()))
   }
 
   // ─── Picture-in-Picture ───────────────────────────────────────────────────
