@@ -3,7 +3,7 @@
 //  NitroRtmpPublisher
 //
 //  iOS implementation of the Nitro view. Mirrors the Android
-//  RootEncoder-backed publisher; uses HaishinKit 2.2.x under the hood
+//  RootEncoder-backed publisher; uses HaishinKit 2.3.x under the hood
 //  (MediaMixer + RTMPConnection/Stream actors).
 //
 //  This file holds the class declaration, all stored state, the Nitro

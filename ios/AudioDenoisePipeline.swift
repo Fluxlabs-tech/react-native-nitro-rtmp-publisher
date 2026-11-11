@@ -10,7 +10,7 @@
 //  keeps its natural level. The hard part is A/V sync, because VP captures on a
 //  separate audio-HAL clock from the camera (AVCaptureSession), and HaishinKit
 //  ships audio + video as two independent timelines anchored once at t=0. Two
-//  failure modes (both verified against HaishinKit 2.2.5 source):
+//  failure modes (both verified against HaishinKit 2.2.5 source; the audio path is unchanged in 2.3.0):
 //    • CONSTANT OFFSET: VP delivers each buffer timestamped LATE by its input-
 //      chain latency (~60–150 ms), which becomes a permanent audio-behind-video
 //      offset.

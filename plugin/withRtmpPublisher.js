@@ -97,7 +97,7 @@ const PKG_NAME = 'react-native-nitro-rtmp-publisher';
 
 const PODFILE_INJECTION = `
   # Vendored HaishinKit 2.x podspecs. Upstream stopped publishing to
-  # CocoaPods trunk after 2.0.9 — these point at the current 2.2.x tag.
+  # CocoaPods trunk after 2.0.9 — these point at the current 2.3.x tag.
   pod 'HaishinKit',     :podspec => '../node_modules/${PKG_NAME}/podspecs/HaishinKit.podspec'
   pod 'RTMPHaishinKit', :podspec => '../node_modules/${PKG_NAME}/podspecs/RTMPHaishinKit.podspec'
 `.trim();

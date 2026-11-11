@@ -10,7 +10,7 @@
 #
 Pod::Spec.new do |s|
   s.name          = "RTMPHaishinKit"
-  s.version       = "2.2.5"
+  s.version       = "2.3.0"
   s.summary       = "RTMP transport layer for HaishinKit."
   s.swift_version = "6.0"
 
@@ -22,7 +22,7 @@ Pod::Spec.new do |s|
   s.ios.deployment_target      = "15.0"
   s.osx.deployment_target      = "12.0"
   s.tvos.deployment_target     = "15.0"
-  s.visionos.deployment_target = "1.0"
+  s.visionos.deployment_target = "1.3"
 
   s.source_files = "RTMPHaishinKit/Sources/**/*.swift"
 
@@ -33,5 +33,5 @@ Pod::Spec.new do |s|
     "OTHER_SWIFT_FLAGS" => "$(inherited) -package-name HaishinKit",
   }
 
-  s.dependency 'HaishinKit', '2.2.5'
+  s.dependency 'HaishinKit', '2.3.0'
 end

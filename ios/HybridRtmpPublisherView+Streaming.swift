@@ -682,7 +682,7 @@ extension HybridRtmpPublisherView {
   private static let lowLatencyH264Lock = NSLock()
 
   /// Builds a throwaway low-latency H.264 session, configured the way
-  /// HaishinKit 2.2.5 configures the stream's (its internal
+  /// HaishinKit 2.3.0 configures the stream's (its internal
   /// `VideoCodecSettings.makeOptions`), and returns `noErr` or the first
   /// failure. HaishinKit has no fallback: a session it can't build or prepare
   /// fails again on every frame and the stream goes out with no video. So the

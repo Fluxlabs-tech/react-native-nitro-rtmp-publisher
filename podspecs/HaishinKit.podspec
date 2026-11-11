@@ -8,12 +8,12 @@
 # still get the newest HaishinKit without forking the upstream repo.
 #
 # Source path / dependency list / Swift version match
-# https://github.com/HaishinKit/HaishinKit.swift/blob/2.2.5/Package.swift
+# https://github.com/HaishinKit/HaishinKit.swift/blob/2.3.0/Package.swift
 # Kept in sync manually on every HaishinKit release we want to support.
 #
 Pod::Spec.new do |s|
   s.name          = "HaishinKit"
-  s.version       = "2.2.5"
+  s.version       = "2.3.0"
   s.summary       = "Camera and Microphone streaming library via RTMP for iOS, macOS, tvOS, and visionOS."
   s.swift_version = "6.0"
 
@@ -25,7 +25,7 @@ Pod::Spec.new do |s|
   s.ios.deployment_target      = "15.0"
   s.osx.deployment_target      = "12.0"
   s.tvos.deployment_target     = "15.0"
-  s.visionos.deployment_target = "1.0"
+  s.visionos.deployment_target = "1.3"
 
   s.source_files = "HaishinKit/Sources/**/*.swift"
 

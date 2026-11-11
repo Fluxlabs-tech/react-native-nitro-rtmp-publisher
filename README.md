@@ -154,7 +154,7 @@ target 'YourApp' do
 end
 ```
 
-> **Why two extra lines?** Upstream HaishinKit stopped publishing podspecs to CocoaPods after 2.0.9 (they moved fully to SPM). This package vendors podspecs that point at the current 2.2.x GitHub tag so CocoaPods consumers can still get the latest HaishinKit without forking. We pin both pods at the same version so cross-module `package`-level symbols resolve.
+> **Why two extra lines?** Upstream HaishinKit stopped publishing podspecs to CocoaPods after 2.0.9 (they moved fully to SPM). This package vendors podspecs that point at the current 2.3.x GitHub tag so CocoaPods consumers can still get the latest HaishinKit without forking. We pin both pods at the same version so cross-module `package`-level symbols resolve.
 
 Add the privacy descriptions to your `Info.plist` so iOS can prompt the user the first time the publisher accesses the camera / microphone:
 
@@ -174,7 +174,7 @@ If you want streaming to continue while the user briefly backgrounds the app, al
 </array>
 ```
 
-**Minimum**: iOS 15 (HaishinKit 2.2.x requirement). **Xcode**: 15+ recommended. If you need iOS 13/14 support, pin to v0.3.x of this package (HaishinKit 1.9.x).
+**Minimum**: iOS 15 (HaishinKit 2.x requirement). **Xcode**: 15+ recommended. If you need iOS 13/14 support, pin to v0.3.x of this package (HaishinKit 1.9.x).
 
 ### Android
 
@@ -1046,7 +1046,7 @@ On iOS, audio continues if you declare `UIBackgroundModes: ["audio"]`; the video
 
 ### What's the minimum iOS and Android version?
 
-iOS 15+ (HaishinKit 2.2.x requirement) and Android `minSdkVersion` 21. For iOS 13 / 14, pin to `v0.3.x` of this package (HaishinKit 1.9.x).
+iOS 15+ (HaishinKit 2.x requirement) and Android `minSdkVersion` 21. For iOS 13 / 14, pin to `v0.3.x` of this package (HaishinKit 1.9.x).
 
 ### How does this compare to other React Native RTMP libraries?
 
