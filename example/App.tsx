@@ -231,6 +231,9 @@ function StreamScreen({
           // RTMP servers require H.264 video + AAC audio in 99% of cases.
           videoCodec="h264"
           audioCodec="aac"
+          // iOS: don't wait for answers to releaseStream / FCPublish. Agora's
+          // RTMP gateway never sends them, and publishing would stall ~15 s.
+          legacyRtmpCompatibility={true}
           // Letterbox to fit when preview aspect ≠ stream aspect.
           aspectRatioMode="fill"
           // Selfie convention: front camera mirrored for both preview AND

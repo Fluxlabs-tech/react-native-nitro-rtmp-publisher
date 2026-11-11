@@ -47,9 +47,7 @@
         "react-native-nitro-rtmp-publisher",
         {
           "enablePictureInPicture": true,
-          "ios": {
-            "legacyRtmpCompatibility": true
-          },
+          "ios": {},
           "android": {}
         }
       ],

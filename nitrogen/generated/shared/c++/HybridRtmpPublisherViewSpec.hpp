@@ -79,6 +79,8 @@ namespace margelo::nitro::rtmppublisher {
       virtual void setVideoCodec(RtmpVideoCodec videoCodec) = 0;
       virtual std::optional<bool> getLowLatencyRateControl() = 0;
       virtual void setLowLatencyRateControl(std::optional<bool> lowLatencyRateControl) = 0;
+      virtual std::optional<bool> getLegacyRtmpCompatibility() = 0;
+      virtual void setLegacyRtmpCompatibility(std::optional<bool> legacyRtmpCompatibility) = 0;
       virtual AudioCodec getAudioCodec() = 0;
       virtual void setAudioCodec(AudioCodec audioCodec) = 0;
       virtual AspectRatioMode getAspectRatioMode() = 0;

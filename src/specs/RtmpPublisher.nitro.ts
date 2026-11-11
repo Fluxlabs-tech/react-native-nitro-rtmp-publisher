@@ -132,6 +132,22 @@ export interface RtmpPublisherViewProps extends HybridViewProps {
    * @default true
    */
   lowLatencyRateControl?: boolean
+  /**
+   * iOS only. Send the FMLE `releaseStream` / `FCPublish` commands without
+   * waiting for the server's answers.
+   *
+   * Legacy Flash-Media-Server-style ingests, Agora's RTMP gateway among them,
+   * never answer those two commands. HaishinKit waits for both answers before
+   * it creates the stream, so against such a server publishing stalls for the
+   * request timeout (15 s). With this on, the publisher sends both commands
+   * itself and goes straight on to `publish`.
+   *
+   * Most ingests answer them, and work either way. The value is read each time
+   * a stream starts or reconnects, so it can differ from one `startStream` to
+   * the next. Android never waits for these answers and ignores it.
+   * @default false
+   */
+  legacyRtmpCompatibility?: boolean
 
   /**
    * Audio codec used by the encoder. RTMP requires AAC.

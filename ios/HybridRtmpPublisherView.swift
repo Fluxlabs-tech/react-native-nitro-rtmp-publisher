@@ -583,6 +583,15 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
     }
   }
 
+  /// `nil` (not passed from JS) means off. Read when a stream is built; see
+  /// `rebuildPipeline`.
+  var legacyRtmpCompatibility: Bool?
+
+  /// Whether the stream built by the last `rebuildPipeline` sends the FMLE
+  /// commands itself. Decided once per stream, so the stream and the commands
+  /// sent after `connect` agree even if the prop changes in between.
+  var sendsFmleCommandsItself = false
+
   var audioCodec: AudioCodec = .aac {
     didSet {
       guard audioCodec != oldValue, !cachedIsStreaming else { return }

@@ -96,7 +96,7 @@ yarn add  react-native-nitro-rtmp-publisher react-native-nitro-modules
 | iOS | 15+ |
 | Android | `minSdkVersion` 21+ |
 
-> **Upgrading from 1.x?** 2.0 changes how iOS links HaishinKit. Read [How HaishinKit is linked](#how-haishinkit-is-linked) first: an app built with static frameworks can't use 2.0. The `VideoCodec` type is now `RtmpVideoCodec`; the old name still works as an alias. There are no other JS or native API changes.
+> **Upgrading from 1.x?** 2.0 changes how iOS links HaishinKit. Read [How HaishinKit is linked](#how-haishinkit-is-linked) first: an app built with static frameworks can't use 2.0. The `VideoCodec` type is now `RtmpVideoCodec`; the old name still works as an alias. `legacyRtmpCompatibility` moved from a config-plugin option to a prop on the view.
 
 > **Upgrading from 0.x?** 1.0 has no JS or native API changes. Bump `react-native-nitro-modules` to 0.37+ alongside this package, then rebuild the native app (`npx expo prebuild`, or `pod install` in bare projects). An older Nitro fails at native compile time with missing `NitroModules/ReactProp.hpp` / `ViewComponentDescriptor.hpp`.
 
@@ -143,13 +143,13 @@ If you'd rather the plugin set the camera / mic strings (handy when this library
 
 If neither prop is passed, Info.plist is left untouched.
 
-> **Plugin options are grouped by platform.** Pass an `ios` and/or `android` sub-object for platform-specific options; any key at the top level is treated as common and applied to both platforms (a platform key overrides a common key of the same name). Available options: `ios.cameraUsage`, `ios.microphoneUsage`, `ios.legacyRtmpCompatibility` (see [iOS: Agora & legacy RTMP servers](#ios-streaming-to-agora-or-other-servers-with-a-legacy-rtmp-architecture)), `enablePictureInPicture` (common — arms system Picture-in-Picture on **iOS and Android** in one key: adds the `voip`+`audio` `UIBackgroundModes` on iOS and the activity manifest flags on Android; see [Picture-in-Picture](#picture-in-picture)), and `android.disableForegroundService` (see [Android: opting out of the foreground service](#android-opting-out-of-the-foreground-service)).
+> **Plugin options are grouped by platform.** Pass an `ios` and/or `android` sub-object for platform-specific options; any key at the top level is treated as common and applied to both platforms (a platform key overrides a common key of the same name). Available options: `ios.cameraUsage`, `ios.microphoneUsage`, `enablePictureInPicture` (common — arms system Picture-in-Picture on **iOS and Android** in one key: adds the `voip`+`audio` `UIBackgroundModes` on iOS and the activity manifest flags on Android; see [Picture-in-Picture](#picture-in-picture)), and `android.disableForegroundService` (see [Android: opting out of the foreground service](#android-opting-out-of-the-foreground-service)).
 
 ### iOS — bare React Native
 
 Run `pod install`. The Podfile needs no extra lines.
 
-> **Upgrading from 1.x?** First delete the two `pod 'HaishinKit', :podspec => …` and `pod 'RTMPHaishinKit', :podspec => …` lines from your Podfile. If you added the legacy-RTMP `post_install` block, delete that too and set the Info.plist key instead (see [iOS: Agora & legacy RTMP servers](#ios-streaming-to-agora-or-other-servers-with-a-legacy-rtmp-architecture)).
+> **Upgrading from 1.x?** First delete the two `pod 'HaishinKit', :podspec => …` and `pod 'RTMPHaishinKit', :podspec => …` lines from your Podfile. If you added the legacy-RTMP `post_install` block, delete that too and pass the `legacyRtmpCompatibility` prop instead (see [iOS: Agora & legacy RTMP servers](#ios-streaming-to-agora-or-other-servers-with-a-legacy-rtmp-architecture)).
 
 Add the privacy descriptions to your `Info.plist` so iOS can prompt the user the first time the publisher accesses the camera / microphone:
 
@@ -357,7 +357,7 @@ The flag is **build-time only.** If you later need background streaming, you hav
 
 ## iOS: streaming to Agora or other servers with a legacy RTMP architecture
 
-> **TL;DR** — If your iOS stream takes ~15–17 s to connect to **Agora** (or any ingest built on a **legacy RTMP / Adobe Flash Media Server architecture**) while the same app connects in 2–4 s everywhere else, set `ios.legacyRtmpCompatibility: true` in the config plugin. It's **off by default**; most servers don't need it.
+> **TL;DR** — If your iOS stream takes ~15–17 s to connect to **Agora** (or any ingest built on a **legacy RTMP / Adobe Flash Media Server architecture**) while the same app connects in 2–4 s everywhere else, pass `legacyRtmpCompatibility` to `RtmpPublisherView`. It's **off by default**; most servers don't need it.
 
 **Symptom (iOS only).** Publishing takes **~15–17 seconds** to fire `connectionSuccess`, while the *same* app reaches the same event in 2–4 s on YouTube, Twitch, Facebook/Instagram Live, and OBS relays — and Android connects to the *same* URL in ~4 s. Once connected the stream is perfectly healthy; only the *start* is slow. The most common place this shows up is **Agora's RTLS ingest** (`rtmp://rtls-ingress-*.agoramdn.com/live/…`), but it can happen with any server that presents an old Flash-Media-Server-style RTMP front end.
 
@@ -367,7 +367,7 @@ The flag is **build-time only.** If you later need background streaming, you hav
 
 By default the publisher gives HaishinKit the stream key as its FMLE publish name. HaishinKit then sends `releaseStream` and `FCPublish` before `createStream`, and waits for both replies.
 
-With `ios.legacyRtmpCompatibility` on, the publisher leaves that name out and sends the two commands itself, right after the connection opens, without waiting for replies:
+With the `legacyRtmpCompatibility` prop on, the publisher leaves that name out and sends the two commands itself, right after the connection opens, without waiting for replies:
 
 ```swift
 Task { _ = try? await connection.call("releaseStream", arguments: streamKey) }
@@ -380,46 +380,33 @@ One difference from HaishinKit's own sequence: the two commands now follow `crea
 
 **Why it's opt-in / off by default.** Most ingests connect fine with HaishinKit's own sequence, so the publisher keeps it unless you ask. Enable it **only** if you publish to Agora RTLS or another legacy FMS/FMLE-style server that's slow to connect on iOS.
 
-> Versions before 2.0 did this by patching HaishinKit's source from a Podfile `post_install` hook. That hook is gone: the option needs no Podfile change.
+> In 1.x this was a config-plugin option, `ios.legacyRtmpCompatibility`, that patched HaishinKit's source at `pod install`. That option does nothing now, and the plugin warns if it is still set.
 
 ### How to enable it
 
-#### Expo (managed)
+Pass the prop to the view:
 
-```jsonc
-{
-  "plugins": [
-    ["react-native-nitro-rtmp-publisher", {
-      "ios": {
-        "legacyRtmpCompatibility": true
-      }
-    }]
-  ]
-}
+```tsx
+<RtmpPublisherView
+  legacyRtmpCompatibility={true}
+  // …
+/>
 ```
 
-Re-run `expo prebuild` after toggling. The plugin writes `NitroRtmpPublisherLegacyRtmpCompatibility` to `Info.plist`, which the publisher reads at launch.
-
-#### Bare React Native
-
-Add the key to your app's `Info.plist`:
-
-```xml
-<key>NitroRtmpPublisherLegacyRtmpCompatibility</key>
-<true/>
-```
+It is read each time a stream starts or reconnects, so an app that publishes to different servers can turn it on only for the ones that need it, and an over-the-air update can change it. Android never waits for these answers and ignores the prop.
 
 ---
 
 ## Props
 
-All props except `lowLatencyRateControl` are required (set them once in JSX; runtime mutations are honored where the underlying platform supports it).
+All props except `lowLatencyRateControl` and `legacyRtmpCompatibility` are required (set them once in JSX; runtime mutations are honored where the underlying platform supports it).
 
 | Prop                  | Type                                  | Default     | Description |
 |-----------------------|---------------------------------------|-------------|-------------|
 | `forceHardwareCodec`  | `boolean`                             | `true`      | **Android-meaningful** — pin both `MediaCodec` encoders to HARDWARE. Silent no-op on iOS (always uses VideoToolbox HW). |
 | `videoCodec`          | `'h264' \| 'h265' \| 'av1'`           | `'h264'`    | RTMP servers almost always require H.264. iOS supports `h264`/`h265`; Android adds `av1`. |
 | `lowLatencyRateControl` | `boolean` (optional)                | `true`      | **iOS-only.** Encode H.264 with VideoToolbox's low-latency rate control. In the normal mode iOS 27 adds a keyframe every 32 frames (about once a second at 30 fps), whatever `iFrameInterval` asks for; low-latency mode keeps `iFrameInterval` and makes keyframes about half the size. Falls back to the normal mode where the device can't build the encoder. H.265 always uses the normal mode. Ignored on Android. |
+| `legacyRtmpCompatibility` | `boolean` (optional)             | `false`     | **iOS-only.** Send the FMLE `releaseStream` / `FCPublish` commands without waiting for the server's answers. Needed for ingests that never answer them, such as Agora's RTMP gateway, where publishing otherwise stalls ~15 s. Read each time a stream starts or reconnects. See [iOS: Agora & legacy RTMP servers](#ios-streaming-to-agora-or-other-servers-with-a-legacy-rtmp-architecture). Android ignores it. |
 | `audioCodec`          | `'aac' \| 'g711' \| 'opus'`           | `'aac'`     | RTMP standard is AAC. Other values are accepted for API parity but only AAC actually publishes over RTMP on iOS. |
 | `aspectRatioMode`     | `'fill' \| 'adjust' \| 'none'`        | `'adjust'`  | How the preview maps onto the view bounds. |
 | `mirrorPreview`       | `boolean`                             | `false`     | Controls the **publisher (on-screen) view only**. On front camera, `true` = "viewer's perspective" (raise left → see right side of screen), `false` = selfie-mirror view. On back camera, the value applies literally as a horizontal flip. |

@@ -980,6 +980,10 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
   // the value and does nothing with it.
   override var lowLatencyRateControl: Boolean? = null
 
+  // iOS only: RootEncoder already sends releaseStream/FCPublish without
+  // waiting for the answers, so Android keeps the value and does nothing.
+  override var legacyRtmpCompatibility: Boolean? = null
+
   override var audioCodec: AudioCodec = AudioCodec.AAC
     set(value) {
       if (field == value) return

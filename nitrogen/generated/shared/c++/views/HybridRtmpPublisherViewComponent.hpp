@@ -52,6 +52,7 @@ namespace margelo::nitro::rtmppublisher::views {
     nitro::ReactProp<bool> forceHardwareCodec;
     nitro::ReactProp<RtmpVideoCodec> videoCodec;
     nitro::ReactProp<std::optional<bool>> lowLatencyRateControl;
+    nitro::ReactProp<std::optional<bool>> legacyRtmpCompatibility;
     nitro::ReactProp<AudioCodec> audioCodec;
     nitro::ReactProp<AspectRatioMode> aspectRatioMode;
     nitro::ReactProp<bool> mirrorPreview;
@@ -72,6 +73,7 @@ namespace margelo::nitro::rtmppublisher::views {
       return forceHardwareCodec.hasSameValue(other.forceHardwareCodec) &&
              videoCodec.hasSameValue(other.videoCodec) &&
              lowLatencyRateControl.hasSameValue(other.lowLatencyRateControl) &&
+             legacyRtmpCompatibility.hasSameValue(other.legacyRtmpCompatibility) &&
              audioCodec.hasSameValue(other.audioCodec) &&
              aspectRatioMode.hasSameValue(other.aspectRatioMode) &&
              mirrorPreview.hasSameValue(other.mirrorPreview) &&
@@ -93,6 +95,7 @@ namespace margelo::nitro::rtmppublisher::views {
       return forceHardwareCodec.isProvided() ||
              videoCodec.isProvided() ||
              lowLatencyRateControl.isProvided() ||
+             legacyRtmpCompatibility.isProvided() ||
              audioCodec.isProvided() ||
              aspectRatioMode.isProvided() ||
              mirrorPreview.isProvided() ||

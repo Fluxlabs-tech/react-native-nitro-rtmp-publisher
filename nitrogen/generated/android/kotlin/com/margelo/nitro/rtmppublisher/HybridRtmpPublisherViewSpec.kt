@@ -49,6 +49,12 @@ abstract class HybridRtmpPublisherViewSpec: HybridView() {
   @get:Keep
   @set:DoNotStrip
   @set:Keep
+  abstract var legacyRtmpCompatibility: Boolean?
+  
+  @get:DoNotStrip
+  @get:Keep
+  @set:DoNotStrip
+  @set:Keep
   abstract var audioCodec: AudioCodec
   
   @get:DoNotStrip

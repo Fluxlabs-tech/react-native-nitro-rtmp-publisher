@@ -111,6 +111,13 @@ namespace margelo::nitro::rtmppublisher {
     inline void setLowLatencyRateControl(std::optional<bool> lowLatencyRateControl) noexcept override {
       _swiftPart.setLowLatencyRateControl(lowLatencyRateControl);
     }
+    inline std::optional<bool> getLegacyRtmpCompatibility() noexcept override {
+      auto __result = _swiftPart.getLegacyRtmpCompatibility();
+      return __result;
+    }
+    inline void setLegacyRtmpCompatibility(std::optional<bool> legacyRtmpCompatibility) noexcept override {
+      _swiftPart.setLegacyRtmpCompatibility(legacyRtmpCompatibility);
+    }
     inline AudioCodec getAudioCodec() noexcept override {
       auto __result = _swiftPart.getAudioCodec();
       return static_cast<AudioCodec>(__result);

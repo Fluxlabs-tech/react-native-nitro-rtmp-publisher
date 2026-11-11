@@ -116,6 +116,12 @@ using namespace margelo::nitro::rtmppublisher::views;
           : !newViewProps.lowLatencyRateControl.hasSameValue(oldViewProps->lowLatencyRateControl)) {
       swiftPart.setLowLatencyRateControl(newViewProps.lowLatencyRateControl.get());
     }
+    // legacyRtmpCompatibility: optional
+    if (oldViewProps == nullptr
+          ? newViewProps.legacyRtmpCompatibility.isProvided()
+          : !newViewProps.legacyRtmpCompatibility.hasSameValue(oldViewProps->legacyRtmpCompatibility)) {
+      swiftPart.setLegacyRtmpCompatibility(newViewProps.legacyRtmpCompatibility.get());
+    }
     // audioCodec: enum
     if (oldViewProps == nullptr
           ? newViewProps.audioCodec.isProvided()

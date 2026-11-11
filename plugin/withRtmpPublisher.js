@@ -52,8 +52,7 @@
 //       "ios": {
 //         "cameraUsage": "Stream live video from your camera.",
 //         "microphoneUsage": "Capture audio for live streams.",
-//         "enablePictureInPicture": true,   // add voip+audio bg modes (live PIP)
-//         "legacyRtmpCompatibility": true   // legacy-FMS RTMP connect fix
+//         "enablePictureInPicture": true    // add voip+audio bg modes (live PIP)
 //       },
 //       "android": {
 //         "disableForegroundService": true, // opt out of the FG service
@@ -69,10 +68,10 @@
 // the "Foreground services" form. The trade-off is that streams cannot
 // survive backgrounding on Android 14+. See README.md.
 //
-// Setting `legacyRtmpCompatibility: true` (iOS only, default false) writes
-// `NitroRtmpPublisherLegacyRtmpCompatibility` to Info.plist. The publisher
-// then sends the FMLE releaseStream/FCPublish commands itself, without
-// waiting for replies. Without it, publishing to legacy Flash-Media-
+// `legacyRtmpCompatibility` is no longer a plugin option: since 2.0 it is a
+// prop on RtmpPublisherView, and passing it here only prints a warning. With
+// the prop on, the publisher sends the FMLE releaseStream/FCPublish commands
+// itself, without waiting for replies. Without it, publishing to legacy Flash-Media-
 // Server-style ingests (e.g. Agora RTLS, fmsVer FMS/3,0,1,123) stalls ~15s
 // because those servers never reply to those commands and HaishinKit awaits
 // them before sending createStream. Most ingests (YouTube, Twitch,
@@ -82,6 +81,7 @@
 
 const {
   AndroidConfig,
+  WarningAggregator,
   withAndroidManifest,
   withDangerousMod,
   withGradleProperties,
@@ -238,23 +238,21 @@ const withAndroidPictureInPicture = (config, { enablePictureInPicture } = {}) =>
   });
 };
 
-// Opt-in iOS fix for legacy Flash-Media-Server-style RTMP ingests (e.g.
-// Agora RTLS), which never reply to the FMLE releaseStream/FCPublish commands.
-// HaishinKit waits for those replies before createStream, so publishing stalls
-// for a request timeout (~15 s). The flag goes into Info.plist
-// (NitroRtmpPublisherLegacyRtmpCompatibility); the publisher then sends both
-// commands itself without waiting (HybridRtmpPublisherView+Streaming.swift).
+// `legacyRtmpCompatibility` was a plugin option in 1.x, where it patched
+// HaishinKit's source at pod install. Since 2.0 it is a prop on
+// RtmpPublisherView, read when a stream starts. An app that still passes the
+// option would silently lose the behaviour, so say so at prebuild.
 const withLegacyRtmpCompatibility = (
   config,
   { legacyRtmpCompatibility } = {}
 ) => {
-  if (!legacyRtmpCompatibility) {
-    return config;
+  if (legacyRtmpCompatibility !== undefined) {
+    WarningAggregator.addWarningIOS(
+      PKG_NAME,
+      'The "legacyRtmpCompatibility" plugin option does nothing since 2.0. Pass the legacyRtmpCompatibility prop to RtmpPublisherView instead.'
+    );
   }
-  return withInfoPlist(config, (config) => {
-    config.modResults.NitroRtmpPublisherLegacyRtmpCompatibility = true;
-    return config;
-  });
+  return config;
 };
 
 const withRtmpPublisher = (config, props = {}) => {

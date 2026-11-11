@@ -113,6 +113,15 @@ namespace margelo::nitro::rtmppublisher {
     static const auto method = _javaPart->javaClassStatic()->getMethod<void(jni::alias_ref<jni::JBoolean> /* lowLatencyRateControl */)>("setLowLatencyRateControl");
     method(_javaPart, lowLatencyRateControl.has_value() ? jni::JBoolean::valueOf(lowLatencyRateControl.value()) : nullptr);
   }
+  std::optional<bool> JHybridRtmpPublisherViewSpec::getLegacyRtmpCompatibility() {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<jni::local_ref<jni::JBoolean>()>("getLegacyRtmpCompatibility");
+    auto __result = method(_javaPart);
+    return __result != nullptr ? std::make_optional(static_cast<bool>(__result->value())) : std::nullopt;
+  }
+  void JHybridRtmpPublisherViewSpec::setLegacyRtmpCompatibility(std::optional<bool> legacyRtmpCompatibility) {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<void(jni::alias_ref<jni::JBoolean> /* legacyRtmpCompatibility */)>("setLegacyRtmpCompatibility");
+    method(_javaPart, legacyRtmpCompatibility.has_value() ? jni::JBoolean::valueOf(legacyRtmpCompatibility.value()) : nullptr);
+  }
   AudioCodec JHybridRtmpPublisherViewSpec::getAudioCodec() {
     static const auto method = _javaPart->javaClassStatic()->getMethod<jni::local_ref<JAudioCodec>()>("getAudioCodec");
     auto __result = method(_javaPart);

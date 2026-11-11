@@ -678,26 +678,18 @@ extension HybridRtmpPublisherView {
     }
   }
 
-  /// `legacyRtmpCompatibility` from the config plugin, written to Info.plist.
-  /// Legacy Flash-Media-Server-style ingests never answer `releaseStream` /
-  /// `FCPublish`, and HaishinKit waits for those answers before
-  /// `createStream` (one request timeout, ~15 s). In this mode the stream
-  /// gets no `fcPublishName`, and `sendLegacyFmleCommandsIfEnabled` sends both
-  /// commands without waiting for a reply.
-  static let legacyRtmpCompatibility: Bool =
-    Bundle.main.object(forInfoDictionaryKey: "NitroRtmpPublisherLegacyRtmpCompatibility") as? Bool ?? false
-
-  /// Sends the FMLE `releaseStream` / `FCPublish` pair without waiting for the
-  /// replies, between `connect` and `publish`. HaishinKit sends `createStream`
-  /// during `connect`, so in this mode the pair follows it instead of
-  /// preceding it.
+  /// The `legacyRtmpCompatibility` prop. Legacy Flash-Media-Server-style
+  /// ingests never answer `releaseStream` / `FCPublish`, and HaishinKit waits
+  /// for those answers before `createStream` (one request timeout, 15 s). With
+  /// the prop on, the stream gets no `fcPublishName`, and this sends both
+  /// commands between `connect` and `publish` without waiting for a reply.
+  /// HaishinKit sends `createStream` during `connect`, so the pair follows it
+  /// instead of preceding it.
   func sendLegacyFmleCommandsIfEnabled(_ streamKey: String) async {
-    guard Self.legacyRtmpCompatibility else { return }
+    guard sendsFmleCommandsItself else { return }
     let connection = self.connection
-    Task { _ = try? await connection.call("releaseStream", arguments: streamKey) }
-    Task { _ = try? await connection.call("FCPublish", arguments: streamKey) }
-    // Give both a turn on the connection actor before `publish` is queued.
-    await Task.yield()
+    await connection.sendIgnoringReply("releaseStream", argument: streamKey)
+    await connection.sendIgnoringReply("FCPublish", argument: streamKey)
   }
 
   /// Sizes ("WxH") where a low-latency H.264 session was built and prepared.
@@ -1101,9 +1093,11 @@ extension HybridRtmpPublisherView {
     Task { try? await oldConnection.close() }
 
     let newConnection = RTMPConnection(requestTimeout: 15_000)
+    let legacyFmle = self.legacyRtmpCompatibility ?? false
+    self.sendsFmleCommandsItself = legacyFmle
     let newStream = RTMPStream(
       connection: newConnection,
-      fcPublishName: Self.legacyRtmpCompatibility ? nil : streamKey
+      fcPublishName: legacyFmle ? nil : streamKey
     )
     self.connection = newConnection
     self.stream = newStream
@@ -1114,5 +1108,17 @@ extension HybridRtmpPublisherView {
     await installBitrateStrategy(on: newStream)
     applyVideoSettings()
     applyAudioSettings()
+  }
+}
+
+extension RTMPConnection {
+  /// Sends a command and returns without waiting for the server's reply.
+  ///
+  /// The task starts on this actor, and `call` hands the command to the socket
+  /// before it first suspends. So commands leave in the order this is called,
+  /// ahead of anything the caller sends afterwards. The reply, or the timeout
+  /// that stands in for one, is dropped.
+  func sendIgnoringReply(_ commandName: String, argument: String) {
+    Task { _ = try? await self.call(commandName, arguments: argument) }
   }
 }
