@@ -42,8 +42,8 @@ jobs:
       run: npm ci
       working-directory: example
 
-    # example/ios isn't committed. Prebuild generates it, and the library's
-    # config plugin adds the vendored HaishinKit podspecs to its Podfile.
+    # example/ios isn't committed. Prebuild generates it. HaishinKit comes in
+    # as a Swift package, which Xcode resolves during the build.
     - name: Generate the example's native project
       run: npx expo prebuild --platform ios --no-install
       working-directory: example

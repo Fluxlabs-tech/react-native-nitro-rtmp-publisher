@@ -12,8 +12,8 @@
 // Forward declaration of `HybridRtmpPublisherViewSpec_cxx` to properly resolve imports.
 namespace NitroRtmpPublisher { class HybridRtmpPublisherViewSpec_cxx; }
 
-// Forward declaration of `VideoCodec` to properly resolve imports.
-namespace margelo::nitro::rtmppublisher { enum class VideoCodec; }
+// Forward declaration of `RtmpVideoCodec` to properly resolve imports.
+namespace margelo::nitro::rtmppublisher { enum class RtmpVideoCodec; }
 // Forward declaration of `AudioCodec` to properly resolve imports.
 namespace margelo::nitro::rtmppublisher { enum class AudioCodec; }
 // Forward declaration of `AspectRatioMode` to properly resolve imports.
@@ -31,7 +31,7 @@ namespace margelo::nitro::rtmppublisher { enum class RecordStatus; }
 // Forward declaration of `RtmpConnectionEvent` to properly resolve imports.
 namespace margelo::nitro::rtmppublisher { enum class RtmpConnectionEvent; }
 
-#include "VideoCodec.hpp"
+#include "RtmpVideoCodec.hpp"
 #include <optional>
 #include "AudioCodec.hpp"
 #include "AspectRatioMode.hpp"
@@ -97,11 +97,11 @@ namespace margelo::nitro::rtmppublisher {
     inline void setForceHardwareCodec(bool forceHardwareCodec) noexcept override {
       _swiftPart.setForceHardwareCodec(std::forward<decltype(forceHardwareCodec)>(forceHardwareCodec));
     }
-    inline VideoCodec getVideoCodec() noexcept override {
+    inline RtmpVideoCodec getVideoCodec() noexcept override {
       auto __result = _swiftPart.getVideoCodec();
-      return static_cast<VideoCodec>(__result);
+      return static_cast<RtmpVideoCodec>(__result);
     }
-    inline void setVideoCodec(VideoCodec videoCodec) noexcept override {
+    inline void setVideoCodec(RtmpVideoCodec videoCodec) noexcept override {
       _swiftPart.setVideoCodec(static_cast<int>(videoCodec));
     }
     inline std::optional<bool> getLowLatencyRateControl() noexcept override {

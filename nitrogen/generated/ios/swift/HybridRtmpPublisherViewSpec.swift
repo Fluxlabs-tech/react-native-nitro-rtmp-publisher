@@ -11,7 +11,7 @@ import NitroModules
 public protocol HybridRtmpPublisherViewSpec_protocol: HybridObject, HybridView {
   // Properties
   var forceHardwareCodec: Bool { get set }
-  var videoCodec: VideoCodec { get set }
+  var videoCodec: RtmpVideoCodec { get set }
   var lowLatencyRateControl: Bool? { get set }
   var audioCodec: AudioCodec { get set }
   var aspectRatioMode: AspectRatioMode { get set }

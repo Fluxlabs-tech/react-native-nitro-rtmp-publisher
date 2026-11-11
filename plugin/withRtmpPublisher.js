@@ -4,12 +4,10 @@
 // Runs at `expo prebuild` time. Does two things so Expo users don't have to
 // touch native projects:
 //
-//   1. iOS — injects the two vendored HaishinKit podspec lines into the
-//      generated `ios/Podfile`. Upstream HaishinKit stopped publishing
-//      podspecs to CocoaPods trunk after 2.0.9, so we ship our own and
-//      tell CocoaPods to use them. The plugin is idempotent: subsequent
-//      prebuilds replace the injected block in-place via @expo's
-//      `mergeContents` helper (delimited by tagged `# @generated` markers).
+//   1. iOS — removes the Podfile blocks that 1.x versions injected (the
+//      vendored HaishinKit podspecs and the legacy-RTMP source patch).
+//      HaishinKit now comes in as a Swift package through the podspec's
+//      `spm_dependency`, so the Podfile needs nothing from this plugin.
 //
 //   2. iOS — writes NSCameraUsageDescription / NSMicrophoneUsageDescription
 //      ONLY if the user explicitly supplies a string via plugin props.
@@ -71,10 +69,10 @@
 // the "Foreground services" form. The trade-off is that streams cannot
 // survive backgrounding on Android 14+. See README.md.
 //
-// Setting `legacyRtmpCompatibility: true` (iOS only, default false) injects
-// a post_install hook into ios/Podfile that patches HaishinKit's
-// RTMPStream.createStream() to fire the FMLE releaseStream/FCPublish
-// commands fire-and-forget. Without it, publishing to legacy Flash-Media-
+// Setting `legacyRtmpCompatibility: true` (iOS only, default false) writes
+// `NitroRtmpPublisherLegacyRtmpCompatibility` to Info.plist. The publisher
+// then sends the FMLE releaseStream/FCPublish commands itself, without
+// waiting for replies. Without it, publishing to legacy Flash-Media-
 // Server-style ingests (e.g. Agora RTLS, fmsVer FMS/3,0,1,123) stalls ~15s
 // because those servers never reply to those commands and HaishinKit awaits
 // them before sending createStream. Most ingests (YouTube, Twitch,
@@ -89,20 +87,18 @@ const {
   withGradleProperties,
   withInfoPlist,
 } = require('@expo/config-plugins');
-const { mergeContents } = require('@expo/config-plugins/build/utils/generateCode');
+const { removeContents } = require('@expo/config-plugins/build/utils/generateCode');
 const fs = require('fs');
 const path = require('path');
 
 const PKG_NAME = 'react-native-nitro-rtmp-publisher';
 
-const PODFILE_INJECTION = `
-  # Vendored HaishinKit 2.x podspecs. Upstream stopped publishing to
-  # CocoaPods trunk after 2.0.9 — these point at the current 2.3.x tag.
-  pod 'HaishinKit',     :podspec => '../node_modules/${PKG_NAME}/podspecs/HaishinKit.podspec'
-  pod 'RTMPHaishinKit', :podspec => '../node_modules/${PKG_NAME}/podspecs/RTMPHaishinKit.podspec'
-`.trim();
-
-const withPodfilePatch = (config) => {
+// HaishinKit comes in as a Swift package (`spm_dependency` in the podspec), so
+// the Podfile needs nothing from this plugin. Earlier versions injected two
+// tagged blocks (the vendored HaishinKit podspecs and the legacy-RTMP source
+// patch); remove them, so a prebuild without --clean doesn't point CocoaPods at
+// podspecs that no longer exist.
+const withPodfileCleanup = (config) => {
   return withDangerousMod(config, [
     'ios',
     async (config) => {
@@ -111,35 +107,15 @@ const withPodfilePatch = (config) => {
         'Podfile'
       );
       if (!fs.existsSync(podfilePath)) {
-        throw new Error(
-          `[${PKG_NAME}] ios/Podfile not found at ${podfilePath} — has prebuild run?`
-        );
+        return config;
       }
       const before = fs.readFileSync(podfilePath, 'utf8');
-
-      const result = mergeContents({
-        tag: PKG_NAME,
-        src: before,
-        newSrc: PODFILE_INJECTION,
-        // Anchor at the first `target '<app>' do` line — the line where
-        // RN/Expo Podfiles open the application target block.
-        anchor: /target\s+['"][^'"]+['"]\s+do\b/,
-        offset: 1, // insert AFTER the matching line, inside the target block
-        comment: '#',
-      });
-
-      // mergeContents returns didMerge=false / didClear=false in two cases:
-      //   (a) the tagged block is already present and matches — idempotent
-      //   (b) neither the block nor the anchor was found — failure
-      // We distinguish by checking the output for our tag.
-      if (!result.contents.includes(`@generated begin ${PKG_NAME}`)) {
-        throw new Error(
-          `[${PKG_NAME}] couldn't locate a \`target '...' do\` block in ios/Podfile to inject HaishinKit pods. Add them manually — see the README.`
-        );
+      let contents = before;
+      for (const tag of [PKG_NAME, `${PKG_NAME}-legacy-rtmp`]) {
+        contents = removeContents({ src: contents, tag }).contents;
       }
-
-      if (result.contents !== before) {
-        fs.writeFileSync(podfilePath, result.contents);
+      if (contents !== before) {
+        fs.writeFileSync(podfilePath, contents);
       }
       return config;
     },
@@ -263,42 +239,11 @@ const withAndroidPictureInPicture = (config, { enablePictureInPicture } = {}) =>
 };
 
 // Opt-in iOS fix for legacy Flash-Media-Server-style RTMP ingests (e.g.
-// Agora RTLS). Injects a post_install hook into ios/Podfile that rewrites
-// HaishinKit RTMPStream.createStream() so the FMLE releaseStream/FCPublish
-// calls are fire-and-forget detached Tasks instead of `async let _` bindings
-// (which Swift implicitly awaits at the end of the enclosing `if`, blocking
-// createStream ~15s on servers that never reply to those commands).
-//
-// Why a post_install hook and not the podspec's prepare_command: a
-// prepare_command always runs and its output is baked into the CocoaPods
-// download cache (keyed by git tag, not by our flag), so it can't be toggled
-// per-app and would leak across projects sharing the cache. post_install
-// runs on every `pod install` against the freshly-laid-down Pods/ tree, so
-// it's both opt-in and cache-immune. The patch is idempotent (skips if
-// already applied) and a no-op if upstream renames the lines on a bump.
-const PODFILE_LEGACY_RTMP_PATCH = `  rtmp_hk_stream = File.join(__dir__, 'Pods', 'RTMPHaishinKit', 'RTMPHaishinKit', 'Sources', 'RTMP', 'RTMPStream.swift')
-  if File.exist?(rtmp_hk_stream)
-    rtmp_src = File.read(rtmp_hk_stream)
-    rtmp_orig = rtmp_src.dup
-    {
-      'async let _ = connection?.call("releaseStream", arguments: fcPublishName)' =>
-        'Task { _ = try? await connection?.call("releaseStream", arguments: fcPublishName) }',
-      'async let _ = connection?.call("FCPublish", arguments: fcPublishName)' =>
-        'Task { _ = try? await connection?.call("FCPublish", arguments: fcPublishName) }',
-    }.each do |rtmp_from, rtmp_to|
-      next if rtmp_src.include?(rtmp_to)
-      rtmp_src = rtmp_src.sub(rtmp_from, rtmp_to) if rtmp_src.include?(rtmp_from)
-    end
-    # Only write when something actually changed — and make the file writable
-    # first. CocoaPods lays pod sources down read-only on CI (e.g. EAS Build),
-    # so an unconditional File.write fails with EACCES. Skipping the write when
-    # already patched also keeps idempotent re-runs from touching a RO file.
-    if rtmp_src != rtmp_orig
-      File.chmod(0644, rtmp_hk_stream) rescue nil
-      File.write(rtmp_hk_stream, rtmp_src)
-    end
-  end`;
-
+// Agora RTLS), which never reply to the FMLE releaseStream/FCPublish commands.
+// HaishinKit waits for those replies before createStream, so publishing stalls
+// for a request timeout (~15 s). The flag goes into Info.plist
+// (NitroRtmpPublisherLegacyRtmpCompatibility); the publisher then sends both
+// commands itself without waiting (HybridRtmpPublisherView+Streaming.swift).
 const withLegacyRtmpCompatibility = (
   config,
   { legacyRtmpCompatibility } = {}
@@ -306,56 +251,18 @@ const withLegacyRtmpCompatibility = (
   if (!legacyRtmpCompatibility) {
     return config;
   }
-  return withDangerousMod(config, [
-    'ios',
-    async (config) => {
-      const podfilePath = path.join(
-        config.modRequest.platformProjectRoot,
-        'Podfile'
-      );
-      if (!fs.existsSync(podfilePath)) {
-        throw new Error(
-          `[${PKG_NAME}] ios/Podfile not found at ${podfilePath} — has prebuild run?`
-        );
-      }
-      const before = fs.readFileSync(podfilePath, 'utf8');
-
-      const result = mergeContents({
-        tag: `${PKG_NAME}-legacy-rtmp`,
-        src: before,
-        newSrc: PODFILE_LEGACY_RTMP_PATCH,
-        // Insert as the first statements inside the existing post_install
-        // block — by then every pod is downloaded into Pods/.
-        anchor: /post_install do \|[^|]*\|/,
-        offset: 1,
-        comment: '#',
-      });
-
-      if (!result.contents.includes(`@generated begin ${PKG_NAME}-legacy-rtmp`)) {
-        throw new Error(
-          `[${PKG_NAME}] couldn't find a \`post_install do |installer|\` block in ios/Podfile to inject the legacy-RTMP compatibility patch. Add it manually — see the README.`
-        );
-      }
-
-      if (result.contents !== before) {
-        fs.writeFileSync(podfilePath, result.contents);
-      }
-      return config;
-    },
-  ]);
+  return withInfoPlist(config, (config) => {
+    config.modResults.NitroRtmpPublisherLegacyRtmpCompatibility = true;
+    return config;
+  });
 };
 
-// Props are grouped by platform: `ios` / `android` sub-objects carry
-// platform-specific options, and any remaining top-level key is "common" and
-// applied to both platforms. A platform key overrides a common key of the
-// same name. Each modifier below is inherently single-platform, so we hand it
-// the merged set for its platform and it picks out the keys it cares about.
 const withRtmpPublisher = (config, props = {}) => {
   const { ios = {}, android = {}, ...common } = props;
   const iosProps = { ...common, ...ios };
   const androidProps = { ...common, ...android };
 
-  config = withPodfilePatch(config);
+  config = withPodfileCleanup(config);
   config = withPermissions(config, iosProps);
   config = withIosPictureInPicture(config, iosProps);
   config = withFgsOptOut(config, androidProps);

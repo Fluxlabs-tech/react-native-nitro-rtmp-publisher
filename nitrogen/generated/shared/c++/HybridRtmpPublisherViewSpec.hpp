@@ -13,8 +13,8 @@
 #error NitroModules cannot be found! Are you sure you installed NitroModules properly?
 #endif
 
-// Forward declaration of `VideoCodec` to properly resolve imports.
-namespace margelo::nitro::rtmppublisher { enum class VideoCodec; }
+// Forward declaration of `RtmpVideoCodec` to properly resolve imports.
+namespace margelo::nitro::rtmppublisher { enum class RtmpVideoCodec; }
 // Forward declaration of `AudioCodec` to properly resolve imports.
 namespace margelo::nitro::rtmppublisher { enum class AudioCodec; }
 // Forward declaration of `AspectRatioMode` to properly resolve imports.
@@ -32,7 +32,7 @@ namespace margelo::nitro::rtmppublisher { enum class RecordStatus; }
 // Forward declaration of `RtmpConnectionEvent` to properly resolve imports.
 namespace margelo::nitro::rtmppublisher { enum class RtmpConnectionEvent; }
 
-#include "VideoCodec.hpp"
+#include "RtmpVideoCodec.hpp"
 #include <optional>
 #include "AudioCodec.hpp"
 #include "AspectRatioMode.hpp"
@@ -75,8 +75,8 @@ namespace margelo::nitro::rtmppublisher {
       // Properties
       virtual bool getForceHardwareCodec() = 0;
       virtual void setForceHardwareCodec(bool forceHardwareCodec) = 0;
-      virtual VideoCodec getVideoCodec() = 0;
-      virtual void setVideoCodec(VideoCodec videoCodec) = 0;
+      virtual RtmpVideoCodec getVideoCodec() = 0;
+      virtual void setVideoCodec(RtmpVideoCodec videoCodec) = 0;
       virtual std::optional<bool> getLowLatencyRateControl() = 0;
       virtual void setLowLatencyRateControl(std::optional<bool> lowLatencyRateControl) = 0;
       virtual AudioCodec getAudioCodec() = 0;

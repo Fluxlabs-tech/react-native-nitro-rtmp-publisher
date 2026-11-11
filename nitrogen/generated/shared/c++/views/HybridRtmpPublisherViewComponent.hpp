@@ -17,7 +17,7 @@
 
 #include <string>
 
-#include "VideoCodec.hpp"
+#include "RtmpVideoCodec.hpp"
 #include <optional>
 #include "AudioCodec.hpp"
 #include "AspectRatioMode.hpp"
@@ -50,7 +50,7 @@ namespace margelo::nitro::rtmppublisher::views {
 
   public:
     nitro::ReactProp<bool> forceHardwareCodec;
-    nitro::ReactProp<VideoCodec> videoCodec;
+    nitro::ReactProp<RtmpVideoCodec> videoCodec;
     nitro::ReactProp<std::optional<bool>> lowLatencyRateControl;
     nitro::ReactProp<AudioCodec> audioCodec;
     nitro::ReactProp<AspectRatioMode> aspectRatioMode;

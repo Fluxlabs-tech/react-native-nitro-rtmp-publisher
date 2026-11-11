@@ -22,12 +22,12 @@ namespace margelo::nitro::rtmppublisher { class HybridRtmpPublisherViewSpec; }
 namespace margelo::nitro::rtmppublisher { enum class RecordStatus; }
 // Forward declaration of `RtmpConnectionEvent` to properly resolve imports.
 namespace margelo::nitro::rtmppublisher { enum class RtmpConnectionEvent; }
+// Forward declaration of `RtmpVideoCodec` to properly resolve imports.
+namespace margelo::nitro::rtmppublisher { enum class RtmpVideoCodec; }
 // Forward declaration of `StreamMode` to properly resolve imports.
 namespace margelo::nitro::rtmppublisher { enum class StreamMode; }
 // Forward declaration of `ThermalStatus` to properly resolve imports.
 namespace margelo::nitro::rtmppublisher { enum class ThermalStatus; }
-// Forward declaration of `VideoCodec` to properly resolve imports.
-namespace margelo::nitro::rtmppublisher { enum class VideoCodec; }
 
 // Include C++ defined types
 #include "AspectRatioMode.hpp"
@@ -37,9 +37,9 @@ namespace margelo::nitro::rtmppublisher { enum class VideoCodec; }
 #include "HybridRtmpPublisherViewSpec.hpp"
 #include "RecordStatus.hpp"
 #include "RtmpConnectionEvent.hpp"
+#include "RtmpVideoCodec.hpp"
 #include "StreamMode.hpp"
 #include "ThermalStatus.hpp"
-#include "VideoCodec.hpp"
 #include <NitroModules/Result.hpp>
 #include <exception>
 #include <functional>

@@ -21,8 +21,14 @@ export type RtmpConnectionEvent =
 
 export type CameraFacing = 'front' | 'back'
 
-/** Video codecs supported by RootEncoder. RTMP servers usually require H264. */
-export type VideoCodec = 'h264' | 'h265' | 'av1'
+/**
+ * Video codecs supported by RootEncoder. RTMP servers usually require H264.
+ *
+ * Named `RtmpVideoCodec`, not `VideoCodec`, because the name becomes a generated
+ * C++ header. react-native-vision-camera generates a `VideoCodec.hpp` too, and in
+ * an app built with frameworks Xcode resolves that bare name to only one of them.
+ */
+export type RtmpVideoCodec = 'h264' | 'h265' | 'av1'
 
 /** Audio codecs supported by RootEncoder. RTMP requires AAC. */
 export type AudioCodec = 'aac' | 'g711' | 'opus'
@@ -106,7 +112,7 @@ export interface RtmpPublisherViewProps extends HybridViewProps {
    * Video codec used by the encoder. Most RTMP ingest only supports H264.
    * @default 'h264'
    */
-  videoCodec: VideoCodec
+  videoCodec: RtmpVideoCodec
 
   /**
    * **iOS only.** Encode H.264 with VideoToolbox's low-latency rate control

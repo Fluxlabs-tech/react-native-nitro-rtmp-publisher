@@ -139,7 +139,7 @@ open class HybridRtmpPublisherViewSpec_cxx {
     }
     @inline(__always)
     set {
-      self.__implementation.videoCodec = margelo.nitro.rtmppublisher.VideoCodec(rawValue: newValue)!
+      self.__implementation.videoCodec = margelo.nitro.rtmppublisher.RtmpVideoCodec(rawValue: newValue)!
     }
   }
   

@@ -964,7 +964,7 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
       safe("applyCodecType") { applyCodecType() }
     }
 
-  override var videoCodec: VideoCodec = VideoCodec.H264
+  override var videoCodec: RtmpVideoCodec = RtmpVideoCodec.H264
     set(value) {
       if (field == value) return
       if (camera.isStreaming) {

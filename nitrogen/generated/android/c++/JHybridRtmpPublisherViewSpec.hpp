@@ -52,8 +52,8 @@ namespace margelo::nitro::rtmppublisher {
     // Properties
     bool getForceHardwareCodec() override;
     void setForceHardwareCodec(bool forceHardwareCodec) override;
-    VideoCodec getVideoCodec() override;
-    void setVideoCodec(VideoCodec videoCodec) override;
+    RtmpVideoCodec getVideoCodec() override;
+    void setVideoCodec(RtmpVideoCodec videoCodec) override;
     std::optional<bool> getLowLatencyRateControl() override;
     void setLowLatencyRateControl(std::optional<bool> lowLatencyRateControl) override;
     AudioCodec getAudioCodec() override;

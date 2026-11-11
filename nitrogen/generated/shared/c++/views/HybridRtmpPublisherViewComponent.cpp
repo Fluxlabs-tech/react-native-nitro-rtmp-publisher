@@ -21,7 +21,7 @@ namespace margelo::nitro::rtmppublisher::views {
                                                              const react::RawProps& rawProps):
     react::ViewProps(context, sourceProps, rawProps, filterObjectKeys),
     forceHardwareCodec(nitro::ReactProp<bool>::fromRawValue("RtmpPublisherView", "forceHardwareCodec", rawProps, sourceProps.forceHardwareCodec)),
-    videoCodec(nitro::ReactProp<VideoCodec>::fromRawValue("RtmpPublisherView", "videoCodec", rawProps, sourceProps.videoCodec)),
+    videoCodec(nitro::ReactProp<RtmpVideoCodec>::fromRawValue("RtmpPublisherView", "videoCodec", rawProps, sourceProps.videoCodec)),
     lowLatencyRateControl(nitro::ReactProp<std::optional<bool>>::fromRawValue("RtmpPublisherView", "lowLatencyRateControl", rawProps, sourceProps.lowLatencyRateControl)),
     audioCodec(nitro::ReactProp<AudioCodec>::fromRawValue("RtmpPublisherView", "audioCodec", rawProps, sourceProps.audioCodec)),
     aspectRatioMode(nitro::ReactProp<AspectRatioMode>::fromRawValue("RtmpPublisherView", "aspectRatioMode", rawProps, sourceProps.aspectRatioMode)),

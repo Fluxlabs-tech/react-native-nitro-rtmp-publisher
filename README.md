@@ -96,6 +96,8 @@ yarn add  react-native-nitro-rtmp-publisher react-native-nitro-modules
 | iOS | 15+ |
 | Android | `minSdkVersion` 21+ |
 
+> **Upgrading from 1.x?** 2.0 changes how iOS links HaishinKit. Read [How HaishinKit is linked](#how-haishinkit-is-linked) first: an app built with static frameworks can't use 2.0. The `VideoCodec` type is now `RtmpVideoCodec`; the old name still works as an alias. There are no other JS or native API changes.
+
 > **Upgrading from 0.x?** 1.0 has no JS or native API changes. Bump `react-native-nitro-modules` to 0.37+ alongside this package, then rebuild the native app (`npx expo prebuild`, or `pod install` in bare projects). An older Nitro fails at native compile time with missing `NitroModules/ReactProp.hpp` / `ViewComponentDescriptor.hpp`.
 
 ### iOS — Expo (one-liner)
@@ -110,7 +112,9 @@ Add the package's Expo config plugin to your `app.json` (or `app.config.js`) and
 }
 ```
 
-That's it. The plugin will inject the two vendored `HaishinKit` + `RTMPHaishinKit` pod entries into your generated `ios/Podfile` (idempotent — re-running prebuild won't duplicate them). It will **not** touch your `Info.plist` unless you opt in explicitly.
+That's it. HaishinKit comes in as a Swift package (see [How HaishinKit is linked](#how-haishinkit-is-linked)), so the plugin leaves your `ios/Podfile` alone. It will **not** touch your `Info.plist` unless you opt in explicitly.
+
+> **Upgrading from 1.x?** The next `expo prebuild` removes the two HaishinKit pod lines and the legacy-RTMP hook that 1.x injected into the Podfile.
 
 You still need to declare camera + mic usage strings yourself. The usual place is `expo.ios.infoPlist` in `app.json`:
 
@@ -141,20 +145,11 @@ If neither prop is passed, Info.plist is left untouched.
 
 > **Plugin options are grouped by platform.** Pass an `ios` and/or `android` sub-object for platform-specific options; any key at the top level is treated as common and applied to both platforms (a platform key overrides a common key of the same name). Available options: `ios.cameraUsage`, `ios.microphoneUsage`, `ios.legacyRtmpCompatibility` (see [iOS: Agora & legacy RTMP servers](#ios-streaming-to-agora-or-other-servers-with-a-legacy-rtmp-architecture)), `enablePictureInPicture` (common — arms system Picture-in-Picture on **iOS and Android** in one key: adds the `voip`+`audio` `UIBackgroundModes` on iOS and the activity manifest flags on Android; see [Picture-in-Picture](#picture-in-picture)), and `android.disableForegroundService` (see [Android: opting out of the foreground service](#android-opting-out-of-the-foreground-service)).
 
-### iOS — bare React Native (manual Podfile)
+### iOS — bare React Native
 
-If you're not on Expo, add the two vendored HaishinKit podspecs to your `ios/Podfile` (inside your `target` block), then `pod install`:
+Run `pod install`. The Podfile needs no extra lines.
 
-```ruby
-target 'YourApp' do
-  # … your existing config …
-
-  pod 'HaishinKit',     :podspec => '../node_modules/react-native-nitro-rtmp-publisher/podspecs/HaishinKit.podspec'
-  pod 'RTMPHaishinKit', :podspec => '../node_modules/react-native-nitro-rtmp-publisher/podspecs/RTMPHaishinKit.podspec'
-end
-```
-
-> **Why two extra lines?** Upstream HaishinKit stopped publishing podspecs to CocoaPods after 2.0.9 (they moved fully to SPM). This package vendors podspecs that point at the current 2.3.x GitHub tag so CocoaPods consumers can still get the latest HaishinKit without forking. We pin both pods at the same version so cross-module `package`-level symbols resolve.
+> **Upgrading from 1.x?** First delete the two `pod 'HaishinKit', :podspec => …` and `pod 'RTMPHaishinKit', :podspec => …` lines from your Podfile. If you added the legacy-RTMP `post_install` block, delete that too and set the Info.plist key instead (see [iOS: Agora & legacy RTMP servers](#ios-streaming-to-agora-or-other-servers-with-a-legacy-rtmp-architecture)).
 
 Add the privacy descriptions to your `Info.plist` so iOS can prompt the user the first time the publisher accesses the camera / microphone:
 
@@ -175,6 +170,26 @@ If you want streaming to continue while the user briefly backgrounds the app, al
 ```
 
 **Minimum**: iOS 15 (HaishinKit 2.x requirement). **Xcode**: 15+ recommended. If you need iOS 13/14 support, pin to v0.3.x of this package (HaishinKit 1.9.x).
+
+### How HaishinKit is linked
+
+HaishinKit ships through Swift Package Manager only; its last CocoaPods release was 2.0.9. This package's podspec declares HaishinKit 2.3.0 with React Native's `spm_dependency`, which adds the Swift package to the Pods project. Xcode resolves the package when it builds, so a clean build needs network access to github.com.
+
+What your app needs:
+
+- **React Native 0.75 or later**, the first version with `spm_dependency`.
+- **A linkage that works with Swift packages in pods:**
+
+| App setup | Status |
+|---|---|
+| No `use_frameworks!` (static libraries, the React Native default) | Works. Tested with React Native 0.86 (Expo SDK 57); not yet tested on 0.88. |
+| Dynamic frameworks: `use_frameworks! :linkage => :dynamic`, or `ios.useFrameworks: "dynamic"` in `expo-build-properties` | Works. Tested with React Native 0.88 (Expo SDK 58). On Expo SDK 58, also set `ios.usePrecompiledModules: false` if the app has other Nitro modules. |
+| Static frameworks on Expo SDK 58 (`ios.useFrameworks: "static"`) | Doesn't build. Stay on 1.x, which vendors HaishinKit podspecs instead. |
+
+Why, on Expo SDK 58 / React Native 0.88:
+
+- **Static frameworks.** Expo builds pods that depend on React as static libraries. For a static-library pod with a Swift package, React Native 0.88 puts the pod's umbrella header in the shared build products folder, and Clang then treats every header under that folder as part of this pod's module. An Objective-C import of such a header fails with `'cstddef' file not found` and `could not build module 'NitroRtmpPublisher'`, because the module contains Nitro's C++ headers.
+- **Dynamic frameworks with precompiled Expo modules.** Expo keeps this pod and NitroModules as dynamic frameworks but builds other Nitro modules as static libraries. Their Swift/C++ interop headers then clash (`reference to 'isUsableInGenericContext' is ambiguous`). With `usePrecompiledModules: false`, every pod is a dynamic framework.
 
 ### Android
 
@@ -350,18 +365,22 @@ The flag is **build-time only.** If you later need background streaming, you hav
 
 ### What this option changes, and why it's safe
 
-When you enable `ios.legacyRtmpCompatibility`, the library applies a one-line-per-statement patch to HaishinKit's `RTMPStream.createStream()`:
+By default the publisher gives HaishinKit the stream key as its FMLE publish name. HaishinKit then sends `releaseStream` and `FCPublish` before `createStream`, and waits for both replies.
 
-```diff
-- async let _ = connection?.call("releaseStream", arguments: fcPublishName)
-- async let _ = connection?.call("FCPublish",     arguments: fcPublishName)
-+ Task { _ = try? await connection?.call("releaseStream", arguments: fcPublishName) }
-+ Task { _ = try? await connection?.call("FCPublish",     arguments: fcPublishName) }
+With `ios.legacyRtmpCompatibility` on, the publisher leaves that name out and sends the two commands itself, right after the connection opens, without waiting for replies:
+
+```swift
+Task { _ = try? await connection.call("releaseStream", arguments: streamKey) }
+Task { _ = try? await connection.call("FCPublish", arguments: streamKey) }
 ```
 
-The original `async let _` bindings look fire-and-forget but aren't: Swift **implicitly awaits** an `async let` at the end of its enclosing scope, so `createStream()` couldn't proceed until both calls returned (or timed out). Wrapping each call in a detached `Task` makes it *genuinely* fire-and-forget — `releaseStream`/`FCPublish` are still sent (legacy servers that do care about them still receive them, in order, on the same RTMP chunk stream), but `createStream`/`publish` no longer block waiting on a reply. This is the same behavior OBS and the Android engine already use, and it drops the connect time from ~17 s to ~2–3 s. Against modern servers it's a no-op in practice: they were replying instantly anyway, so not awaiting the reply changes nothing observable.
+Legacy servers that care about these commands still receive them, and `publish` no longer waits ~15 s for replies that never come. OBS and the Android engine already behave this way. Against modern servers nothing observable changes: they reply at once either way.
 
-**Why it's opt-in / off by default.** It's a source patch of a third-party dependency (HaishinKit), and the overwhelming majority of ingests connect fine without it. So we don't apply it unless you explicitly ask for it — enable it **only** if you publish to Agora RTLS or another legacy FMS/FMLE-style server that's slow to connect on iOS.
+One difference from HaishinKit's own sequence: the two commands now follow `createStream` instead of preceding it (`connect → createStream → releaseStream → FCPublish → publish`).
+
+**Why it's opt-in / off by default.** Most ingests connect fine with HaishinKit's own sequence, so the publisher keeps it unless you ask. Enable it **only** if you publish to Agora RTLS or another legacy FMS/FMLE-style server that's slow to connect on iOS.
+
+> Versions before 2.0 did this by patching HaishinKit's source from a Podfile `post_install` hook. That hook is gone: the option needs no Podfile change.
 
 ### How to enable it
 
@@ -379,45 +398,16 @@ The original `async let _` bindings look fire-and-forget but aren't: Swift **imp
 }
 ```
 
-Re-run `expo prebuild` and `pod install` after toggling. The plugin injects a `post_install` hook into `ios/Podfile` that applies the patch on every install. (It runs against the freshly-installed `Pods/` tree, so unlike a podspec `prepare_command` it isn't affected by the CocoaPods download cache and stays per-app.)
+Re-run `expo prebuild` after toggling. The plugin writes `NitroRtmpPublisherLegacyRtmpCompatibility` to `Info.plist`, which the publisher reads at launch.
 
-#### Bare React Native (manual Podfile)
+#### Bare React Native
 
-Add this inside the `post_install do |installer|` block of your `ios/Podfile`, then `pod install`:
+Add the key to your app's `Info.plist`:
 
-```ruby
-post_install do |installer|
-  # … your existing react_native_post_install(…) call …
-
-  # Legacy-RTMP fix (Agora RTLS or any legacy FMS-style server): send
-  # releaseStream/FCPublish fire-and-forget so createStream isn't blocked
-  # ~15s on servers that never reply to them. Idempotent; no-op if upstream
-  # renames the lines.
-  rtmp_hk_stream = File.join(__dir__, 'Pods', 'RTMPHaishinKit', 'RTMPHaishinKit', 'Sources', 'RTMP', 'RTMPStream.swift')
-  if File.exist?(rtmp_hk_stream)
-    rtmp_src = File.read(rtmp_hk_stream)
-    rtmp_orig = rtmp_src.dup
-    {
-      'async let _ = connection?.call("releaseStream", arguments: fcPublishName)' =>
-        'Task { _ = try? await connection?.call("releaseStream", arguments: fcPublishName) }',
-      'async let _ = connection?.call("FCPublish", arguments: fcPublishName)' =>
-        'Task { _ = try? await connection?.call("FCPublish", arguments: fcPublishName) }',
-    }.each do |rtmp_from, rtmp_to|
-      next if rtmp_src.include?(rtmp_to)
-      rtmp_src = rtmp_src.sub(rtmp_from, rtmp_to) if rtmp_src.include?(rtmp_from)
-    end
-    # Only write when changed, and make the file writable first — CocoaPods
-    # lays pod sources down read-only on CI (e.g. EAS Build), so an
-    # unconditional File.write fails with EACCES.
-    if rtmp_src != rtmp_orig
-      File.chmod(0644, rtmp_hk_stream) rescue nil
-      File.write(rtmp_hk_stream, rtmp_src)
-    end
-  end
-end
+```xml
+<key>NitroRtmpPublisherLegacyRtmpCompatibility</key>
+<true/>
 ```
-
-> If you change the patch state, run `pod cache clean RTMPHaishinKit --all && rm -rf ios/Pods/RTMPHaishinKit` before `pod install` so CocoaPods re-lays-down the source the hook runs against.
 
 ---
 
@@ -1030,7 +1020,7 @@ Yes. Multi-tenant RTMPS ingests like LiveKit Cloud put each tenant on a per-subd
 
 ### Does it work with Expo and EAS Build?
 
-Yes — managed and bare both (tested on Expo SDK 57). Add `"react-native-nitro-rtmp-publisher"` to your `app.json` plugins list and re-run `expo prebuild`; the bundled Expo config plugin idempotently injects the vendored HaishinKit pods into your generated `Podfile`. No need to eject. See [Install → iOS — Expo (one-liner)](#ios--expo-one-liner).
+Yes — managed and bare both (tested on Expo SDK 57). Add `"react-native-nitro-rtmp-publisher"` to your `app.json` plugins list and re-run `expo prebuild`; the bundled Expo config plugin handles the native setup. No need to eject. See [Install → iOS — Expo (one-liner)](#ios--expo-one-liner).
 
 ### Does this support the React Native New Architecture (Fabric)?
 

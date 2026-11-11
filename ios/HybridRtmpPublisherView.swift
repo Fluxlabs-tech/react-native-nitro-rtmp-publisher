@@ -568,7 +568,7 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
 
   var forceHardwareCodec: Bool = true
 
-  var videoCodec: VideoCodec = .h264 {
+  var videoCodec: RtmpVideoCodec = .h264 {
     didSet {
       guard videoCodec != oldValue, !cachedIsStreaming else { return }
       applyVideoSettings()
