@@ -5,7 +5,7 @@
   <a href="https://www.npmjs.com/package/react-native-nitro-rtmp-publisher"><img alt="downloads" src="https://img.shields.io/npm/dm/react-native-nitro-rtmp-publisher.svg"></a>
   <a href="./LICENSE"><img alt="license" src="https://img.shields.io/npm/l/react-native-nitro-rtmp-publisher.svg"></a>
   <img alt="iOS" src="https://img.shields.io/badge/iOS-15.0%2B-000000.svg?logo=apple">
-  <img alt="Android" src="https://img.shields.io/badge/Android-21%2B-3DDC84.svg?logo=android">
+  <img alt="Android" src="https://img.shields.io/badge/Android-24%2B-3DDC84.svg?logo=android">
   <img alt="Nitro" src="https://img.shields.io/badge/Nitro-Modules-FF6B35.svg">
 </p>
 
@@ -18,6 +18,12 @@
   Built on <a href="https://nitro.margelo.com">Nitro Modules</a> ·
   Android backed by <a href="https://github.com/pedroSG94/RootEncoder">RootEncoder</a> ·
   iOS backed by <a href="https://github.com/HaishinKit/HaishinKit.swift">HaishinKit</a>
+</p>
+
+<p align="center">
+  <strong>Sponsored by</strong><br><br>
+  <a href="https://www.zooplive.com/"><img alt="Zoop" src="./.github/assets/zoop-logo.svg" width="200"></a><br><br>
+  India's live auction app for real brands. <a href="https://www.zooplive.com/">zooplive.com</a>
 </p>
 
 ---
