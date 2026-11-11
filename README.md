@@ -94,9 +94,9 @@ yarn add  react-native-nitro-rtmp-publisher react-native-nitro-modules
 | `react-native-nitro-modules` | **0.37 or newer** — the bundled Nitrogen bindings are generated with Nitrogen 0.37 and use View-component headers that older Nitro versions don't ship |
 | React Native | New Architecture (Fabric). Tested on React Native 0.86 / Expo SDK 57 |
 | iOS | 15+ |
-| Android | `minSdkVersion` 21+ |
+| Android | `minSdkVersion` 21+, Kotlin 2.2+ (React Native 0.88 or later) |
 
-> **Upgrading from 1.x?** 2.0 changes how iOS links HaishinKit. Read [How HaishinKit is linked](#how-haishinkit-is-linked) first: an app built with static frameworks can't use 2.0. The `VideoCodec` type is now `RtmpVideoCodec`; the old name still works as an alias. `legacyRtmpCompatibility` moved from a config-plugin option to a prop on the view.
+> **Upgrading from 1.x?** 2.0 changes how iOS links HaishinKit. Read [How HaishinKit is linked](#how-haishinkit-is-linked) first: an app built with static frameworks can't use 2.0. The `VideoCodec` type is now `RtmpVideoCodec`; the old name still works as an alias. `legacyRtmpCompatibility` moved from a config-plugin option to a prop on the view. On Android, 2.0 needs a Kotlin 2.2 compiler (React Native 0.88 or later).
 
 > **Upgrading from 0.x?** 1.0 has no JS or native API changes. Bump `react-native-nitro-modules` to 0.37+ alongside this package, then rebuild the native app (`npx expo prebuild`, or `pod install` in bare projects). An older Nitro fails at native compile time with missing `NitroModules/ReactProp.hpp` / `ViewComponentDescriptor.hpp`.
 
@@ -197,7 +197,7 @@ The library declares `CAMERA`, `RECORD_AUDIO`, `INTERNET`, `ACCESS_NETWORK_STATE
 
 You still need to request runtime permissions before mounting the view (see [Permissions](#permissions)).
 
-**Minimum**: `minSdkVersion` 21. **Kotlin**: 1.9+.
+**Minimum**: `minSdkVersion` 21. **Kotlin**: 2.2 or later, which React Native 0.88 ships. RootEncoder 2.8 brings in a Kotlin 2.3 standard library, and an older compiler stops with "Module was compiled with an incompatible version of Kotlin".
 
 ---
 
@@ -1023,7 +1023,7 @@ On iOS, audio continues if you declare `UIBackgroundModes: ["audio"]`; the video
 
 ### What's the minimum iOS and Android version?
 
-iOS 15+ (HaishinKit 2.x requirement) and Android `minSdkVersion` 21. For iOS 13 / 14, pin to `v0.3.x` of this package (HaishinKit 1.9.x).
+iOS 15+ (HaishinKit 2.x requirement) and Android `minSdkVersion` 21 with Kotlin 2.2+. For iOS 13 / 14, pin to `v0.3.x` of this package (HaishinKit 1.9.x).
 
 ### How does this compare to other React Native RTMP libraries?
 
@@ -1038,7 +1038,7 @@ Video: H.264 (AVC) and H.265 (HEVC) — both hardware-encoded via `VideoToolbox`
 ## Acknowledgements
 
 - [Nitro Modules](https://github.com/mrousavy/nitro) by Marc Rousavy — the JSI codegen that makes the typed bridge possible
-- [RootEncoder](https://github.com/pedroSG94/RootEncoder) by Pedro Sánchez — Android RTMP runtime (consumed via the [Fluxlabs-tech fork](https://github.com/Fluxlabs-tech/RootEncoder/tree/2.6.1-zoop), 2.6.1 + a one-line TLS-SNI patch for SNI-routed RTMPS ingests)
+- [RootEncoder](https://github.com/pedroSG94/RootEncoder) by Pedro Sánchez — Android RTMP runtime (2.8.2, straight from upstream; 1.x used a Fluxlabs-tech fork of 2.6.1 that added TLS SNI, which upstream has sent since 2.7.3)
 - [HaishinKit.swift](https://github.com/HaishinKit/HaishinKit.swift) by Shogo Endo — iOS RTMP runtime
 
 ---

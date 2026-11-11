@@ -51,7 +51,8 @@
           "android": {}
         }
       ],
-      "expo-status-bar"
+      "expo-status-bar",
+      "./plugins/withKotlinVersion"
     ]
   }
 }

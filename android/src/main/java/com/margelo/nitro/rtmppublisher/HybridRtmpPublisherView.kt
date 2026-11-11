@@ -238,6 +238,10 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
   // jitter cache (chunk stays 4096). Scheduled in onConnectionSuccess, cancelled
   // / re-applied on every fresh disconnect→reconnect.
   @Volatile internal var reconnectTuningActive = false
+  // The RTMP write-chunk size the next stream should use: RECONNECT_CHUNK_SIZE
+  // for a reconnect-safe resume, the stream mode's size for a fresh start. Set
+  // while the start is being prepared, applied in launchEncoder.
+  @Volatile internal var pendingWriteChunkSize: Int? = null
   internal val restoreStreamModeRunnable = Runnable {
     if (reconnectTuningActive && shouldBeStreaming && camera.isStreaming) {
       safe("restoreStreamMode/resizeCache") {
@@ -1377,10 +1381,10 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
       // backlog into the ingest (Agora-MDN broken-pipe fix). Restored on success.
       applyReconnectSafeTuning()
     } else {
-      // Fresh full-quality start — drop any stale reconnect-tuning state and force
-      // the chunk size back to the mode's value. A prior reconnect may have pinned
-      // the RtmpConfig global at 4096; applyStreamMode's setWriteChunkSize no-ops
-      // while a previous session is still isStreaming, so restore the global here.
+      // Fresh full-quality start — drop any stale reconnect-tuning state and ask
+      // for the mode's chunk size again. A prior reconnect may have left it at
+      // 4096, and applyStreamMode's setWriteChunkSize is ignored while a previous
+      // session is still isStreaming.
       mainHandler.removeCallbacks(restoreStreamModeRunnable)
       reconnectTuningActive = false
       restoreStreamModeChunkSize()
@@ -1471,6 +1475,7 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
     }
     pipelineGeneration++
     try {
+      applyPendingWriteChunkSize()
       camera.startStream(url)
       // Backstop for a connect Pedro silently dropped (its gate raced a
       // settling teardown despite the wait — possible after a settle-timeout

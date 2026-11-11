@@ -6,7 +6,11 @@ import java.lang.ref.WeakReference
 /**
  * Stops an abrupt RTMP(S) transport failure from CRASHING THE WHOLE APP.
  *
- * Pedro streams over ktor's CIO socket. On an abrupt transport loss — most
+ * RootEncoder 2.8, which this package uses, defaults to Java sockets, which
+ * don't run the ktor coroutine described below. The guard stays for the Ktor
+ * socket type (RootEncoder's default up to 2.7.2) and does nothing otherwise.
+ *
+ * Over ktor's CIO socket, on an abrupt transport loss — most
  * reliably a network-interface switch (Wi-Fi↔cellular) while publishing over
  * RTMPS — ktor's TLS encoder actor coroutine (`cio-tls-encoder`, on
  * `Dispatchers.IO`) throws from inside a coroutine Pedro never wraps:
