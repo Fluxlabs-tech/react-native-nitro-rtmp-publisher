@@ -102,7 +102,7 @@ yarn add  react-native-nitro-rtmp-publisher react-native-nitro-modules
 | iOS | 15+ |
 | Android | React Native 0.88 or later, which brings Kotlin 2.2 and `minSdkVersion` 24 |
 
-> **Upgrading from 1.x?** 2.0 changes how iOS links HaishinKit. Read [How HaishinKit is linked](#how-haishinkit-is-linked) first: an app built with static frameworks can't use 2.0. The `VideoCodec` type is now `RtmpVideoCodec`; the old name still works as an alias. `legacyRtmpCompatibility` moved from a config-plugin option to a prop on the view. On Android, 2.0 needs a Kotlin 2.2 compiler (React Native 0.88 or later).
+> **Upgrading from 1.x?** 2.0 changes how iOS links HaishinKit. Read [How HaishinKit is linked](#how-haishinkit-is-linked) first: an app built with static frameworks on Expo SDK 58 has to turn Expo's precompiled modules off. The `VideoCodec` type is now `RtmpVideoCodec`; the old name still works as an alias. `legacyRtmpCompatibility` moved from a config-plugin option to a prop on the view. On Android, 2.0 needs a Kotlin 2.2 compiler (React Native 0.88 or later).
 
 > **Upgrading from 0.x?** 1.0 has no JS or native API changes. Bump `react-native-nitro-modules` to 0.37+ alongside this package, then rebuild the native app (`npx expo prebuild`, or `pod install` in bare projects). An older Nitro fails at native compile time with missing `NitroModules/ReactProp.hpp` / `ViewComponentDescriptor.hpp`.
 
@@ -190,11 +190,11 @@ What your app needs:
 |---|---|
 | No `use_frameworks!` (static libraries, the React Native default) | Works. The example app is built this way, on React Native 0.88 (Expo SDK 58). |
 | Dynamic frameworks: `use_frameworks! :linkage => :dynamic`, or `ios.useFrameworks: "dynamic"` in `expo-build-properties` | Works. Tested with React Native 0.88 (Expo SDK 58). On Expo SDK 58, also set `ios.usePrecompiledModules: false` if the app has other Nitro modules. |
-| Static frameworks on Expo SDK 58 (`ios.useFrameworks: "static"`) | Doesn't build. Stay on 1.x, which vendors HaishinKit podspecs instead. |
+| Static frameworks on Expo SDK 58 (`ios.useFrameworks: "static"`) | Set `ios.usePrecompiledModules: false`; the example builds that way. With precompiled modules, Expo's default, the build can fail (see below). |
 
 Why, on Expo SDK 58 / React Native 0.88:
 
-- **Static frameworks.** Expo builds pods that depend on React as static libraries. For a static-library pod with a Swift package, React Native 0.88 puts the pod's umbrella header in the shared build products folder, and Clang then treats every header under that folder as part of this pod's module. An Objective-C import of such a header fails with `'cstddef' file not found` and `could not build module 'NitroRtmpPublisher'`, because the module contains Nitro's C++ headers.
+- **Static frameworks with precompiled Expo modules.** Expo builds the pods that depend on React as static libraries and leaves others as frameworks. For a static-library pod with a Swift package, React Native 0.88 puts the pod's umbrella header in the shared build products folder, and Clang then treats every header under that folder as part of this pod's module. An Objective-C import of such a header, for example from a library that wraps a native SDK, fails with `'cstddef' file not found` and `could not build module 'NitroRtmpPublisher'`, because the module contains Nitro's C++ headers. With `usePrecompiledModules: false` this pod stays a framework and none of that happens. Reported as [margelo/nitro#2060](https://github.com/margelo/nitro/issues/2060).
 - **Dynamic frameworks with precompiled Expo modules.** Expo keeps this pod and NitroModules as dynamic frameworks but builds other Nitro modules as static libraries. Their Swift/C++ interop headers then clash (`reference to 'isUsableInGenericContext' is ambiguous`). With `usePrecompiledModules: false`, every pod is a dynamic framework.
 
 ### Android
