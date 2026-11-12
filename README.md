@@ -328,96 +328,19 @@ If you want to roll your own permission flow (e.g. using `expo-camera` + `expo-n
 
 ## Android: opting out of the foreground service
 
-By default the library declares these in its AndroidManifest, which auto-merge into your app's APK:
+By default the library's manifest declares a foreground service with camera and microphone permissions, which keep a stream alive while the app is in the background (Android 14+ revokes the camera and microphone otherwise). An app that ships them has to fill in the Play Console "Foreground services" declaration, whether or not it streams in the background.
 
-- `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_CAMERA`, `FOREGROUND_SERVICE_MICROPHONE`
-- `POST_NOTIFICATIONS`
-- A `<service>` declaration for `RtmpForegroundService`
+A foreground-only app can leave them out at build time: `nitroRtmpPublisherFgs=false` in `android/gradle.properties`, or `"android": { "disableForegroundService": true }` in the config plugin's options. Its streams then stop when the app goes to the background.
 
-These let `<RtmpPublisherView>` keep camera/mic active while the app is in the background — required on Android 14+, otherwise the OS revokes both within ~5 seconds of backgrounding.
-
-The trade-off: any app whose merged manifest carries `FOREGROUND_SERVICE_CAMERA` or `_MICROPHONE` has to fill the **Play Console "Foreground services" declaration form** (with a demo video) before it can publish, *whether or not the service is actually used at runtime*.
-
-**If your app is foreground-only** — kiosk mode, in-app demos, internal tools, anything where the user is always looking at the streaming UI — you can opt out at build time and skip the Play Console form entirely. The library publishes a stripped manifest variant for exactly this case.
-
-### Bare React Native
-
-Add this to your app's `android/gradle.properties`:
-
-```properties
-nitroRtmpPublisherFgs=false
-```
-
-That's it. The next build uses the stripped manifest — no FGS permissions, no `<service>` declaration. The `foregroundServiceTitle` / `foregroundServiceText` / `foregroundServiceIcon` props become no-ops; the library logs one warning the first time `startStream` is called with a non-empty title so you know it's being ignored.
-
-### Expo (managed)
-
-Pass the option to the config plugin:
-
-```jsonc
-{
-  "plugins": [
-    ["react-native-nitro-rtmp-publisher", {
-      "android": {
-        "disableForegroundService": true
-      }
-    }]
-  ]
-}
-```
-
-`expo prebuild` writes the gradle property for you. Re-run prebuild after toggling.
-
-### Trade-off you're accepting
-
-- ✅ No Play Console FGS form required.
-- ✅ Smaller permission set in the user's install prompt + system Settings → Apps view.
-- ❌ Streams **die when the app backgrounds** on Android 14+ (camera/mic revoked by the OS). Lock screen, app switcher, push-notification tap — all kill the stream.
-- ❌ The library's compiled `RtmpForegroundService` class is still in the AAR as dead code (~3 KB). Not worth shipping two AAR variants to remove.
-
-The flag is **build-time only.** If you later need background streaming, you have to publish a new build (manifest entries are baked into the binary). There's no JS-runtime "enable FGS" path.
+The details and trade-offs are in [docs/android-foreground-service.md](https://github.com/Fluxlabs-tech/react-native-nitro-rtmp-publisher/blob/main/docs/android-foreground-service.md).
 
 ---
 
 ## iOS: streaming to Agora or other servers with a legacy RTMP architecture
 
-> **TL;DR** — If your iOS stream takes ~15–17 s to connect to **Agora** (or any ingest built on a **legacy RTMP / Adobe Flash Media Server architecture**) while the same app connects in 2–4 s everywhere else, pass `legacyRtmpCompatibility` to `RtmpPublisherView`. It's **off by default**; most servers don't need it.
+If your iOS stream takes ~15–17 s to connect to **Agora** (or any ingest built on a **legacy RTMP / Adobe Flash Media Server architecture**) while the same app connects in 2–4 s everywhere else, pass `legacyRtmpCompatibility` to `RtmpPublisherView`. It's **off by default**; most servers don't need it. Android ignores it.
 
-**Symptom (iOS only).** Publishing takes **~15–17 seconds** to fire `connectionSuccess`, while the *same* app reaches the same event in 2–4 s on YouTube, Twitch, Facebook/Instagram Live, and OBS relays — and Android connects to the *same* URL in ~4 s. Once connected the stream is perfectly healthy; only the *start* is slow. The most common place this shows up is **Agora's RTLS ingest** (`rtmp://rtls-ingress-*.agoramdn.com/live/…`), but it can happen with any server that presents an old Flash-Media-Server-style RTMP front end.
-
-**Why it happens.** These servers identify themselves as something like `fmsVer = FMS/3,0,1,123` — i.e. they emulate a 2008-era Adobe Flash Media Server and expect the old **FMLE** (Flash Media Live Encoder) publish handshake. The iOS RTMP engine this library uses (HaishinKit) follows that handshake strictly: before it sends `createStream` / `publish`, it sends two FMLE-compatibility commands, `releaseStream` and `FCPublish`, and **waits for the server to acknowledge them**. Modern servers reply instantly. These legacy servers simply never reply to those two commands — so HaishinKit blocks on each until its internal request timeout (~15 s) expires, *then* continues. That timeout is the entire delay. OBS/`librtmp` and Android (the Pedro engine) send those same commands **fire-and-forget** and never wait for a reply, which is exactly why they're fast against the same server and iOS is not.
-
-### What this option changes, and why it's safe
-
-By default the publisher gives HaishinKit the stream key as its FMLE publish name. HaishinKit then sends `releaseStream` and `FCPublish` before `createStream`, and waits for both replies.
-
-With the `legacyRtmpCompatibility` prop on, the publisher leaves that name out and sends the two commands itself, right after the connection opens, without waiting for replies:
-
-```swift
-Task { _ = try? await connection.call("releaseStream", arguments: streamKey) }
-Task { _ = try? await connection.call("FCPublish", arguments: streamKey) }
-```
-
-Legacy servers that care about these commands still receive them, and `publish` no longer waits ~15 s for replies that never come. OBS and the Android engine already behave this way. Against modern servers nothing observable changes: they reply at once either way.
-
-One difference from HaishinKit's own sequence: the two commands now follow `createStream` instead of preceding it (`connect → createStream → releaseStream → FCPublish → publish`).
-
-**Why it's opt-in / off by default.** Most ingests connect fine with HaishinKit's own sequence, so the publisher keeps it unless you ask. Enable it **only** if you publish to Agora RTLS or another legacy FMS/FMLE-style server that's slow to connect on iOS.
-
-> In 1.x this was a config-plugin option, `ios.legacyRtmpCompatibility`, that patched HaishinKit's source at `pod install`. That option is gone: the plugin ignores it, so move it to the prop.
-
-### How to enable it
-
-Pass the prop to the view:
-
-```tsx
-<RtmpPublisherView
-  legacyRtmpCompatibility={true}
-  // …
-/>
-```
-
-It is read each time a stream starts or reconnects, so an app that publishes to different servers can turn it on only for the ones that need it, and an over-the-air update can change it. Android never waits for these answers and ignores the prop.
+Why the connection stalls and what the prop changes: [docs/legacy-rtmp-servers.md](https://github.com/Fluxlabs-tech/react-native-nitro-rtmp-publisher/blob/main/docs/legacy-rtmp-servers.md).
 
 ---
 
@@ -704,30 +627,7 @@ Neither platform applies the AGC/voice-compression of a phone-call processor, so
 
 ### Stereo capture
 
-`prepareAudio(..., isStereo)` controls AAC channel count. **On Android, the library silently downgrades stereo → mono on known single-mic / fake-stereo devices.**
-
-This matters because budget Android phones (Realme across the board, budget Oppo A-series, OnePlus Nord N-series, Redmi 12 / A-series, anything on UNISOC or low-end MediaTek) ship a single physical mic capsule. When an app asks for stereo, the audio HAL synthesises a second channel by duplicating the mono signal. That doubling has two downstream costs:
-
-- Doubled `AudioRecord` PCM throughput per callback.
-- ~1.6× AAC software-encoder CPU per frame (joint-stereo is cheaper than 2× independent encoding, but not free).
-
-On chips with weak performance cores (e.g. UNISOC Tiger T612) shared with the camera HAL, this is enough to push the audio thread past its ~21 ms deadline, causing dropped AAC frames and audibly chunky / stuttering playback.
-
-#### How the downgrade decides
-
-In [`HybridRtmpPublisherView+Encoders.kt`](android/src/main/java/com/margelo/nitro/rtmppublisher/HybridRtmpPublisherView+Encoders.kt), `resolveEffectiveStereo()` runs three checks in order and forces mono on the first match:
-
-1. **`FAKE_STEREO_BUILTIN_MIC_BRANDS`** — universally-budget brands where every shipped device has the bug. Currently just `realme` (its entire lineup is single-mic). `oppo`/`oneplus`/`redmi` are deliberately **not** in this set — their flagships (Find X, OnePlus 8+, Redmi Note Pro / K) ship real dual-mic arrays and forcing mono there would lose real capability.
-2. **`KNOWN_SINGLE_MIC_MODELS`** — exact-match `Build.MODEL` codes for budget SKUs from mixed-lineup brands. Empty by default; populate as field reports come in. Note `Build.MODEL` returns SKU codes, not consumer names — OnePlus Nord N100 is `BE2013`, not `Nord N100`.
-3. **`builtInMicCount() < 2`** — fallback for OEMs that correctly expose only one `TYPE_BUILTIN_MIC` entry (some single-mic devices that don't lie in their `audio_policy` config).
-
-If none match, the caller's `isStereo` is honoured. The decision inputs (brand, manufacturer, model, mic count, which check fired) are logged at `Log.INFO` with tag `RtmpPublisherView` — `adb logcat -s RtmpPublisherView:I` shows the line.
-
-#### Contributing a new device
-
-Got chunky audio on a device that's not caught? Grab `Build.MODEL` from `adb shell getprop ro.product.model` while the app is running, then add it to `KNOWN_SINGLE_MIC_MODELS` in [`HybridRtmpPublisherView+Encoders.kt`](android/src/main/java/com/margelo/nitro/rtmppublisher/HybridRtmpPublisherView+Encoders.kt) and open a PR. One-line change.
-
-No-op on iOS — every iPhone has two physical mics and the audio session handles channel routing.
+`prepareAudio(..., isStereo)` controls AAC channel count. **On Android, the library silently downgrades stereo → mono on known single-mic / fake-stereo devices**: there the second channel is a copy of the first, and encoding it can cost enough CPU to make audio stutter on budget chips. No-op on iOS — every iPhone has two physical mics. Which devices, how the check decides, and how to add one: [docs/stereo-capture.md](https://github.com/Fluxlabs-tech/react-native-nitro-rtmp-publisher/blob/main/docs/stereo-capture.md).
 
 ### Thermals
 
@@ -794,93 +694,11 @@ ref.setOnAudioDriftCorrection((correctionMs, totalCorrectionMs) => { ... })
 
 ## Picture-in-Picture
 
-System Picture-in-Picture — the OS floating window with the camera preview inside. The **JS API is identical on both platforms**, but the runtime behavior differs because iOS restricts camera capture in the background:
+System Picture-in-Picture — the OS floating window with the camera preview inside, while the stream keeps publishing. The JS API is identical on both platforms. Android offers it on every device. iOS offers it only where the camera stays live in the background: iPhone on iOS 18+ when the app declares the `voip` background mode, and M1+ iPads. Elsewhere it's disabled.
 
-| Capability | Android | iOS |
-|---|---|---|
-| PIP available | every device | **iPhone iOS 18+ (host declares `voip`) / M1+ iPad only** — disabled on older iOS / pre-M1 iPad |
-| Camera **live** in PIP + stream keeps publishing | **yes, every device** (via the foreground service) | **yes** — it's the only tier offered (camera stays live, stream keeps publishing) |
+After the native setup (in Expo, the config plugin's `enablePictureInPicture` option), the `pictureInPictureEnabled` prop arms it to start when the app goes to the background. The methods are `enterPictureInPicture()`, `isInPictureInPicture()` and `setOnPictureInPictureChange(cb)`.
 
-**API** (same on both platforms):
-
-| Method | Notes |
-|---|---|
-| `enterPictureInPicture(): boolean` | Request PIP now. Use for a manual button (and the Android 8–11 path). Returns `false` if PIP is unsupported, disabled for the app in system settings, there's no host Activity, or it's already active. (iOS may defer the actual start until the window is ready and still return `true`.) |
-| `isInPictureInPicture(): boolean` | `true` while in the PIP window. |
-| `setOnPictureInPictureChange(cb: (isInPip: boolean) => void): void` | Fires `true` on enter, `false` on exit (delivered on the JS thread). Use it to hide overlays/controls while in PIP. |
-
-Set **`pictureInPictureEnabled`** to arm **auto-enter on background** (Android API 31+ via `setAutoEnterEnabled`; iOS via `canStartPictureInPictureAutomaticallyFromInline`). The floating window uses the **device's screen aspect ratio**.
-
-### Android setup
-
-**Manifest** — the host activity must declare PIP support and absorb the configuration changes PIP fires (otherwise Android recreates the Activity and the camera restarts):
-
-```xml
-<activity
-  android:name=".MainActivity"
-  android:supportsPictureInPicture="true"
-  android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|smallestScreenSize|uiMode" />
-```
-
-> **Expo:** there's no first-class `app.json` field for `supportsPictureInPicture` / `configChanges`, and a plain `expo prebuild` would drop a hand-edited manifest — so the library's config plugin does it for you. Enable it once:
->
-> ```json
-> {
->   "expo": {
->     "plugins": [
->       ["react-native-nitro-rtmp-publisher", { "enablePictureInPicture": true }]
->     ]
->   }
-> }
-> ```
->
-> The next `expo prebuild` adds `supportsPictureInPicture="true"` and merges the required `configChanges` into your launcher activity (existing entries are preserved). Bare RN apps edit the manifest directly as shown above.
->
-> `enablePictureInPicture` is a **common** key — the same flag also arms iOS PIP (see [iOS setup](#ios-setup)). For Android only, scope it: `{ "android": { "enablePictureInPicture": true } }`.
-
-### iOS setup
-
-iOS PIP is built on `AVPictureInPictureController` + an `AVSampleBufferDisplayLayer` (HaishinKit's `PiPHKView`) fed the composited preview frames — the only sanctioned path for live, non-`AVPlayer` content. It works on **iOS 15+** with no extra setup beyond the `audio` background mode you already need for background streaming.
-
-PIP is offered **only on the live tier** — devices where iOS keeps the camera running during multitasking. By design it is **disabled** elsewhere: iOS suspends the camera the moment the app backgrounds (entering PIP *is* backgrounding), so a non-live device could only show a **frozen frame with a paused stream** — a worse experience than no PIP. The library detects this at runtime (`AVCaptureSession.isMultitaskingCameraAccessSupported`) and arms PIP only where it's live.
-
-- **Disabled (no-op):** iPhone **< iOS 18**, any iPhone that doesn't declare the `voip` background mode, and **pre-M1 iPads**. `pictureInPictureEnabled` does nothing and `enterPictureInPicture()` returns `false`. (Android PIP is unaffected.)
-- **Enabled (live):** **iPhone iOS 18+** with `voip` in `UIBackgroundModes`, and **M1+ iPads** — the camera stays live and the RTMP stream keeps publishing in the floating window. Opt in by adding the `voip` background mode:
-
-  ```json
-  // app.json → expo.ios.infoPlist
-  "UIBackgroundModes": ["audio", "voip"]
-  ```
-
-  > **Expo:** rather than editing `infoPlist` by hand, enable the plugin option — it merges `voip` + `audio` into `UIBackgroundModes` at prebuild time (parity with the Android option, and any modes you already declare are preserved):
-  >
-  > ```json
-  > {
-  >   "expo": {
-  >     "plugins": [
-  >       ["react-native-nitro-rtmp-publisher", { "enablePictureInPicture": true }]
-  >     ]
-  >   }
-  > }
-  > ```
-  >
-  > This is the same **common** `enablePictureInPicture` key shown in [Android setup](#android-setup) — one flag arms PIP on **both** platforms. For iOS only, scope it: `{ "ios": { "enablePictureInPicture": true } }`.
-
-  The library then enables `AVCaptureSession.isMultitaskingCameraAccessEnabled` automatically where supported — no entitlement needed on iOS 18+.
-
-  > ⚠️ **App Store note:** `voip` is intended for VoIP / video-conferencing apps; declaring it on a one-way broadcaster carries some **Guideline 2.5.4** review scrutiny. If you don't add `voip` (manually or via the plugin option), iOS PIP simply stays disabled — no review risk, and Android PIP still works everywhere.
-
-> **Keep the keyboard off the streaming screen.** A focused `TextInput` under a `KeyboardAvoidingView` (`behavior="height"`) can mis-size the preview while in PIP (it sizes from screen metrics, not the small PIP window). Edit text such as the RTMP URL in a separate modal or bottom sheet so its keyboard lives in its own window — see the URL sheet in [`example/src/ui/StreamOverlay.android.tsx`](./example/src/ui/StreamOverlay.android.tsx) and [example/App.tsx](./example/App.tsx).
-
-```ts
-<RtmpPublisherView ... pictureInPictureEnabled={true} hybridRef={hybridRef} />
-
-// hide your overlays while the floating window is showing
-ref.setOnPictureInPictureChange((inPip) => setControlsVisible(!inPip))
-
-// optional manual trigger (also the Android 8–11 path)
-ref.enterPictureInPicture()
-```
+Setup for each platform, the App Store note on `voip` and an example are in [docs/picture-in-picture.md](https://github.com/Fluxlabs-tech/react-native-nitro-rtmp-publisher/blob/main/docs/picture-in-picture.md).
 
 ---
 
