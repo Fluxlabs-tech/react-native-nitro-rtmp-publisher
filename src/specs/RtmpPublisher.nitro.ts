@@ -115,20 +115,21 @@ export interface RtmpPublisherViewProps extends HybridViewProps {
   videoCodec: RtmpVideoCodec
 
   /**
-   * **iOS only.** Encode H.264 with VideoToolbox's low-latency rate control
-   * (`kVTVideoEncoderSpecification_EnableLowLatencyRateControl`).
+   * **iOS only.** Encode with VideoToolbox's low-latency rate control
+   * (`kVTVideoEncoderSpecification_EnableLowLatencyRateControl`): H.264 on
+   * every iOS version, H.265 from iOS 27.
    *
-   * In the normal mode, iOS 27 starts a keyframe every time the H.264 frame
-   * counter wraps, which it does every 32 frames (about once a second at
-   * 30 fps), whatever `iFrameInterval` asks for. Each keyframe is about 4× a
-   * normal frame. Low-latency mode counts to 4096, so the `iFrameInterval`
-   * from `prepareVideo` holds again, and its keyframes are about half the
-   * size.
+   * On iOS 27 the normal mode puts a keyframe about once a second at 30 fps
+   * (every 32 frames in H.264, every 29 to 33 in H.265) where a 2 s
+   * `iFrameInterval` asks for every 60. It does this to camera frames. Each
+   * H.264 keyframe is about 4× a normal frame. Low-latency mode keeps the
+   * `iFrameInterval` from `prepareVideo`, and its keyframes are smaller (about
+   * half the size in H.264).
    *
-   * If the device can't build a low-latency encoder for the stream's size and
-   * bitrate, the publisher keeps the normal mode. H.265 always uses the normal
-   * mode. A change made while streaming applies the next time the encoder is
-   * configured (`prepareVideo`, `resetVideoEncoder`, a reconnect).
+   * If the device can't build a low-latency encoder for the stream's codec,
+   * size and bitrate, the publisher keeps the normal mode. A change made while
+   * streaming applies the next time the encoder is configured (`prepareVideo`,
+   * `resetVideoEncoder`, a reconnect).
    * @default true
    */
   lowLatencyRateControl?: boolean
