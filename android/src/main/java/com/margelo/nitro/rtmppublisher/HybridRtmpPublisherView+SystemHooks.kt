@@ -113,7 +113,7 @@ internal fun HybridRtmpPublisherView.ensureForegroundServiceIfRequested(): Boole
   }
   // Always attempt start() — don't early-return on RtmpForegroundService.running.
   // The flag can lie: OEM-killed services don't fire onDestroy, so `running`
-  // stays true while the service is actually gone. startForegroundService is
+  // stays true while the service is actually gone. Starting a service is
   // idempotent for the same component (Android dedups), so re-issuing a live
   // service just delivers another onStartCommand (we use that for live
   // notification updates anyway).

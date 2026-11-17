@@ -44,8 +44,9 @@ class RtmpForegroundService : Service() {
     //  - ForegroundServiceTypeException if the declared types don't match
     //    what's runtime-required.
     // We have to catch these — letting them propagate out of onStartCommand
-    // crashes the service, which fires ForegroundServiceDidNotStartInTimeException
-    // 5 seconds later and crashes the whole app.
+    // crashes the service. Stopping it instead is only safe because start() used
+    // startService(): after startForegroundService() the system would still crash the
+    // app for the startForeground() call it never got.
     try {
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
         // Android 14+ requires explicit foregroundServiceType.
@@ -120,13 +121,29 @@ class RtmpForegroundService : Service() {
         putExtra(EXTRA_TEXT, text)
         putExtra(EXTRA_ICON_NAME, iconName)
       }
+      // A plain startService() first. startForegroundService() makes the system demand a
+      // startForeground() call within seconds, and crash the app when it does not get one
+      // ("Context.startForegroundService() did not then call Service.startForeground()").
+      // That also happens when the service is stopped before onStartCommand has run (a
+      // stream stopped right after it was started) and when startForeground() is refused.
+      // A stream starts with the app on screen, where startService() is allowed and carries
+      // no such demand; onStartCommand still moves the service to the foreground.
+      try {
+        context.startService(intent)
+        return true
+      } catch (e: IllegalStateException) {
+        // The app is in the background, where Android 8+ only allows
+        // startForegroundService().
+      } catch (e: Exception) {
+        return false
+      }
       return try {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
           context.startForegroundService(intent)
+          true
         } else {
-          context.startService(intent)
+          false
         }
-        true
       } catch (e: Exception) {
         false
       }
