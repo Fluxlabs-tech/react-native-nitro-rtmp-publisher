@@ -284,35 +284,36 @@ extension HybridRtmpPublisherView {
   /// Token-guarded (`flipMaskToken`) so overlapping flips don't reveal early:
   /// each raise bumps the token, the attach captures it, and only the matching
   /// `finalizeMirror` (the newest flip) crossfades the overlay back out.
+  ///
+  /// The frame is raised whatever the mirror props are. The overlay is a subview
+  /// of the preview and inherits its mirror transform, which can change across
+  /// the swap (`mirrorPreview={isFront}` with `mirrorStream={false}`: the back
+  /// camera's preview is not flipped, the front camera's is). `setPreviewTransform`
+  /// keeps the frozen frame as it was when that happens.
   func showFreezeFrame() {
-    // ASYMMETRIC MIRROR: the overlay is a subview of previewView and inherits
-    // its mirror transform, but the captured frame only has mirrorStream baked
-    // in. When mirrorPreview != mirrorStream the transform can change across the
-    // swap and the frozen frame would render wrongly-mirrored during the fade.
-    // Skip the freeze in that rare, non-default case — the live swap shows
-    // through (same as the pre-PR behavior). The shipped example is symmetric.
-    guard mirrorPreview == mirrorStream else { return }
     onMain { [weak self] in
       guard let self else { return }
       // Bump the token ON MAIN (every flipMaskToken access is now main-only).
       let token = self.flipMaskToken &+ 1
       self.flipMaskToken = token
-      // SAFETY BACKSTOP: the primary reveal is finalizeMirror / the reconverge.
-      // This only guarantees a failed / never-completing attach can't strand the
-      // frozen frame forever. 0.8s comfortably outlasts a normal attach; in the
-      // common case the precise reveal already crossfaded the overlay out before
-      // this fires (the `alpha > 0` guard makes it a no-op then). Token-guarded
-      // so overlapping flips don't reveal early.
-      DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+      // SAFETY NET: the attach takes the frame down when it ends, whether it
+      // worked or not (finalizeMirror / the attach tail). This only keeps an
+      // attach that never returns from stranding the frozen frame forever. It has
+      // to outlast a slow attach — one took about 1 s on an iPhone 15 while
+      // streaming — because firing early shows the old camera, or black, before
+      // the new one is ready. Token-guarded so overlapping flips don't reveal early.
+      DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
         guard let self, self.flipMaskToken == token, self.freezeOverlay.alpha > 0 else { return }
         self.fadeOutFreezeOverlay(duration: 0.15)
       }
       // If a freeze overlay is already up (rapid re-flip mid-swap) keep the
       // existing frozen image — the camera is detached so there's no fresher
-      // frame to grab — only the backstop above is re-armed under the new token.
+      // frame to grab — only the safety net above is re-armed under the new token.
       guard self.freezeOverlay.alpha < 1, let ci = self.previewFrameTap.latestImage() else { return }
       let bounds = self.previewView.bounds
       let mode = self.previewView.videoGravity.imageContentMode
+      // How the preview is showing this frame. Kept with it, see the raise below.
+      let shownWith = self.previewView.transform
       // Rasterize OFF the main thread: createCGImage on a 720x1280 frame is a
       // ~1-5ms GPU readback, and doing it inline would block the run loop on the
       // very flip tap meant to feel instant. Render on a background queue, then
@@ -328,28 +329,51 @@ extension HybridRtmpPublisherView {
           // overlay isn't already up, AND an attach is still in flight. The last
           // check guards the (very rare) case where the attach finished before
           // this background raster returned: the reveal would already have
-          // no-op'd, so showing now would strand the frame until the backstop.
+          // no-op'd, so showing now would strand the frame until the safety net.
           guard let self, self.flipMaskToken == token,
                 self.cameraAttachInFlight, self.freezeOverlay.alpha < 1 else { return }
+          // The fade-out of a previous flip may still be running (a tap right
+          // after a reveal); it must not carry this frame away with it.
+          self.freezeOverlay.layer.removeAllAnimations()
+          self.freezeOverlay.transform = .identity
           self.freezeOverlay.frame = bounds
           self.freezeOverlay.contentMode = mode
           self.freezeOverlay.image = image
           self.freezeOverlay.alpha = 1
+          // Remember how the frame was being shown, and line the overlay up with
+          // it in case the preview's transform moved while the frame was rendered.
+          self.freezeFrameTransform = shownWith
+          self.setPreviewTransform(self.previewView.transform)
         }
       }
     }
   }
 
-  /// Crossfade the freeze overlay out (the precise reveal). Waits a beat for the
-  /// new camera's first frame to land UNDER the overlay, then fades — so the
-  /// reveal is always to a live frame, never a black/stale flash. Re-reads the
-  /// token at call time so a flip raised after this is scheduled isn't revealed
-  /// by an older request. Must be called on main.
+  /// Crossfade the freeze overlay out (the precise reveal), once the new
+  /// camera's picture is under it — so the reveal is always to a live frame,
+  /// never a black/stale flash. Re-reads the token at call time so a flip raised
+  /// after this is scheduled isn't revealed by an older request. Must be called
+  /// on main.
+  ///
+  /// "Under it" is read off the frames themselves (`whenPictureIsLive`), not
+  /// timed: a fixed beat after the attach was long enough for `.passthrough`
+  /// but not for `.offscreen` compositing (beauty filter), where the screen
+  /// holds one early frame of the new camera for 250-600 ms more.
   func crossfadeOutFreezeFrame() {
     guard freezeOverlay.alpha > 0 else { return }
     let revealToken = flipMaskToken
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
-      guard let self, self.flipMaskToken == revealToken, self.freezeOverlay.alpha > 0 else { return }
+    previewFrameTap.whenPictureIsLive(settle: 0.1) { [weak self] in
+      DispatchQueue.main.async {
+        guard let self, self.flipMaskToken == revealToken, self.freezeOverlay.alpha > 0 else { return }
+        self.fadeOutFreezeOverlay(duration: 0.18)
+      }
+    }
+    // No live picture came: the camera failed to start, or it is looking at
+    // something that gives none (a covered lens).
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+      guard let self, self.flipMaskToken == revealToken else { return }
+      self.previewFrameTap.cancelLiveWait()
+      guard self.freezeOverlay.alpha > 0 else { return }
       self.fadeOutFreezeOverlay(duration: 0.18)
     }
   }
@@ -608,33 +632,71 @@ extension HybridRtmpPublisherView {
     // This is the prop-didSet path. It is now a SECONDARY corrector: the
     // primary mirror authority is the post-attach re-assert in finalizeMirror.
     // But this path still matters for a plain mirror-prop toggle WITHOUT a flip
-    // (no attach happens, so finalizeMirror never runs). We join the same
-    // generation scheme so a late prop-didSet Task can't clobber a newer flip's
-    // attach — and so a newer flip can't have its tail clobbered by this.
+    // (no attach happens, so finalizeMirror never runs).
+    //
+    // The attach flag, the generation and the preview's transform are all
+    // main-thread state, so the whole of it runs there.
+    onMain { [weak self] in
+      guard let self else { return }
+      // DURING A CAMERA SWAP the picture on screen is still the previous
+      // camera's (its freeze frame, or its last frame), and an app changes these
+      // props because the camera changed: `mirrorPreview={isFront}` re-renders a
+      // few milliseconds after `switchCamera()`, while the swap takes 0.4-1 s.
+      // Applied now, the new value mirrors the OLD camera's picture until the
+      // new camera shows: the viewfinder flips, and only then does the camera
+      // change. So hold it back. `finalizeMirror` reads the props again once the
+      // new camera is attached, and the attach tail applies a change that lands
+      // after that. Holding back also keeps this from bumping `mirrorGeneration`
+      // under the attach, which made the attach drop its own finalizeMirror, and
+      // the reveal of the new camera with it.
+      if self.cameraAttachInFlight {
+        self.mirrorChangeHeldBack = true
+        return
+      }
+      self.applyMirrorFlagsNow()
+    }
+  }
+
+  /// Writes the mirror props to the capture unit and the preview. Main thread only.
+  func applyMirrorFlagsNow() {
+    // We join the attaches' generation scheme so a late prop-didSet Task can't
+    // clobber a newer flip's attach — and so a newer flip can't have its tail
+    // clobbered by this.
     mirrorGeneration &+= 1
     let gen = mirrorGeneration
     let mirror = mirrorStream
     Task { [weak self] in
       guard let self else { return }
       // Drop if a newer mirror write (flip or another prop change) superseded
-      // us. If the device isn't attached yet (mid-flip), configuration throws
-      // deviceNotFound — harmless here because that newer flip's finalizeMirror
-      // will assert the correct value once its attach completes.
+      // us. If the device isn't attached yet, configuration throws
+      // deviceNotFound — harmless here because the attach's finalizeMirror
+      // will assert the correct value once it completes.
       guard self.mirrorGeneration == gen else { return }
       try? await self.mixer.configuration(video: 0) { unit in
         unit.isVideoMirrored = mirror
       }
     }
-    let extraFlipPreview = (mirrorPreview != mirrorStream)
-    let transform: CGAffineTransform = extraFlipPreview
-      ? CGAffineTransform(scaleX: -1, y: 1)
-      : .identity
-    // UIView mutation must hop to main — applyMirrorFlags is often called
-    // from Task continuations resuming on a background executor (after
-    // awaiting MediaMixer). UIKit silently queues background writes to
-    // main with non-zero latency, which manifests as the preview lagging
-    // 1-2s behind the camera frames on resume.
-    onMain { [weak self] in self?.previewView.transform = transform }
+    setPreviewTransform(previewMirrorTransform)
+  }
+
+  /// The flip the preview needs on top of the capture buffer. The buffer already
+  /// carries `mirrorStream` (`isVideoMirrored`), so the view is flipped only when
+  /// `mirrorPreview` asks for something else.
+  var previewMirrorTransform: CGAffineTransform {
+    (mirrorPreview != mirrorStream) ? CGAffineTransform(scaleX: -1, y: 1) : .identity
+  }
+
+  /// Sets the preview's mirror transform. Main thread only.
+  ///
+  /// A freeze frame on screen shows the camera being replaced, the way the
+  /// preview was showing it. It is a subview of the preview and would flip with
+  /// it, so it gets the opposite flip and stays as it was.
+  func setPreviewTransform(_ transform: CGAffineTransform) {
+    previewView.transform = transform
+    guard freezeOverlay.image != nil else { return }
+    freezeOverlay.transform = (transform == freezeFrameTransform)
+      ? .identity
+      : CGAffineTransform(scaleX: -1, y: 1)
   }
 
   func applyVideoStabilizationToCaptureUnit() {
@@ -675,12 +737,11 @@ extension HybridRtmpPublisherView {
     cachedExposureRange = (camera.minExposureTargetBias, camera.maxExposureTargetBias)
 
     // Sync UIView side of the mirror flag up-front so the preview transform
-    // is already correct when the first new frame arrives.
-    let extraFlipPreview = (mirrorPreview != mirrorStream)
-    let previewTransform: CGAffineTransform = extraFlipPreview
-      ? CGAffineTransform(scaleX: -1, y: 1)
-      : .identity
-    onMain { [weak self] in self?.previewView.transform = previewTransform }
+    // is already correct when the first new frame arrives. On a flip the props
+    // are still the previous camera's here (the app re-renders after
+    // `switchCamera()` returns), so nothing moves yet; finalizeMirror applies
+    // the new camera's.
+    setPreviewTransform(previewMirrorTransform)
 
     let mirror = mirrorStream
     let stabilization = currentStabilizationMode
@@ -692,6 +753,7 @@ extension HybridRtmpPublisherView {
     let maskToken = flipMaskToken
     Task { [weak self] in
       guard let self else { return }
+      let attached: Bool
       do {
         // Apply mirror + stabilization atomically inside the attach so the
         // first frame from the new AVCaptureInput is already mirrored and
@@ -703,6 +765,16 @@ extension HybridRtmpPublisherView {
         try await self.mixer.attachVideo(camera) { unit in
           unit.isVideoMirrored = mirror
           unit.preferredVideoStabilizationMode = stabilization
+        }
+        // `mirror` is the prop as it was when the flip was requested. An app that
+        // mirrors the stream on one camera only (`mirrorStream={isFront}`) changes
+        // it a few milliseconds later, and applyMirrorFlags holds that back. Write
+        // it as soon as the new camera is attached. That is where the prop path's
+        // own write used to land (it queued up behind the attach), so the stream
+        // gets the new mirror no later than it did.
+        let streamMirror = self.mirrorStream
+        if streamMirror != mirror {
+          try? await self.mixer.configuration(video: 0) { $0.isVideoMirrored = streamMirror }
         }
         // MediaMixer's async streams that feed outputs only start draining
         // after startRunning() — without it the preview stays black even
@@ -732,8 +804,10 @@ extension HybridRtmpPublisherView {
         // clobber a NEWER flip. This also covers the encoded stream: on iOS
         // preview + stream share the capture buffer, so isVideoMirrored fixes both.
         await self.finalizeMirror(generation: gen, maskToken: maskToken)
+        attached = true
       } catch {
         self.log("attachVideo failed: \(error)")
+        attached = false
       }
       // RECONVERGE: clear the in-flight guard and decide on at most one more
       // attach. Runs via `onMain`, the SAME thread requestCameraAttach /
@@ -762,16 +836,25 @@ extension HybridRtmpPublisherView {
           // correct camera.
           self.showFreezeFrame()
           self.requestCameraAttach()
-        } else if pending {
-          // Taps were absorbed but the freshest intent resolves BACK to the
-          // device we just attached (e.g. an even-count back→front→back burst,
-          // or a redundant switchCameraById). No reconverge fires — but those
-          // absorbed taps bumped flipMaskToken past this attach's maskToken, so
-          // finalizeMirror won't have revealed. Crossfade the overlay out here so
-          // the freeze frame isn't stranded until the 0.8s backstop.
-          self.crossfadeOutFreezeFrame()
+        } else {
+          // The flip ends here. A mirror prop that changed after finalizeMirror
+          // read them was held back by applyMirrorFlags and is still owed.
+          if self.mirrorChangeHeldBack {
+            self.mirrorChangeHeldBack = false
+            self.applyMirrorFlagsNow()
+          }
+          if pending || !attached {
+            // Taps were absorbed but the freshest intent resolves BACK to the
+            // device we just attached (e.g. an even-count back→front→back burst,
+            // or a redundant switchCameraById). No reconverge fires — but those
+            // absorbed taps bumped flipMaskToken past this attach's maskToken, so
+            // finalizeMirror won't have revealed. And a failed attach never
+            // reached finalizeMirror. Crossfade the overlay out here so the
+            // freeze frame isn't stranded until the safety net.
+            self.crossfadeOutFreezeFrame()
+          }
+          // else: finalizeMirror already owns the reveal.
         }
-        // else (!pending): finalizeMirror already owns the reveal.
       }
     }
   }
@@ -792,21 +875,23 @@ extension HybridRtmpPublisherView {
     guard self.mirrorGeneration == generation else { return }
     let fresh = self.mirrorStream
     try? await self.mixer.configuration(video: 0) { $0.isVideoMirrored = fresh }
-    // The preview transform only matters in the asymmetric (mirrorPreview !=
-    // mirrorStream) case; re-evaluate from the freshest props on main.
-    let extraFlip = (self.mirrorPreview != self.mirrorStream)
-    let transform: CGAffineTransform = extraFlip
-      ? CGAffineTransform(scaleX: -1, y: 1)
-      : .identity
     onMain { [weak self] in
       guard let self else { return }
-      self.previewView.transform = transform
+      // The preview transform only matters in the asymmetric (mirrorPreview !=
+      // mirrorStream) case; re-evaluate from the freshest props, here on main.
+      // This is where the new camera gets its own mirror: the freeze frame is
+      // still up and keeps the previous camera's (setPreviewTransform).
+      self.setPreviewTransform(self.previewMirrorTransform)
+      // Everything held back while the attach ran is applied now, unless the
+      // stream's mirror changed again since it was read above; the attach tail
+      // then catches up.
+      if self.mirrorStream == fresh { self.mirrorChangeHeldBack = false }
       // Crossfade the freeze frame out now that the correct mirror has landed —
       // only if this is still the latest flip (token match). The crossfade
-      // helper gives the new camera's first frame a brief beat to land UNDER the
-      // overlay before fading, so the reveal is always to a live new-camera
-      // frame, never a black/stale flash. The 0.8s timer in showFreezeFrame is a
-      // backstop; this is the precise reveal tied to mirror-settle.
+      // helper waits for the new camera's picture to land UNDER the overlay
+      // before fading, so the reveal is always to a live new-camera frame, never
+      // a black/stale flash. The timer in showFreezeFrame is a safety net; this
+      // is the precise reveal tied to mirror-settle.
       guard self.flipMaskToken == maskToken else { return }
       self.crossfadeOutFreezeFrame()
     }
@@ -836,7 +921,7 @@ extension HybridRtmpPublisherView {
       : .identity
     onMain { [weak self] in
       guard let self else { return }
-      self.previewView.transform = previewTransform
+      self.setPreviewTransform(previewTransform)
       // A background round-trip can land mid-flip while a freeze overlay is
       // still up. defrostCapture does a full re-attach and carries no flip
       // token, so it won't crossfade that overlay out — clear it up-front so the
