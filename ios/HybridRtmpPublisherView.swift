@@ -91,7 +91,10 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   // frame lands (see `showFreezeFrame` / `finalizeMirror`). Added as a SUBVIEW
   // of the Metal preview so it inherits the same mirror transform; the captured
   // frame already has orientation + mirror + beauty baked in, so the freeze
-  // matches the live preview pixel-for-pixel.
+  // matches the live preview pixel-for-pixel. If the preview's transform changes
+  // while the frame is up (the next camera needs the preview mirrored
+  // differently), `setPreviewTransform` gives this view the opposite flip, so
+  // the frozen frame stays the way it was on screen.
   let freezeOverlay: UIImageView = {
     let iv = UIImageView(frame: .zero)
     iv.contentMode = .scaleAspectFit
@@ -311,6 +314,15 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   // via onMain / requestCameraAttach first), so the plain UInt64 is race-free.
   var flipMaskToken: UInt64 = 0
 
+  // The preview's mirror transform when the frame in `freezeOverlay` was taken,
+  // i.e. how that frame was being shown. `setPreviewTransform` compares against
+  // it to keep the frozen frame unchanged. Main thread only.
+  var freezeFrameTransform: CGAffineTransform = .identity
+
+  // A mirror prop changed while a camera attach was in flight and has not been
+  // applied yet (see `applyMirrorFlags`). Main thread only.
+  var mirrorChangeHeldBack = false
+
   // ─── Camera-attach coalescing (rapid Flip-button mashing) ────────────────
   //
   // `mixer.attachVideo` is a HEAVY actor call: HaishinKit wraps it in an
@@ -355,6 +367,11 @@ final class HybridRtmpPublisherView: HybridRtmpPublisherViewSpec {
   // finally lands. The winning writer re-reads `mirrorStream` live at commit
   // time, so the committed value is always the freshest prop — regardless of
   // whether the JS prop arrived before or after the attach completed.
+  //
+  // A prop change that arrives WHILE an attach is in flight does not write and
+  // does not bump this: it is held back for that attach to apply (see
+  // `applyMirrorFlags`). Bumping here would make the attach drop its own
+  // `finalizeMirror`, and with it the reveal of the new camera.
   var mirrorGeneration: UInt64 = 0
 
   // True between an explicit `startStream` and `stopStream` / drop. Gates

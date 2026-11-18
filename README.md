@@ -468,7 +468,7 @@ const ok = ref.reTry(2000, 'manual')   // returns false if budget exhausted
 
 | Method | Notes |
 |---|---|
-| `switchCamera()` | Toggle front ⇄ back. |
+| `switchCamera()` | Toggle front ⇄ back. If your mirror props follow the camera (`mirrorPreview={isFront}`), call this first and change them in the same handler. On iOS a mirror prop that changes while the cameras swap is applied to the new camera's picture, behind the frozen frame of the old one; changed before the call, it mirrors the picture still on screen. |
 | `getCamerasAvailable(): string[]` | Camera2 IDs on Android, AVCaptureDevice unique IDs on iOS. |
 | `getCurrentCameraId(): string` | |
 | `switchCameraById(id): void` | Select a specific lens (ultra-wide / tele / LiDAR-depth). |

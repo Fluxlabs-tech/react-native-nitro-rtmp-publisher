@@ -480,7 +480,15 @@ export interface RtmpPublisherViewMethods extends HybridViewMethods {
 
   // ─── Camera selection ────────────────────────────────────────────────────
 
-  /** Cycle through cameras (front ⇄ back). */
+  /**
+   * Cycle through cameras (front ⇄ back).
+   *
+   * If the mirror props follow the camera (`mirrorPreview={isFront}`), call
+   * this first and change them in the same handler. On iOS a mirror prop that
+   * changes while the cameras swap is applied to the new camera's picture,
+   * behind the frozen frame of the old one. Changed before this call, it
+   * mirrors the picture that is still on screen.
+   */
   switchCamera(): void
 
   /** All available camera IDs from CameraManager. */
