@@ -875,6 +875,18 @@ On iOS, audio continues if you declare `UIBackgroundModes: ["audio"]`; the video
 
 iOS 15+ (HaishinKit 2.x requirement), and on Android `minSdkVersion` 24 with Kotlin 2.2+, which is what React Native 0.88 sets. For iOS 13 / 14, pin to `v0.3.x` of this package (HaishinKit 1.9.x).
 
+### Why do broadcasts from iOS 27 have a keyframe about every second?
+
+On iOS 27, VideoToolbox's normal rate control does not keep the keyframe interval. At 30 fps it sends a keyframe about every 32 frames in H.264 and every 29–33 in H.265, where a 2 s `iFrameInterval` asks for every 60. Viewers get twice as many keyframes, each about four times the size of an ordinary frame in H.264, so the stream arrives in bursts. A player that holds more than a second of video, as WebRTC players with a playout delay do, can freeze for about a second at a time even when no packets are lost.
+
+[`lowLatencyRateControl`](#props) avoids it and is on by default: for H.264 since `v1.0.4`, and for H.265 on iOS 27 since `v2.0.2`. Measured on an iPhone 15 on iOS 27.0.1, it gives a keyframe every 60 frames instead of every 32, and H.264 keyframes about half the size. The encoder is native code, so an app gets the fix in a new build, not in an over-the-air JavaScript update.
+
+To check a stream, list the keyframes of a recording or an HLS segment. They should be `iFrameInterval` apart; about 1.07 s apart at 30 fps is the fault.
+
+```sh
+ffprobe -v error -select_streams v:0 -show_entries packet=pts_time,flags -of csv=p=0 stream.ts | grep K
+```
+
 ### How does this compare to other React Native RTMP libraries?
 
 Older packages like `react-native-rtmp-publisher`, `react-native-camera-rtmp`, or `react-native-live-stream` predate the New Architecture and use the legacy bridge — every getter, every callback, every prop write crosses a JSON-serialized boundary. `react-native-nitro-rtmp-publisher` uses Nitro's JSI bridge: callbacks fire as direct C++ calls, view props apply on the C++ shadow thread, and the per-frame camera pipeline never touches JS at all. You also get **first-class Expo support**, **HEVC encoding**, **RTMPS**, and **adaptive bitrate** out of the box.
