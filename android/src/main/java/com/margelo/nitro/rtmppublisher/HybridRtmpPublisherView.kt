@@ -20,6 +20,7 @@ import com.pedro.library.base.recording.RecordController
 import com.pedro.library.rtmp.RtmpCamera2
 import com.pedro.library.util.AndroidMuxerRecordController
 import com.pedro.library.view.OpenGlView
+import com.pedro.library.view.RenderErrorCallback
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -53,6 +54,8 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
   // ─── Native views & encoder ──────────────────────────────────────────────
 
   internal val openGlView = OpenGlView(context)
+  // Frames the renderer failed to draw, counted so the warning is not logged once per frame.
+  private val renderErrors = AtomicInteger(0)
 
   @Volatile internal var onConnectionEvent: ((RtmpConnectionEvent, String) -> Unit)? = null
   @Volatile internal var onBitrateChange: ((Double) -> Unit)? = null
@@ -960,6 +963,20 @@ class HybridRtmpPublisherView(internal val context: Context) : HybridRtmpPublish
   }
 
   init {
+    // RootEncoder rethrows a GL error raised while it draws a frame ("drawScreen end. GL
+    // error: 1285", "Error during updateTexImage") on its render thread unless a callback
+    // takes it, and uncaught there it ends the whole app. These come from the GL context
+    // going away under the renderer (backgrounding, memory pressure), so the frame is
+    // dropped and the next one is drawn as usual.
+    openGlView.setRenderErrorCallback(object : RenderErrorCallback {
+      override fun onRenderError(error: RuntimeException) {
+        val count = renderErrors.incrementAndGet()
+        if (count == 1 || count % RENDER_ERROR_LOG_EVERY == 0) {
+          Log.w(TAG, "Dropped a frame the renderer could not draw (#$count): " +
+            error.message.scrubRtmpKey())
+        }
+      }
+    })
     openGlView.holder.addCallback(surfaceCallback)
     // Scope PIP auto-enter to this view's on-screen lifetime (see pipAttachListener).
     openGlView.addOnAttachStateChangeListener(pipAttachListener)

@@ -50,6 +50,10 @@ internal const val STALL_TICKS = 3
 // link just fails. Matches the surface-resume foreground grace.
 internal const val NETWORK_CHANGE_SETTLE_MS = 1500L
 
+// A renderer that keeps failing fails on every frame, so only the first failure and
+// then every this-many-th one is logged (about once every 10 s at 30 fps).
+internal const val RENDER_ERROR_LOG_EVERY = 300
+
 // Foreground-service readiness wait (M8). startForegroundService is async; we
 // poll RtmpForegroundService.running this many times, this far apart, before
 // starting the encoder (25 × 20ms = 500ms ceiling). Polling (not blocking) is
